@@ -13,7 +13,7 @@ started=$(date +%s)
 log() { printf '[run-task %s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/harness.log" >&2; }
 
 # 1. Clone. The container owns this .git; nothing here is ever executed on the host.
-git clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
+git -c advice.detachedHead=false clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
 cd /work/repo
 git checkout -q -b "$BRANCH" "$BASE_SHA" || { log "checkout of $BASE_SHA failed"; exit 11; }
 git config user.name "agent-box (${MODEL:-none})"

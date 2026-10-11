@@ -3,13 +3,14 @@
 # The repo goes in as a git bundle and comes back as a git bundle. The container never sees the
 # host .git, your home directory, or any credential except the project's OmniRoute key.
 set -euo pipefail
-export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 
 BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="agent-box:latest"
 LABEL="agent-box=1"
 
 die() { echo "agent-box: $*" >&2; exit 1; }
+# Docker gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
+dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" docker "$@"; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -46,7 +47,7 @@ load_project() {
 need_key() { [ -n "${OMNIROUTE_API_KEY:-}" ] || die "OMNIROUTE_API_KEY is empty in projects/$PROJECT.env"; }
 
 cmd_build() {
-  docker build -t "$IMAGE" "$(winpath "$BOX/image")"
+  dk build -t "$IMAGE" "$(winpath "$BOX/image")"
 }
 
 cmd_models() {
@@ -56,9 +57,9 @@ cmd_models() {
 }
 
 cmd_clean() {
-  local ids; ids="$(docker ps -aq --filter "label=$LABEL")"
+  local ids; ids="$(dk ps -aq --filter "label=$LABEL")"
   [ -z "$ids" ] && { echo "nothing to clean"; return; }
-  docker rm -f $ids
+  dk rm -f $ids
 }
 
 # Prints the final agent message and token totals from OpenCode's JSON event stream.
@@ -107,26 +108,26 @@ launch() {
   local base_sha; base_sha="$(git -C "$REPO" rev-parse --verify "$base^{commit}")" || die "bad base $base"
   [ -n "$(git -C "$REPO" status --porcelain)" ] && echo "agent-box: note: uncommitted changes in $REPO are NOT sent; base is $base_sha" >&2
   local bundle_ref="$base"; [ "$base" = "HEAD" ] || git -C "$REPO" show-ref --quiet "$base" || bundle_ref="HEAD"
-  git -C "$REPO" bundle create -q "$run_dir/in.bundle" "$bundle_ref" 2>/dev/null \
-    || git -C "$REPO" bundle create -q "$run_dir/in.bundle" --all
+  git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" "$bundle_ref" 2>/dev/null \
+    || git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" --all
   [ -n "$task" ] && cp "$task" "$run_dir/task.md"
 
   local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
-  trap "docker rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
+  trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
   export BRANCH="$branch" BASE_SHA="$base_sha" SKIP_AGENT="$skip_agent"
-  docker run -d --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
+  dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
     --add-host host.docker.internal:host-gateway \
     -v agent-box-npm-cache:/home/node/.npm \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN \
     "$IMAGE" >/dev/null
-  docker cp -q "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
-  [ -n "$task" ] && docker cp -q "$(winpath "$run_dir/task.md")" "$cname:/in/task.md"
+  dk cp -q "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
+  [ -n "$task" ] && dk cp -q "$(winpath "$run_dir/task.md")" "$cname:/in/task.md"
 
   echo "agent-box: $name started (container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
-  docker exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
-  docker cp -q "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
+  dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
+  dk cp -q "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
   rm -f "$run_dir/in.bundle"
 
   if [ -f "$run_dir/result.bundle" ]; then
