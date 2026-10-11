@@ -20,7 +20,7 @@ Usage: delegate.sh <command> ...
   build                          Build the worker image
   models   <repo>                List models the project's OmniRoute key can use
   baseline <repo>                Clone + setup + tests in the container, no agent
-  run      <repo> <task.md> [--model M] [--name N] [--base REF] [--timeout MIN] [--variant V] [--web]
+  run      <repo> <task.md> [--model M] [--name N] [--base REF] [--timeout MIN] [--variant V] [--web] [--test CMD]
                                  Run one task. Result lands as branch agent/<name> in <repo>
   show     <repo> <name>         Print a finished run's report again
   clean                          Remove leftover agent-box containers
@@ -156,6 +156,7 @@ cmd_run() {
       --timeout) TIMEOUT_MIN="$2"; shift 2 ;;
       --variant) VARIANT="$2"; shift 2 ;;
       --web) ALLOW_WEB=1; shift ;;
+      --test) TEST_CMD="$2"; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done

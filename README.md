@@ -27,7 +27,7 @@ cp projects/example.env projects/<repo-folder-name-lowercase>.env   # fill OMNIR
 ## Use
 
 ```bash
-./delegate.sh run /path/to/repo task.md --model <id> [--name N] [--base REF] [--timeout MIN] [--variant V] [--web]
+./delegate.sh run /path/to/repo task.md --model <id> [--name N] [--base REF] [--timeout MIN] [--variant V] [--web] [--test CMD]
 ./delegate.sh show /path/to/repo <name>
 ./delegate.sh clean
 ```
@@ -35,6 +35,8 @@ cp projects/example.env projects/<repo-folder-name-lowercase>.env   # fill OMNIR
 Each run prints a report: `summary.json` (exit codes of setup, agent and tests, commit count),
 commits, diffstat, the test tail, token totals and the agent's final message. Full logs stay in
 `runs/<project>/<name>/`. The agent's message is a claim; `test_exit` and the diff are evidence.
+
+`--test CMD` overrides the project's `TEST_CMD` for one run, e.g. a single test file.
 
 `--web` allows OpenCode's `webfetch` tool, which is denied by default (prompt-injection surface).
 
