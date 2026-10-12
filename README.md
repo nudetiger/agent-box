@@ -92,6 +92,12 @@ resumes the same session with the failing tail (`--no-autofix`, `--autofix N`). 
 the ledger keeps the result before that round, so rescued runs are counted apart. `steps: N` in the
 frontmatter is a step budget.
 
+`issue: N` (or `owner/repo#N`, or a list) in the frontmatter makes `lib/pack.mjs` fetch the GitHub
+issue on the host with `gh` (`lib/issue.mjs`) and append it to the task: body, comments, the issue its
+`Spec: #N` line names in full, and other cited issues cut to 1500 chars. Being part of the task, it
+reaches the worker, every `continue` and both reviewers. No GitHub token enters the container. A failed
+fetch stops the run before the container starts.
+
 ## The ledger and the dashboard
 
 `ledger/events.jsonl` (schema: [docs/ledger.md](docs/ledger.md)): every run, review, label, outcome,
