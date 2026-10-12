@@ -7,10 +7,14 @@ set -euo pipefail
 BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="agent-box:latest"
 LABEL="agent-box=1"
+# Container engine: docker or podman. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
+[ -f "$BOX/agent-box.conf" ] && . "$BOX/agent-box.conf"
+ENGINE="${AGENT_BOX_ENGINE:-docker}"
+case "$ENGINE" in docker|podman) ;; *) echo "agent-box: unknown engine $ENGINE" >&2; exit 1 ;; esac
 
 die() { echo "agent-box: $*" >&2; exit 1; }
-# Docker gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
-dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" docker "$@"; }
+# The engine gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
+dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" "$ENGINE" "$@"; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -20,10 +24,15 @@ Usage: delegate.sh <command> ...
   build                          Build the worker image
   models   <repo>                List models the project's OmniRoute key can use
   baseline <repo>                Clone + setup + tests in the container, no agent
-  run      <repo> <task.md> [--model M] [--name N] [--base REF] [--timeout MIN] [--variant V] [--web] [--test CMD]
-                                 Run one task. Result lands as branch agent/<name> in <repo>
+  run      <repo> <task.md> [--role R | --model M] [--review] [--name N] [--base REF] [--timeout MIN]
+                            [--variant V] [--web] [--test CMD]
+                                 Run one task. Result lands as branch agent/<name> in <repo>.
+                                 --role picks the model from agent-box.conf. --review (or a read-only
+                                 role) discards every edit and skips tests; the output is the report.
   show     <repo> <name>         Print a finished run's report again
   clean                          Remove leftover agent-box containers
+
+Engine: docker (default) or podman, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
 EOF
@@ -114,20 +123,28 @@ launch() {
 
   local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
+  # Docker Desktop forwards host-gateway to the host's loopback, where OmniRoute listens. Podman
+  # needs user-mode networking, whose host address is what the VM itself resolves (gvproxy's .254);
+  # the gateway Podman would inject reaches the WSL interface, not loopback.
+  local host_ip="host-gateway"
+  if [ "$ENGINE" = podman ]; then
+    host_ip="$(podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r')"
+    [ -n "$host_ip" ] || host_ip="192.168.127.254"
+  fi
   export BRANCH="$branch" BASE_SHA="$base_sha" SKIP_AGENT="$skip_agent"
   dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
-    --add-host host.docker.internal:host-gateway \
+    --add-host "host.docker.internal:$host_ip" \
     -v agent-box-npm-cache:/home/node/.npm \
-    -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB \
+    -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN \
     "$IMAGE" >/dev/null
-  dk cp -q "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
-  [ -n "$task" ] && dk cp -q "$(winpath "$run_dir/task.md")" "$cname:/in/task.md"
+  dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
+  [ -n "$task" ] && dk cp "$(winpath "$run_dir/task.md")" "$cname:/in/task.md"
 
-  echo "agent-box: $name started (container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
+  echo "agent-box: $name started ($ENGINE container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
   dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
-  dk cp -q "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
+  dk cp "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
   rm -f "$run_dir/in.bundle"
 
   if [ -f "$run_dir/result.bundle" ]; then
@@ -146,10 +163,16 @@ cmd_run() {
   local repo="$1" task="$2"; shift 2
   [ -f "$task" ] || die "task file not found: $task"
   load_project "$repo"; need_key
-  local name="" base="HEAD"
-  MODEL="${DEFAULT_MODEL:-}" VARIANT="" ALLOW_WEB=0
+  local name="" base="HEAD" role=""
+  MODEL="${DEFAULT_MODEL:-}" VARIANT="" ALLOW_WEB=0 REVIEW=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --role) role="$2"; shift 2
+        local var="ROLE_${role//-/_}"
+        [ -n "${!var:-}" ] || die "unknown role $role (define $var in agent-box.conf)"
+        MODEL="${!var}"
+        case " ${READ_ONLY_ROLES:-} " in *" $role "*) REVIEW=1 ;; esac ;;
+      --review) REVIEW=1; shift ;;
       --model) MODEL="$2"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       --base) base="$2"; shift 2 ;;
@@ -160,9 +183,9 @@ cmd_run() {
       *) die "unknown option $1" ;;
     esac
   done
-  [ -n "$MODEL" ] || die "no model: pass --model or set DEFAULT_MODEL"
-  export MODEL VARIANT ALLOW_WEB
-  [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)"
+  [ -n "$MODEL" ] || die "no model: pass --role, --model or set DEFAULT_MODEL"
+  export MODEL VARIANT ALLOW_WEB REVIEW
+  [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
 }
 

@@ -10,7 +10,7 @@ RUN apt-get update \
 RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && npm cache clean --force
 
 COPY run-task.sh /usr/local/bin/run-task.sh
-COPY preamble.md /opt/agent-box/preamble.md
+COPY preamble.md preamble-review.md /opt/agent-box/
 RUN chmod 755 /usr/local/bin/run-task.sh \
  && mkdir -p /work /in /out /home/node/.npm \
  && chown -R node:node /work /in /out /home/node

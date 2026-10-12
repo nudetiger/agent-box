@@ -34,8 +34,15 @@ agent_exit=-1
 if [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
   mkdir -p ~/.config/opencode
-  curl -fsS -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" \
-    >"$OUT/models.json" 2>"$OUT/models.err" || log "could not list models (continuing with $MODEL only)"
+  if ! curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" \
+    >"$OUT/models.json" 2>"$OUT/models.err"; then
+    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat "$OUT/models.err")"
+    SKIP_AGENT=unreachable
+  fi
+fi
+if [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
+  agent_exit=-2
+elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   MODEL="$MODEL" ALLOW_WEB="${ALLOW_WEB:-0}" node -e '
     const fs = require("fs");
     let ids = [];
@@ -57,7 +64,8 @@ if [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
     };
     fs.writeFileSync(require("os").homedir() + "/.config/opencode/opencode.json", JSON.stringify(cfg, null, 2));
   '
-  prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" /opt/agent-box/preamble.md; cat /in/task.md)"
+  preamble=/opt/agent-box/preamble.md; [ "${REVIEW:-0}" = 1 ] && preamble=/opt/agent-box/preamble-review.md
+  prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"; cat /in/task.md)"
   variant_args=(); [ -n "${VARIANT:-}" ] && variant_args=(--variant "$VARIANT")
   log "agent: omniroute/$MODEL, timeout ${TIMEOUT_MIN}m"
   timeout --kill-after=30 "${TIMEOUT_MIN}m" \
@@ -67,15 +75,24 @@ if [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   log "agent exit $agent_exit"
 fi
 
-# 4. Anything the agent left uncommitted becomes one labelled commit, so nothing is lost.
+# 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
+#    becomes one labelled commit, so nothing is lost.
 leftovers=0
-if [ -n "$(git status --porcelain)" ]; then
+review_violation=false
+if [ "${REVIEW:-0}" = 1 ]; then
+  if [ -n "$(git status --porcelain)" ] || [ "$(git rev-list --count "$BASE_SHA..HEAD")" -gt 0 ]; then
+    review_violation=true
+    { git status --porcelain; git log --oneline "$BASE_SHA..HEAD"; } >"$OUT/review-violation.txt"
+    log "review run modified the repo; changes discarded"
+  fi
+  git reset -q --hard "$BASE_SHA"; git clean -qfd
+elif [ -n "$(git status --porcelain)" ]; then
   git add -A && git commit -q -m "agent-box: uncommitted changes left by the agent" && leftovers=1
 fi
 
-# 5. Tests, run by the harness, never trusted from the agent.
+# 5. Tests, run by the harness, never trusted from the agent. Skipped for read-only reviews.
 test_exit=-1
-if [ "$setup_exit" = 0 ]; then
+if [ "$setup_exit" = 0 ] && [ "${REVIEW:-0}" != 1 ]; then
   log "test: $TEST_CMD"
   bash -lc "$TEST_CMD" >"$OUT/test.log" 2>&1; test_exit=$?
   log "test exit $test_exit"
@@ -93,6 +110,8 @@ jq -n \
   --argjson commits "$commits" --argjson leftovers "$leftovers" \
   --argjson setup "$setup_exit" --argjson agent "$agent_exit" --argjson test "$test_exit" \
   --argjson seconds "$(( $(date +%s) - started ))" \
+  --argjson review "${REVIEW:-0}" --argjson violation "$review_violation" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
-    setup_exit:$setup, agent_exit:$agent, test_exit:$test, seconds:$seconds}' >"$OUT/summary.json"
+    setup_exit:$setup, agent_exit:$agent, test_exit:$test, seconds:$seconds,
+    review:($review==1), review_violation:$violation}' >"$OUT/summary.json"
 log "done"
