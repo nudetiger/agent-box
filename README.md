@@ -201,29 +201,27 @@ and recalled what it read in round 1 (cache read 155k tokens).
 
 | role | model | use |
 | --- | --- | --- |
-| implement | `gemini-3.8-flash-tiered` high | **main worker** (largest quota) |
-| implement-hard, implement-alt | `deepseek/deepseek-flash-max` | retry after a gate failure; fan-out partner (bench 4/5, fastest) |
-| implement-alt2 | `cu/composer-2.5-fast` | third fan-out candidate, selected only by tests |
-| quick | `cu/composer-2.5-fast` | trivial edits whose place is known; the gate decides |
-| escalate, last-resort | `antigravity/claude-opus-4-6-thinking` | after two cheap gate failures; one attempt with the full history |
+| implement | `gemini-3.8-flash-tiered` high | **every coding task starts here** |
+| implement-hard | `deepseek/deepseek-flash-max` | retry after a gate failure (a different family) |
+| quick | `deepseek/deepseek-flash-max` | trivial edits whose place is known |
+| escalate (= last-resort) | `antigravity/claude-opus-4-6-thinking` | after two failed rounds, with the failure history |
 | write / draft | Opus 4.6 / Gemini 3.8 Flash high | prose that ships / drafts |
-| review / review-alt | DeepSeek Flash / Opus 4.6 | default two-family review gate (read-only) |
-| review-gemini | Gemini 3.8 Flash high | reviewer when the change came from DeepSeek |
-| review-kimi | Kimi K3 (`cursor/kimi-k3-high`) | third view on risky diffs, until 2026-10-24 |
-| deep-review | Opus 4.6 | large or risky diffs (read-only) |
-| bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
-| adjudicate | Kimi K3, Opus 4.6 after 2026-10-24 | settles a disputed finding (read-only) |
-| advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |
 | explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
+| bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
 | tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
-| review-spec / review-std | DeepSeek Flash / Opus 4.6 | ticket mode: the two review axes |
+| review-spec | `deepseek/deepseek-flash` | requirements, edge cases, test strength, against the spec |
+| review-std | Opus 4.6 | the repo's documented standards, design, smells |
+| adjudicate | Kimi K3 (`cursor/kimi-k3-high`), Opus after 2026-10-24 | settles a disputed finding (read-only) |
+| advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |
 
-Budget (user, 2026-10-12): Gemini has the largest quota and does the bulk; DeepSeek is cheap, used where
-it is strong; Opus 4.6 has ~$30-40 per 5 hours; Kimi K3 has $20 that ends 2026-10-24. Quota pools: Opus
-and Sonnet share one, all Gemini models share one; Composer, Kimi and DeepSeek each have their own.
-Sonnet is unused: it would spend Opus's pool. Composer
-misreported tool results and passed an impossible task without BLOCKED (research/findings.md §6), so it
-works only where a test decides and its words are never trusted: no reviews, research or advice.
+One worker per task; `fanout` stays available but no workflow uses it. `review` and ticket mode run the
+same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
+
+Budget (user, 2026-10-12/13). Quota pools: Opus and Sonnet share one, all Gemini models share one;
+DeepSeek and Kimi each have their own. Gemini does the bulk; DeepSeek takes retries, the quick lane and
+the spec review; Opus (~$30-40 per 5 hours) the standards review, escalation and prose; Kimi K3 ($20,
+ends 2026-10-24) advice and disputed findings. Unused: Sonnet (spends Opus's pool) and Composer
+(misreported tool results and passed an impossible task without BLOCKED, research/findings.md §6).
 
 For Antigravity Gemini, `high`, `xhigh` and `max` map to the same 32768-token thinking budget, so `high`
 is the top tier. OmniRoute drops `reasoning_effort` for `antigravity/claude-*`, and Cursor ids carry

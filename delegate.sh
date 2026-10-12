@@ -45,8 +45,9 @@ Usage: delegate.sh <command> ...
                                  (run --no-ask: the worker gets no ask_orchestrator tool)
   fanout   <repo> <task.md> --roles a,b[,c] [--name N] [run options]
                                  Same task on several roles in parallel; prints a comparison table
-  review   <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]
-                                 Generated read-only review by several reviewers in parallel
+  review   <repo> <branch> [--spec FILE ...] [--roles a,b] [--against REF] [--focus TEXT]
+                                 Read-only review on two axes in parallel: review-spec (DeepSeek) and
+                                 review-std (Opus), both given the branch's task and every --spec
   ask      <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
@@ -554,14 +555,18 @@ cmd_fanout() {
 # Read-only review of a branch by several reviewers in parallel. The review task is generated: the
 # changed files feed the context pack, and when the branch came from an agent-box run its original
 # task is quoted so reviewers can check the change against what was asked.
+# Two axes, the same prompts as ticket mode: review-spec (does it do what the spec asks, edge cases,
+# tests) and review-std (the repo's standards). Both get the spec: the branch's own task when agent-box
+# made it, plus every --spec file.
 cmd_review() {
   local repo="$1" branch="$2"; shift 2
-  local roles="${REVIEW_ROLES:-review,review-alt}" against="" focus=""
+  local roles="${REVIEW_ROLES:-review-spec,review-std}" against="" focus="" specs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --roles) roles="$2"; shift 2 ;;
       --against) against="$2"; shift 2 ;;
       --focus) focus="$2"; shift 2 ;;
+      --spec) [ -f "$2" ] || die "no such spec file $2"; specs+=("$2"); shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -572,27 +577,35 @@ cmd_review() {
   local base; base="$(git -C "$REPO" merge-base "$against" "$branch")"
   local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
   local tdir="$BOX/runs/$PROJECT/.review-$stamp"; mkdir -p "$tdir"
-  local task="$tdir/task.md" origin="$BOX/runs/$PROJECT/${branch#agent/}/task-body.md"
+  local body="$tdir/body.md" origin="$BOX/runs/$PROJECT/${branch#agent/}/task-body.md" f
+  [ -f "$origin" ] || [ ${#specs[@]} -gt 0 ] || echo "agent-box: warning: no spec: $branch was not made by agent-box and no --spec was given" >&2
   {
-    echo "---"
-    echo "files:"; git -C "$REPO" diff --name-only "$base" "$branch" | sed 's/^/  - /'
-    echo "---"
+    echo
     echo "Review the change on this branch: \`git diff $base..HEAD\` ($(git -C "$REPO" rev-list --count "$base..$branch") commits)."
     echo
     git -C "$REPO" log --format='- %h %s' "$base..$branch"
     if [ -f "$origin" ]; then
-      echo; echo "The change was made for this task. Check that it does what was asked, no more and no less:"; echo
-      sed 's/^/> /' "$origin"
+      echo; echo "## The task the change was made for"; echo; sed 's/^/> /' "$origin"
     fi
-    echo
-    echo "Look for: correctness bugs the change introduces, requirements it misses, rules from the context pack it breaks,"
-    echo "tests that were weakened or that do not prove what their names claim, and edge cases on the changed lines."
+    for f in "${specs[@]}"; do
+      echo; echo "## Spec: $(basename "$f")"; echo; sed 's/^/> /' "$f"
+    done
     [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
-  } >"$task"
-  local names=() r
+  } >"$body"
+  local names=() r prompt
   for r in ${roles//,/ }; do
+    case "$r" in
+      review-spec) prompt="$BOX/lib/ticket/review-spec.md" ;;
+      review-std) prompt="$BOX/lib/ticket/review-standards.md" ;;
+      *) prompt="" ;;
+    esac
+    {
+      echo "---"; echo "files:"; git -C "$REPO" diff --name-only "$base" "$branch" | head -n 40 | sed 's/^/  - /'; echo "---"
+      [ -n "$prompt" ] && cat "$prompt"
+      cat "$body"
+    } >"$tdir/task-$r.md"
     local n="rv-$stamp-$r"
-    REVIEW_TARGET="$branch" "$0" run "$repo" "$task" --role "$r" --review --base "$branch" --name "$n" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    REVIEW_TARGET="$branch" "$0" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
   wait
