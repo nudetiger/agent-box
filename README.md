@@ -1,87 +1,131 @@
 # agent-box
 
-Runs an [OpenCode](https://opencode.ai) worker on a git repo inside a disposable Docker container,
-with models served through OmniRoute. Built for Claude Code to delegate to.
+Runs [OpenCode](https://opencode.ai) workers on a git repo inside disposable Podman or Docker
+containers, with models served through OmniRoute. Built for Claude Code to orchestrate: it plans,
+writes acceptance tests, runs the gate and merges; workers implement and review.
+
+Evidence behind the design: [research/workflow.md](research/workflow.md) (which pipeline shapes pay
+off) and [research/opencode-customization.md](research/opencode-customization.md) (OpenCode skills,
+agents, effort, permissions; OmniRoute behaviour).
 
 ## Trust boundary
 
-- **In:** a `git bundle` of one committed revision, the task file, and the project's OmniRoute key.
-  Nothing else: no host `.git`, no home directory, no SSH keys, no `gh` token, no uncommitted work.
-- **Out:** a `git bundle` of the worker's commits, fetched into the repo as branch `agent/<name>`,
-  plus logs. No file written by the container is ever executed on the host.
-- **Container:** non-root `node` user, `--cap-drop ALL`, `no-new-privileges`, pid and memory limits.
-  Removed after every run.
-- **Not covered:** network egress is open (needed for `npm ci`). A hostile model can send out the
-  repo source and the OmniRoute key, nothing more. Shared kernel (`runc`), not a VM.
-- The npm cache is a shared named volume (`agent-box-npm-cache`). npm checks lockfile integrity
-  hashes, so a poisoned cache entry fails install instead of being used.
+- **In:** a `git bundle` of one committed revision, the task, a generated context pack, and the
+  project's OmniRoute key. No host `.git`, home directory, SSH keys, `gh` token or uncommitted work.
+- **Out:** a `git bundle` of the worker's commits, fetched as branch `agent/<name>`, plus logs. No file
+  written by the container is ever executed on the host.
+- **Container:** non-root `node` user, `--cap-drop ALL`, `no-new-privileges`, `--init`, pid and memory
+  limits. Removed after every run.
+- **Not covered:** network egress is open (needed for `npm ci`). A hostile model can send out the repo
+  source and the OmniRoute key, nothing more. Shared kernel (`runc`), not a VM.
+- The npm cache is a shared named volume (`agent-box-npm-cache`); npm checks lockfile integrity hashes.
 
 ## Setup per project
 
 ```bash
-cp projects/example.env projects/<repo-folder-name-lowercase>.env   # fill OMNIROUTE_API_KEY, DEFAULT_MODEL
-./delegate.sh models  /path/to/repo      # which model ids the key can use
+cp projects/example.env projects/<repo-folder-name-lowercase>.env   # fill OMNIROUTE_API_KEY
+./delegate.sh models   /path/to/repo     # model ids the key can use
 ./delegate.sh baseline /path/to/repo     # setup + tests with no agent: know the starting state
 ```
 
-## Use
+Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (see below).
+
+## Commands
 
 ```bash
-./delegate.sh run /path/to/repo task.md --role <role> [--name N] [--base REF] [--timeout MIN] [--test CMD]
-./delegate.sh run /path/to/repo task.md --model <id> [--review] [--variant V] [--web] ...
-./delegate.sh show /path/to/repo <name>
+./delegate.sh run    <repo> <task.md> --role <role> [--name N] [--base REF] [--timeout MIN] [--test CMD]
+./delegate.sh run    <repo> <task.md> --model <id> [--effort E] [--review] [--web] ...
+./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
+./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
+./delegate.sh show   <repo> <name>
 ./delegate.sh clean
 ```
 
-Each run prints a report: `summary.json` (exit codes of setup, agent and tests, commit count),
-commits, diffstat, the test tail, token totals and the agent's final message. Full logs stay in
-`runs/<project>/<name>/`. The agent's message is a claim; `test_exit` and the diff are evidence.
+Each run leaves `runs/<project>/<name>/`: `summary.json` (setup/agent/test exit codes, commits,
+`blocked`, `sealed_violation`, `review_violation`), `final.md` (the worker's last message),
+`prompt.md` (exactly what it was given), `context.md`, `test.log`, `events.jsonl`. The worker's message
+is a claim; `test_exit`, the flags and the diff are evidence.
 
-`--test CMD` overrides the project's `TEST_CMD` for one run, e.g. a single test file.
+## The task file and the context pack
 
-`--web` allows OpenCode's `webfetch` tool, which is denied by default (prompt-injection surface).
+```markdown
+---
+files: [lykos/providers/gitlab-duo/oauth.ts]       # what the change is about
+sealed: [lykos/providers/gitlab-duo/oauth.test.ts] # worker cannot edit these
+test: "npx tsx --test some.test.ts"                # optional; default: sibling tests of `files`
+---
+Objective, required behaviour, out of scope.
+```
 
-## Roles
+`lib/pack.mjs` turns that into `context.md` deterministically: no model involved, same input gives the
+same pack. From the context map it adds the areas the files belong to, their governing docs and ADRs,
+the rules a change there can break, glossary definitions quoted from the repo, recent commits per
+file, related tests and the narrowest verification command. It points at files; it does not paste them.
 
-Defined in `agent-box.conf`. `--role` picks the model; `review` and `bughunt` are read-only.
+**Sealed files** are enforced twice: an OpenCode `edit` deny rule, and a post-run diff check that
+reverts any change made through bash before the harness runs the tests, flagged as `SEALED-EDIT`.
 
-| role | model | job |
+**BLOCKED**: workers are told they may stop with `BLOCKED: <reason>` when the task cannot be done as
+written; the harness records it. This exit cut test-cheating sharply in ImpossibleBench (see research).
+
+## Roles (`agent-box.conf`)
+
+| role | model | use |
 | --- | --- | --- |
-| implement | `deepseek/deepseek-flash` | default worker: specified features, bug fixes, tests |
-| implement-hard | `deepseek/deepseek-flash-high` | retry of a failed implement, cross-module work |
-| feature | `gemini-3.8-flash-tiered` | multi-file features and refactors, parallel second attempt |
-| easy | `cx/gpt-5.6-luna-xhigh` | mechanical edits: renames, moves, lint/type fixes, boilerplate |
-| write | `cx/gpt-5.6-terra-medium` | prose: docs, ADR drafts, README, issue text |
-| review, bughunt | `antigravity/gemini-3.1-pro-high` | read-only review or bug hunt; findings in the report |
+| implement | `deepseek/deepseek-flash` | default implementer |
+| implement-hard | `deepseek/deepseek-flash-high` | cross-module work, retry after a failed gate |
+| feature / feature-hard | `gemini-3.8-flash-tiered` medium / high | second family, parallel attempt |
+| escalate | `antigravity/claude-sonnet-4-6` | after two cheap gate failures |
+| last-resort | `antigravity/claude-opus-4-6-thinking` | one attempt with the full failure history |
+| write / draft | Sonnet 4.6 / Gemini 3.8 Flash | prose that ships / throwaway prose |
+| review / review-alt | DeepSeek Flash / Gemini 3.8 Flash | default two-family review gate (read-only) |
+| deep-review, bughunt | `antigravity/gemini-3.1-pro-high` | slow, thorough; large or risky diffs (read-only) |
+| adjudicate | Opus 4.6 thinking | settles a disputed high-severity finding (read-only) |
 
-A read-only run (`--review` or a read-only role) discards every edit, records any attempt in
-`review-violation.txt`, skips tests, and fetches no branch.
+Sonnet and Opus are never a first attempt and never in a fan-out. OmniRoute drops `reasoning_effort`
+for `antigravity/claude-*`, so those roles carry no effort. Codex/GPT models are excluded: they fail
+at multi-step agent work through this router.
+
+## Inside the container
+
+`image/make-config.mjs` writes the OpenCode config per run:
+
+- **`worker`** agent (edits; sealed globs denied) or **`reviewer`** agent (no edits in the repo;
+  scratch files under `/tmp`).
+- **`scout`** subagent on DeepSeek Flash: read-only search that every worker may call, so premium
+  workers spend their quota on reasoning.
+- **Skills**: the project's own `.claude/skills/` (filtered by `worker_skills` in the context map, so
+  skills that interview a human are hidden) plus agent-box's `box-verify` and `box-prove-finding`.
+- `reasoning_effort` from the role, as a model option.
 
 ## Engine
 
-`AGENT_BOX_ENGINE` in `agent-box.conf` (or the environment): `podman` or `docker`. Build once per
-engine. Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
+`AGENT_BOX_ENGINE` in `agent-box.conf`: `podman` (default) or `docker`. Build once per engine.
+Podman needs user-mode networking (`podman machine set --user-mode-networking`), because OmniRoute
+listens on 127.0.0.1 and only gvproxy's host address reaches the host's loopback.
+
+Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 
 | | Docker 29.6.2 | Podman 6.1.3 |
 | --- | --- | --- |
 | image | 2.15 GB | 1.55 GB |
 | `npm ci` | 27 s | 22 s |
 | test suite | 504 s | 653 s |
-| wall | 543 s | 683 s |
-| Windows-side processes, idle | ~770 MB (Docker Desktop, backend, agent, build) | ~13 MB (win-sshproxy) |
-
-Both run inside the same WSL2 VM (`vmmem`), so the VM's memory is shared and not attributed here.
-Podman's RAM saving only appears once Docker Desktop is closed.
+| Windows-side processes, idle | ~770 MB | ~13 MB |
 
 ## Files
 
 | | |
 | --- | --- |
-| `delegate.sh` | Host side: bundle in, container lifecycle, bundle out, fetch, report |
-| `image/run-task.sh` | Container side: clone, setup, OpenCode, leftover commit, tests, bundle |
-| `image/preamble.md`, `image/preamble-review.md` | Operating conditions prepended to every task / review |
-| `agent-box.conf` | Engine and roles |
+| `delegate.sh` | Host side: pack, bundle in, container lifecycle, bundle out, fetch, report, fanout, review |
+| `lib/pack.mjs` | Deterministic context pack |
+| `image/run-task.sh` | Container side: clone, setup, config, OpenCode, sealed check, tests, bundle |
+| `image/make-config.mjs` | Per-run OpenCode config: agents, scout, permissions, skills, effort |
+| `image/preamble*.md`, `image/skills/` | Operating conditions and worker skills |
+| `agent-box.conf` | Engine, roles, review defaults, scout model |
 | `projects/*.env` | Per-project key and settings. Git-ignored |
+| `projects/*.context.yaml` | Per-project context map |
+| `research/` | The research this design rests on |
 | `runs/` | Run outputs. Git-ignored |
 
 After changing anything under `image/`, run `./delegate.sh build`. To update OpenCode, change

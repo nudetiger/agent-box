@@ -29,6 +29,10 @@ Usage: delegate.sh <command> ...
                                  Run one task. Result lands as branch agent/<name> in <repo>.
                                  --role picks the model from agent-box.conf. --review (or a read-only
                                  role) discards every edit and skips tests; the output is the report.
+  fanout   <repo> <task.md> --roles a,b[,c] [--name N] [run options]
+                                 Same task on several roles in parallel; prints a comparison table
+  review   <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]
+                                 Generated read-only review by several reviewers in parallel
   show     <repo> <name>         Print a finished run's report again
   clean                          Remove leftover agent-box containers
 
@@ -131,7 +135,8 @@ launch() {
     local pack_test; pack_test="$(node -e 'console.log(JSON.parse(process.argv[1]).test)' "$meta")"
     if [ -z "${TEST_FROM_FLAG:-}" ] && [ -n "$pack_test" ]; then TEST_CMD="$pack_test"; fi
     node -e 'for (const w of JSON.parse(process.argv[1]).warnings) console.error("agent-box: pack: " + w)' "$meta"
-    export SEALED TEST_CMD
+    SKILLS_ALLOW="$(node -e 'console.log(JSON.parse(process.argv[1]).skills.join(","))' "$meta")"
+    export SEALED TEST_CMD SKILLS_ALLOW
   fi
 
   local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
@@ -141,7 +146,8 @@ launch() {
   # the gateway Podman would inject reaches the WSL interface, not loopback.
   local host_ip="host-gateway"
   if [ "$ENGINE" = podman ]; then
-    host_ip="$(podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r')"
+    # podman machine ssh writes its known-hosts file to "NUL", a real file under Git Bash: run it in runs/.
+    host_ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
     [ -n "$host_ip" ] || host_ip="192.168.127.254"
   fi
   export BRANCH="$branch" BASE_SHA="$base_sha" SKIP_AGENT="$skip_agent"
@@ -150,7 +156,7 @@ launch() {
     --add-host "host.docker.internal:$host_ip" \
     -v agent-box-npm-cache:/home/node/.npm \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
-    -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED \
+    -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
     "$IMAGE" >/dev/null
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
   if [ -n "$task" ]; then
@@ -180,16 +186,17 @@ cmd_run() {
   [ -f "$task" ] || die "task file not found: $task"
   load_project "$repo"; need_key
   local name="" base="HEAD" role=""
-  MODEL="${DEFAULT_MODEL:-}" VARIANT="" ALLOW_WEB=0 REVIEW=0
+  MODEL="${DEFAULT_MODEL:-}" EFFORT="" VARIANT="" ALLOW_WEB=0 REVIEW=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --role) role="$2"; shift 2
         local var="ROLE_${role//-/_}"
         [ -n "${!var:-}" ] || die "unknown role $role (define $var in agent-box.conf)"
-        MODEL="${!var}"
+        read -r MODEL EFFORT <<<"${!var}"
         case " ${READ_ONLY_ROLES:-} " in *" $role "*) REVIEW=1 ;; esac ;;
       --review) REVIEW=1; shift ;;
-      --model) MODEL="$2"; shift 2 ;;
+      --model) MODEL="$2"; EFFORT=""; shift 2 ;;
+      --effort) EFFORT="$2"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       --base) base="$2"; shift 2 ;;
       --timeout) TIMEOUT_MIN="$2"; shift 2 ;;
@@ -200,13 +207,105 @@ cmd_run() {
     esac
   done
   [ -n "$MODEL" ] || die "no model: pass --role, --model or set DEFAULT_MODEL"
-  export MODEL VARIANT ALLOW_WEB REVIEW
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL="${SCOUT_MODEL:-}"
   [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
 }
 
+# One line per run: the evidence an orchestrator selects on. Agent claims are not in it.
+table() {
+  local dir="$1"; shift
+  printf '%-28s %-34s %5s %5s %4s %6s %s\n' run model test agent cmts secs flags
+  for n in "$@"; do
+    local s="$dir/$n/summary.json"
+    [ -f "$s" ] || { printf '%-28s (no summary)\n' "$n"; continue; }
+    node -e '
+      const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const flags = [s.blocked && "BLOCKED", (s.sealed_violation || []).length && "SEALED-EDIT", s.review_violation && "REVIEW-EDIT"].filter(Boolean).join(",");
+      console.log([process.argv[2].padEnd(28), String(s.model).padEnd(34), String(s.test_exit).padStart(5), String(s.agent_exit).padStart(5),
+        String(s.commits).padStart(4), String(s.seconds).padStart(6), flags].join(" "));
+    ' "$(winpath "$s")" "$n"
+  done
+}
+
+# Same task, several roles in parallel, each on its own branch. Selection is the caller's: by tests,
+# then by diff review, never by the workers' own reports.
+cmd_fanout() {
+  local repo="$1" task="$2"; shift 2
+  local roles="" name="" passthru=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --roles) roles="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      *) passthru+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$roles" ] || die "fanout needs --roles a,b[,c]"
+  load_project "$repo"
+  [ -n "$name" ] || name="fan-$(date +%Y%m%d-%H%M%S)"
+  local names=() r
+  for r in ${roles//,/ }; do
+    "$0" run "$repo" "$task" --role "$r" --name "$name-$r" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name-$r.log" 2>&1 &
+    names+=("$name-$r"); sleep 2
+  done
+  wait
+  table "$BOX/runs/$PROJECT" "${names[@]}"
+}
+
+# Read-only review of a branch by several reviewers in parallel. The review task is generated: the
+# changed files feed the context pack, and when the branch came from an agent-box run its original
+# task is quoted so reviewers can check the change against what was asked.
+cmd_review() {
+  local repo="$1" branch="$2"; shift 2
+  local roles="${REVIEW_ROLES:-review,review-alt}" against="" focus=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --roles) roles="$2"; shift 2 ;;
+      --against) against="$2"; shift 2 ;;
+      --focus) focus="$2"; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  load_project "$repo"
+  git -C "$REPO" rev-parse --verify --quiet "$branch^{commit}" >/dev/null || die "no such branch $branch"
+  [ -n "$against" ] || against="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo HEAD)"
+  local base; base="$(git -C "$REPO" merge-base "$against" "$branch")"
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  local tdir="$BOX/runs/$PROJECT/.review-$stamp"; mkdir -p "$tdir"
+  local task="$tdir/task.md" origin="$BOX/runs/$PROJECT/${branch#agent/}/task-body.md"
+  {
+    echo "---"
+    echo "files:"; git -C "$REPO" diff --name-only "$base" "$branch" | sed 's/^/  - /'
+    echo "---"
+    echo "Review the change on this branch: \`git diff $base..HEAD\` ($(git -C "$REPO" rev-list --count "$base..$branch") commits)."
+    echo
+    git -C "$REPO" log --format='- %h %s' "$base..$branch"
+    if [ -f "$origin" ]; then
+      echo; echo "The change was made for this task. Check that it does what was asked, no more and no less:"; echo
+      sed 's/^/> /' "$origin"
+    fi
+    echo
+    echo "Look for: correctness bugs the change introduces, requirements it misses, rules from the context pack it breaks,"
+    echo "tests that were weakened or that do not prove what their names claim, and edge cases on the changed lines."
+    [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
+  } >"$task"
+  local names=() r
+  for r in ${roles//,/ }; do
+    local n="rv-$stamp-$r"
+    "$0" run "$repo" "$task" --role "$r" --review --base "$branch" --name "$n" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    names+=("$n"); sleep 2
+  done
+  wait
+  table "$BOX/runs/$PROJECT" "${names[@]}"
+  for n in "${names[@]}"; do
+    echo; echo "################ $n"; cat "$BOX/runs/$PROJECT/$n/final.md" 2>/dev/null || echo "(no final message)"
+  done
+}
+
 case "${1:-}" in
   build) cmd_build ;;
+  fanout) shift; cmd_fanout "$@" ;;
+  review) shift; cmd_review "$@" ;;
   models) shift; cmd_models "$@" ;;
   baseline) shift; cmd_baseline "$@" ;;
   run) shift; cmd_run "$@" ;;

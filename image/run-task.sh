@@ -43,36 +43,16 @@ fi
 if [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
   agent_exit=-2
 elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
-  MODEL="$MODEL" ALLOW_WEB="${ALLOW_WEB:-0}" node -e '
-    const fs = require("fs");
-    let ids = [];
-    try { ids = (JSON.parse(fs.readFileSync("/out/models.json", "utf8")).data || []).map(m => m.id); } catch {}
-    if (!ids.includes(process.env.MODEL)) ids.push(process.env.MODEL);
-    const models = Object.fromEntries(ids.map(id => [id, { name: id }]));
-    const cfg = {
-      $schema: "https://opencode.ai/config.json",
-      autoupdate: false,
-      share: "disabled",
-      model: "omniroute/" + process.env.MODEL,
-      provider: { omniroute: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "OmniRoute",
-        options: { baseURL: "{env:OMNIROUTE_BASE_URL}", apiKey: "{env:OMNIROUTE_API_KEY}" },
-        models,
-      } },
-      permission: { webfetch: process.env.ALLOW_WEB === "1" ? "allow" : "deny" },
-    };
-    fs.writeFileSync(require("os").homedir() + "/.config/opencode/opencode.json", JSON.stringify(cfg, null, 2));
-  '
+  agent_name="$(node /opt/agent-box/make-config.mjs)" || { log "config generation failed"; exit 12; }
   preamble=/opt/agent-box/preamble.md; [ "${REVIEW:-0}" = 1 ] && preamble=/opt/agent-box/preamble-review.md
   prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"
             [ -f /in/context.md ] && { echo; cat /in/context.md; }
             printf '\n# Task\n\n'; cat /in/task.md)"
   printf '%s\n' "$prompt" >"$OUT/prompt.md"
   variant_args=(); [ -n "${VARIANT:-}" ] && variant_args=(--variant "$VARIANT")
-  log "agent: omniroute/$MODEL, timeout ${TIMEOUT_MIN}m"
+  log "agent: $agent_name on omniroute/$MODEL${EFFORT:+ ($EFFORT)}${SCOUT_MODEL:+, scout $SCOUT_MODEL}, timeout ${TIMEOUT_MIN}m"
   timeout --kill-after=30 "${TIMEOUT_MIN}m" \
-    opencode run --auto --format json -m "omniroute/$MODEL" "${variant_args[@]}" --title "$BRANCH" "$prompt" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${variant_args[@]}" --title "$BRANCH" "$prompt" \
     >"$OUT/events.jsonl" 2>"$OUT/opencode.log"
   agent_exit=$?
   log "agent exit $agent_exit"
