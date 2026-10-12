@@ -219,8 +219,9 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | review-spec / review-std | DeepSeek Flash / Opus 4.6 | ticket mode: the two review axes |
 
 Budget (user, 2026-10-12): Gemini has the largest quota and does the bulk; DeepSeek is cheap, used where
-it is strong; Opus 4.6 has ~$30-40 per 5 hours; Kimi K3 has $20 that ends 2026-10-24. Sonnet 4.6 has no
-role: Opus or Gemini is better at each job, so it is only a stand-in when Opus is rate-limited. Composer
+it is strong; Opus 4.6 has ~$30-40 per 5 hours; Kimi K3 has $20 that ends 2026-10-24. Quota pools: Opus
+and Sonnet share one, all Gemini models share one; Composer, Kimi and DeepSeek each have their own.
+Sonnet is unused: it would spend Opus's pool. Composer
 misreported tool results and passed an impossible task without BLOCKED (research/findings.md §6), so it
 works only where a test decides and its words are never trusted: no reviews, research or advice.
 
