@@ -1,0 +1,358 @@
+<title>Agent-box Workflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single wide schematic (a wiring diagram of the pipeline) above two quiet reference columns. */
+:root {
+  --bg: #f2f4f6;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5b6878;
+  --line: #c9d1db;
+  --accent: #2f55d4;
+  --gemini: #0f8f84;
+  --composer: #c27a0e;
+  --deepseek: #5a46c8;
+  --claude: #c4513a;
+  --pass: #1f8a4c;
+  --fail: #c23b3b;
+  --display: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141b; --panel: #151e28; --ink: #e4e9ef; --muted: #93a1b2; --line: #2c3a4a;
+    --accent: #7d9bff; --gemini: #3cc6b8; --composer: #e6a33c; --deepseek: #9d8cff; --claude: #f08a72;
+    --pass: #4fcf86; --fail: #f07070; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141b; --panel: #151e28; --ink: #e4e9ef; --muted: #93a1b2; --line: #2c3a4a;
+  --accent: #7d9bff; --gemini: #3cc6b8; --composer: #e6a33c; --deepseek: #9d8cff; --claude: #f08a72;
+  --pass: #4fcf86; --fail: #f07070; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-weight: 800; font-size: clamp(28px, 4.2vw, 44px); line-height: 1.05; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+.lede { margin: 0; max-width: 68ch; color: var(--muted); }
+h2 { font-family: var(--display); font-weight: 700; font-size: 19px; margin: 0 0 10px; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tabs button {
+  font: 500 14px var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; padding: 7px 14px; cursor: pointer;
+}
+.tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+.tabs button:focus-visible, .ctl:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.board { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 14px; padding-block: 16px; padding-inline: 16px; }
+.board-top { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.ctl { font: 500 13px var(--mono); background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.scroll { overflow-x: auto; }
+svg.diagram { display: block; width: 100%; min-width: 860px; height: auto; }
+.node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; transition: opacity .3s, stroke .3s; }
+.node.on rect { stroke: var(--ink); }
+.node text { fill: var(--ink); font-family: var(--body); font-size: 13px; }
+.node .t { font-family: var(--display); font-weight: 700; font-size: 15px; }
+.node .s { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.node.off { opacity: .28; }
+.edge { fill: none; stroke: var(--line); stroke-width: 2; transition: opacity .3s, stroke .3s; }
+.edge.on { stroke: var(--muted); }
+.edge.off { opacity: .25; }
+.edge.dash { stroke-dasharray: 5 5; }
+.tag { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.band { stroke-width: 6; }
+.pulse { transition: opacity .25s; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+.steps { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 80ch; }
+.steps li::marker { font-family: var(--mono); color: var(--muted); }
+.steps code, td code, p code { font-family: var(--mono); font-size: .9em; }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.cols > section { min-width: 0; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.who { display: inline-flex; align-items: center; gap: 7px; }
+.chip { font: 500 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.chip.pass { color: var(--pass); }
+.chip.pick { color: var(--accent); }
+.note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+@media (prefers-reduced-motion: reduce) { .pulse { display: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">agent-box · Lykos · 12 Oct 2026</span>
+    <h1>How a task moves through the box</h1>
+    <p class="lede">Claude Opus plans and owns the gate. Sandboxed OpenCode workers implement and review. Every pulse below is a task branch; it only reaches master by passing tests the worker could not edit, then a review by another model family.</p>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Workflow">
+    <button role="tab" id="tab-small" aria-selected="false" data-flow="small">Small fix</button>
+    <button role="tab" id="tab-feature" aria-selected="true" data-flow="feature">Feature</button>
+    <button role="tab" id="tab-hard" aria-selected="false" data-flow="hard">Hard bug</button>
+    <button role="tab" id="tab-review" aria-selected="false" data-flow="review">Review gate</button>
+  </div>
+
+  <div class="board">
+    <div class="board-top">
+      <div class="legend" aria-label="Model families">
+        <span><i class="sw" style="background:var(--gemini)"></i>Gemini</span>
+        <span><i class="sw" style="background:var(--composer)"></i>Cursor Composer</span>
+        <span><i class="sw" style="background:var(--deepseek)"></i>DeepSeek</span>
+        <span><i class="sw" style="background:var(--claude)"></i>Claude</span>
+      </div>
+      <button class="ctl" id="pause" type="button" aria-pressed="false">Pause</button>
+    </div>
+    <div class="scroll">
+      <svg class="diagram" viewBox="0 0 1000 560" role="img" aria-labelledby="dtitle">
+        <title id="dtitle">Pipeline: brief and sealed test, context pack, parallel workers in containers, harness gate, two-family review, merge; escalation to Sonnet and Opus after repeated gate failures.</title>
+        <g id="edges">
+          <path class="edge" id="e-brief-pack" d="M150,280 L180,280"/>
+          <path class="edge" id="e-pack-gem" d="M300,280 C320,280 318,150 340,150"/>
+          <path class="edge" id="e-pack-comp" d="M300,280 L340,280"/>
+          <path class="edge" id="e-pack-ds" d="M300,280 C320,280 318,410 340,410"/>
+          <path class="edge" id="e-gem-gate" d="M510,150 C532,150 528,280 550,280"/>
+          <path class="edge" id="e-comp-gate" d="M510,280 L550,280"/>
+          <path class="edge" id="e-ds-gate" d="M510,410 C532,410 528,280 550,280"/>
+          <path class="edge" id="e-gate-review" d="M670,280 L710,280"/>
+          <path class="edge" id="e-review-merge" d="M840,280 L870,280"/>
+          <path class="edge" id="e-gate-merge" d="M670,280 C760,280 760,200 800,200 C840,200 850,280 870,280"/>
+          <path class="edge dash" id="e-gate-esc" d="M595,330 L595,450"/>
+          <path class="edge dash" id="e-esc-gate" d="M645,450 L645,330"/>
+          <path class="edge dash" id="e-advise" d="M85,150 L85,230"/>
+          <path class="edge" id="e-pack-review" d="M300,280 C330,280 330,530 520,530 C700,530 690,330 775,330"/>
+        </g>
+        <text class="tag" x="603" y="395">gate fails twice</text>
+        <text class="tag" x="653" y="420">retry with history</text>
+        <text class="tag" x="742" y="190">no review for a small fix</text>
+
+        <g class="node" id="n-advise"><rect x="20" y="70" width="130" height="80" rx="8" stroke-dasharray="5 4"/>
+          <text class="t" x="34" y="98">Advisor</text><text class="s" x="34" y="118">GPT-5.6 Sol · ask</text><text class="s" x="34" y="136">one pass · later</text></g>
+        <g class="node" id="n-brief"><rect x="20" y="230" width="130" height="100" rx="8"/>
+          <text class="t" x="34" y="258">Brief</text><text class="s" x="34" y="278">Claude Opus 5.5</text>
+          <text x="34" y="300">spec + failing</text><text x="34" y="318">sealed test</text></g>
+        <g class="node" id="n-pack"><rect x="180" y="230" width="120" height="100" rx="8"/>
+          <text class="t" x="194" y="258">Context</text><text class="s" x="194" y="278">lib/pack.mjs</text>
+          <text x="194" y="300">docs · traps ·</text><text x="194" y="318">tests · history</text></g>
+        <g class="node" id="n-gem"><rect x="340" y="110" width="170" height="80" rx="8" style="stroke:var(--gemini)"/>
+          <text class="t" x="354" y="137">Gemini 3.8 Flash</text><text class="s" x="354" y="157">main worker · medium</text><text class="s" x="354" y="175">+ scout · ponytail</text></g>
+        <g class="node" id="n-comp"><rect x="340" y="240" width="170" height="80" rx="8" style="stroke:var(--composer)"/>
+          <text class="t" x="354" y="267">Composer 2.5 fast</text><text class="s" x="354" y="287">second family</text><text class="s" x="354" y="305">fan-out partner</text></g>
+        <g class="node" id="n-ds"><rect x="340" y="370" width="170" height="80" rx="8" style="stroke:var(--deepseek)"/>
+          <text class="t" x="354" y="397">DeepSeek Flash</text><text class="s" x="354" y="417">max effort</text><text class="s" x="354" y="435">hard bugs only · paid</text></g>
+        <text class="tag" x="344" y="478">each worker: own Podman container, repo in and out as git bundles</text>
+        <g class="node" id="n-gate"><rect x="550" y="230" width="120" height="100" rx="8"/>
+          <text class="t" x="564" y="258">Gate</text><text class="s" x="564" y="278">harness, not agent</text>
+          <text x="564" y="300">tests rerun ·</text><text x="564" y="318">sealed · BLOCKED</text></g>
+        <g class="node" id="n-review"><rect x="710" y="230" width="130" height="100" rx="8"/>
+          <text class="t" x="724" y="258">Review</text><text class="s" x="724" y="278">read-only · 2 families</text>
+          <text x="724" y="300">DeepSeek +</text><text x="724" y="318">Composer</text></g>
+        <g class="node" id="n-merge"><rect x="870" y="230" width="110" height="100" rx="8"/>
+          <text class="t" x="884" y="258">Merge</text><text class="s" x="884" y="278">Claude Opus 5.5</text>
+          <text x="884" y="300">host rerun ·</text><text x="884" y="318">commit · push</text></g>
+        <g class="node" id="n-esc"><rect x="550" y="450" width="200" height="80" rx="8" style="stroke:var(--claude)"/>
+          <text class="t" x="564" y="477">Escalate</text><text class="s" x="564" y="497">Sonnet 4.6, then Opus 4.6</text><text class="s" x="564" y="515">never first, never fanned out</text></g>
+
+        <g id="pulses"></g>
+      </svg>
+    </div>
+    <ol class="steps" id="steps" aria-live="polite"></ol>
+  </div>
+
+  <div class="cols">
+    <section>
+      <h2>Who does what</h2>
+      <table>
+        <thead><tr><th>Role</th><th>Model</th></tr></thead>
+        <tbody>
+          <tr><td>implement</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.8 Flash, medium (high when hard)</span></td></tr>
+          <tr><td>implement-alt</td><td><span class="who"><i class="sw" style="background:var(--composer)"></i>Composer 2.5 fast</span></td></tr>
+          <tr><td>implement-alt2</td><td><span class="who"><i class="sw" style="background:var(--deepseek)"></i>DeepSeek Flash, max</span></td></tr>
+          <tr><td>review · review-alt</td><td><span class="who"><i class="sw" style="background:var(--deepseek)"></i>DeepSeek Flash · <i class="sw" style="background:var(--composer)"></i>Composer</span></td></tr>
+          <tr><td>deep-review · bughunt</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.1 Pro, high</span></td></tr>
+          <tr><td>escalate · last-resort</td><td><span class="who"><i class="sw" style="background:var(--claude)"></i>Sonnet 4.6 · Opus 4.6 thinking</span></td></tr>
+          <tr><td>scout (every worker)</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.8 Flash, read-only</span></td></tr>
+        </tbody>
+      </table>
+      <p class="note">Sonnet and Opus quota is limited: they never take a first attempt and never run in a fan-out. DeepSeek is paid per token, so it reviews and takes third attempts only.</p>
+    </section>
+    <section>
+      <h2>Runs so far</h2>
+      <table>
+        <thead><tr><th>Task</th><th>Worker</th><th class="num">Time</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Dual-loopback fix</td><td><span class="who"><i class="sw" style="background:var(--deepseek)"></i>DeepSeek Flash</span></td><td class="num">326 s</td><td><span class="chip pick">picked</span></td></tr>
+          <tr><td>Dual-loopback fix</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.8 Flash</span></td><td class="num">669 s</td><td><span class="chip pass">passed</span></td></tr>
+          <tr><td>Field-count comments</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.8 Flash</span></td><td class="num">280 s</td><td><span class="chip pick">picked</span></td></tr>
+          <tr><td>Field-count comments</td><td><span class="who"><i class="sw" style="background:var(--composer)"></i>Composer 2.5 fast</span></td><td class="num">134 s</td><td><span class="chip pass">passed</span></td></tr>
+          <tr><td>Review, dual-loopback</td><td><span class="who"><i class="sw" style="background:var(--deepseek)"></i>DeepSeek Flash</span></td><td class="num">370 s</td><td><span class="chip pass">no findings</span></td></tr>
+          <tr><td>Review, dual-loopback</td><td><span class="who"><i class="sw" style="background:var(--gemini)"></i>Gemini 3.8 Flash</span></td><td class="num">465 s</td><td><span class="chip pass">no findings</span></td></tr>
+        </tbody>
+      </table>
+      <p class="note">One run per model per task: anecdotes, not a benchmark. Every run passed the harness's own test run; picks went to the smaller diff that did only what was asked.</p>
+    </section>
+  </div>
+</div>
+
+<script>
+(() => {
+  const NODES = ["advise", "brief", "pack", "gem", "comp", "ds", "gate", "review", "merge", "esc"];
+  const C = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  // Each flow: active nodes, active edges, routes a pulse travels (edge ids, colour token), and the steps.
+  const FLOWS = {
+    small: {
+      nodes: ["brief", "pack", "gem", "gate", "merge"],
+      edges: ["e-brief-pack", "e-pack-gem", "e-gem-gate", "e-gate-merge"],
+      routes: [{ via: ["e-brief-pack", "e-pack-gem", "e-gem-gate", "e-gate-merge"], color: "--gemini" }],
+      steps: [
+        "You write the task file: files, sealed test if there is one, the verification command.",
+        "The context pack adds governing docs, traps, glossary terms, history and related tests.",
+        "Gemini 3.8 Flash implements in its own container and commits on a branch.",
+        "The harness reruns the tests itself; a sealed-file edit is reverted and flagged.",
+        "You read the diff, rerun on the host and merge. No reviewer unless the change touches the gate, ledger, containment or credentials.",
+      ],
+    },
+    feature: {
+      nodes: ["brief", "pack", "gem", "comp", "gate", "review", "merge", "esc"],
+      edges: ["e-brief-pack", "e-pack-gem", "e-pack-comp", "e-gem-gate", "e-comp-gate", "e-gate-review", "e-review-merge", "e-gate-esc", "e-esc-gate"],
+      routes: [
+        { via: ["e-brief-pack", "e-pack-gem", "e-gem-gate", "e-gate-review", "e-review-merge"], color: "--gemini" },
+        { via: ["e-brief-pack", "e-pack-comp", "e-comp-gate"], color: "--composer", fade: true },
+      ],
+      steps: [
+        "You write the spec and a failing acceptance test, commit it on a side branch and confirm it is red.",
+        "Gemini 3.8 Flash and Composer 2.5 attempt it in parallel, each with the same context pack.",
+        "The harness selects on evidence: tests pass, no sealed edit, not BLOCKED, then the smaller diff that does only what was asked.",
+        "DeepSeek and Composer review the winner read-only. A finding blocks only when it comes with a reproduction.",
+        "At most two fix rounds; still failing, Sonnet 4.6 takes that piece.",
+        "You rerun on the host and merge under the repo's commit rules.",
+      ],
+    },
+    hard: {
+      nodes: ["brief", "pack", "gem", "comp", "ds", "gate", "review", "merge", "esc"],
+      edges: ["e-brief-pack", "e-pack-gem", "e-pack-comp", "e-pack-ds", "e-gem-gate", "e-comp-gate", "e-ds-gate", "e-gate-review", "e-review-merge", "e-gate-esc", "e-esc-gate"],
+      routes: [
+        { via: ["e-brief-pack", "e-pack-ds", "e-ds-gate", "e-gate-review", "e-review-merge"], color: "--deepseek" },
+        { via: ["e-brief-pack", "e-pack-gem", "e-gem-gate"], color: "--gemini", fade: true },
+        { via: ["e-brief-pack", "e-pack-comp", "e-comp-gate"], color: "--composer", fade: true },
+        { via: ["e-gate-esc", "e-esc-gate"], color: "--claude", delay: 0.55 },
+      ],
+      steps: [
+        "Reproduce first: a test that fails for the reported reason, sealed.",
+        "Three families attempt in parallel: Gemini 3.8 Flash (high), Composer 2.5, DeepSeek Flash at max effort.",
+        "Select by the reproduction, then the regression suite, then diff size.",
+        "Two failed rounds: Opus 4.6 gets one attempt with the full failure history.",
+        "Two-family review of the winner, then you merge.",
+      ],
+    },
+    review: {
+      nodes: ["brief", "pack", "review", "merge"],
+      edges: ["e-brief-pack", "e-pack-review", "e-review-merge"],
+      routes: [{ via: ["e-brief-pack", "e-pack-review", "e-review-merge"], color: "--deepseek" }],
+      steps: [
+        "Point it at any branch, including your own: delegate.sh review <repo> <branch>.",
+        "The review task is generated from git: changed files, commits, and the original task when the branch came from a run.",
+        "DeepSeek and Composer review in parallel, read-only; scratch reproductions go under /tmp.",
+        "Large or risky diffs add Gemini 3.1 Pro. A disputed high-severity finding goes to Opus to adjudicate.",
+      ],
+    },
+  };
+
+  const svg = document.querySelector("svg.diagram");
+  const layer = document.getElementById("pulses");
+  const stepsEl = document.getElementById("steps");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let current = "feature", pulses = [], paused = false, t0 = performance.now(), pausedAt = 0;
+
+  function buildRoute(ids) {
+    const d = ids.map((id) => document.getElementById(id).getAttribute("d")).join(" ");
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", "none");
+    layer.appendChild(p);
+    return p;
+  }
+
+  function show(flow) {
+    current = flow;
+    const f = FLOWS[flow];
+    for (const n of NODES) {
+      const el = document.getElementById("n-" + n);
+      el.classList.toggle("on", f.nodes.includes(n));
+      el.classList.toggle("off", !f.nodes.includes(n) && n !== "advise");
+    }
+    document.querySelectorAll("#edges .edge").forEach((e) => {
+      const on = f.edges.includes(e.id);
+      e.classList.toggle("on", on);
+      e.classList.toggle("off", !on && e.id !== "e-advise");
+    });
+    document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.flow === flow)));
+    stepsEl.innerHTML = "";
+    for (const s of f.steps) { const li = document.createElement("li"); li.textContent = s; stepsEl.appendChild(li); }
+    layer.innerHTML = "";
+    pulses = f.routes.map((r, i) => {
+      const path = buildRoute(r.via);
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("r", "7");
+      dot.setAttribute("class", "pulse");
+      dot.setAttribute("fill", C(r.color));
+      layer.appendChild(dot);
+      return { path, dot, len: path.getTotalLength(), fade: !!r.fade, offset: r.delay ?? i * 0.06 };
+    });
+    t0 = performance.now();
+    if (reduce) place(0.98);
+  }
+
+  function place(phase) {
+    for (const p of pulses) {
+      const local = Math.min(1, Math.max(0, (phase - p.offset) / (1 - p.offset)));
+      const pt = p.path.getPointAtLength(local * p.len);
+      p.dot.setAttribute("cx", pt.x);
+      p.dot.setAttribute("cy", pt.y);
+      // Losing attempts stop at the gate and fade: not selected.
+      const vis = phase < p.offset ? 0 : p.fade && local > 0.97 ? Math.max(0, 1 - (phase - 0.9) * 10) : 1;
+      p.dot.style.opacity = String(vis);
+    }
+  }
+
+  const PERIOD = 5200;
+  function frame(now) {
+    if (!paused) place(((now - t0) % PERIOD) / PERIOD);
+    requestAnimationFrame(frame);
+  }
+
+  document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.flow)));
+  document.querySelector(".tabs").addEventListener("keydown", (e) => {
+    const keys = Object.keys(FLOWS), i = keys.indexOf(current);
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      const next = keys[(i + (e.key === "ArrowRight" ? 1 : keys.length - 1)) % keys.length];
+      show(next); document.getElementById("tab-" + next).focus();
+    }
+  });
+  const pauseBtn = document.getElementById("pause");
+  pauseBtn.addEventListener("click", () => {
+    paused = !paused;
+    if (paused) pausedAt = performance.now(); else t0 += performance.now() - pausedAt;
+    pauseBtn.textContent = paused ? "Play" : "Pause";
+    pauseBtn.setAttribute("aria-pressed", String(paused));
+  });
+  if (reduce) pauseBtn.hidden = true;
+
+  show(current);
+  if (!reduce) requestAnimationFrame(frame);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => show(current));
+})();
+</script>
