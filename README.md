@@ -75,7 +75,7 @@ written; the harness records it. This exit cut test-cheating sharply in Impossib
 | --- | --- | --- |
 | implement / implement-hard | `gemini-3.8-flash-tiered` medium / high | **main worker** (large quota) |
 | implement-alt | `cu/composer-2.5-fast` | second family, fan-out partner |
-| implement-alt2 | `deepseek/deepseek-flash` | third family, hard bugs only (paid per token) |
+| implement-alt2 | `deepseek/deepseek-flash-max` | third family, hard bugs only (paid per token) |
 | escalate | `antigravity/claude-sonnet-4-6` | after two cheap gate failures |
 | last-resort | `antigravity/claude-opus-4-6-thinking` | one attempt with the full failure history |
 | write / draft | Sonnet 4.6 / Gemini 3.8 Flash | prose that ships / throwaway prose |
