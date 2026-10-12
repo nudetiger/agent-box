@@ -2,6 +2,7 @@
 files: [src/dates.ts, src/agenda.ts]
 sealed: [test/dates.test.ts, test/agenda.test.ts]
 test: "node --test test/dates.test.ts test/agenda.test.ts"
+red: false
 ---
 # Start weeks on Sunday
 

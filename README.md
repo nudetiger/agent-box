@@ -46,7 +46,86 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
+
+# ledger, trust, dashboard
+./delegate.sh stats  [overview|models|runs|run R|flags|causes|notes|reviews|bench|compare|unlabeled|live] [--since 7d]
+./delegate.sh stats json <view>                     # exact numbers for an agent
+./delegate.sh dash                                  # interactive TUI over the ledger
+./delegate.sh refs   <repo> <run>                   # what in a run still needs a reason
+./delegate.sh note   <repo> <run> --refs a,b|--all --cause C --why "md"
+./delegate.sh accept|reject|merged|discard <repo> <run> [--cause C] --why "md"
+
+# more ways to delegate
+./delegate.sh explore <repo> "<question>"           # read-only research digest with path:line evidence
+./delegate.sh batch  <repo> a.md b.md ... [run options]          # different tasks in parallel
+./delegate.sh continue <repo> <run> --findings RV-RUN[:n,m] [--drop RV-RUN:n] [-m TEXT]  # fix round from review findings
+./delegate.sh tui    <repo> <run>                   # the real OpenCode TUI attached to a running worker
+./delegate.sh check  <repo> <ref> [--test CMD] [--hidden DIR]    # tests on any commit, no agent
+
+# ticket mode (to-tickets features)
+./delegate.sh feature <repo> <feature-dir> [status|next|report|run [--parallel N] [--auto-land]]
+./delegate.sh ticket  <repo> <feature-dir>/issues/NN-slug.md     # tests first, implement, review
+./delegate.sh ticket-review <repo> <run>            # two-axis review again after a fix round
+./delegate.sh land    <repo> <run>                  # one commit on box/<feature>, ticket stamped done
+./delegate.sh defect  <repo> <feature-dir> "<title>" "<report>"
+
+# benchmark
+node lib/bench.mjs list [suite]
+node lib/bench.mjs run <suite[/task]> --roles a,b [--repeat N] [--parallel K]
+node bench/validate.mjs [suite]                     # base fails, reference passes, cheats fail
 ```
+
+## Evidence per run
+
+`lib/checks.mjs` computes on the host, from git and the run's files: `SEALED-EDIT`, `OUT-OF-SCOPE`
+(changed files outside `files:`, `scope:` and their tests), `MISREPORT` (the worker's report block
+claims passing tests and the harness's run failed), `WEAK-SPEC` (the sealed tests already passed on
+the base; the container stops before the agent), `STAND-IN` (added skip/only/TODO), `SENSITIVE`
+(dependencies, CI, build scripts, deletions), `LEFTOVERS`, `REVIEW-EDIT`. The run gets a verdict and
+one `next` token (`review_or_accept`, `inspect_flags`, `continue_with_failure`, `answer_question`,
+`fix_sealed_test`, `triage_findings`, ...) in `summary.json`, and one line in the ledger.
+
+Inside the container: a red check runs the sealed tests before the worker (frontmatter `red: false`
+skips it); a plugin parses every file the worker edits and puts any syntax error into that tool's
+result; when the harness's tests fail after a worker that finished normally, one automatic fix round
+resumes the same session with the failing tail (`--no-autofix`, `--autofix N`). `exits.first_test` in
+the ledger keeps the result before that round, so rescued runs are counted apart. `steps: N` in the
+frontmatter is a step budget.
+
+## The ledger and the dashboard
+
+`ledger/events.jsonl` (schema: [docs/ledger.md](docs/ledger.md)): every run, review, label, outcome,
+ticket test gate, landing and benchmark result, with the harness version (content hash of `image/`,
+`lib/pack.mjs`, `lib/checks.mjs`). Obvious causes are labelled automatically; the orchestrator labels
+the rest with `note` and records each decision with `accept`/`reject`, which is the trust record per
+model. `stats` and `dash` (Node, no dependencies) show it: KPIs with deltas against the previous
+window, models (pass, first-try pass, rescue rate, seconds per step, cache hit, flags per run, accepted),
+flags and causes with trends, reviews (confirmed and false-positive rates), the benchmark matrix,
+harness versions side by side, and live cards for running workers.
+
+## Ticket mode
+
+Ported from AgentOrchestratingSkill. Tickets are Matt Pocock `to-tickets` files
+(`.scratch/<feature>/issues/NN-slug.md` with `**Blocked by:**`, `**Status:**`, optional `**Model:**`, and
+`- [ ]` criteria; `spec.md` beside `issues/`). Per ticket: the `tests` role (Gemini 3.1 Pro) writes the
+tests first; the harness accepts them only if nothing but test files changed, nothing is skipped, and
+they fail on the current code (one fix round otherwise); they are sealed for the implementer, which
+works on top of them; a failing implementation escalates once to `TICKET_ESCALATE_ROLE` with its
+changes kept; `review-spec` and `review-std` review in parallel. `land` squashes tests and code into
+one commit on the local integration branch `box/<feature>` (never pushed, never checked out; if the
+branch moved, the merge is tested in a container first), stamps the ticket done, and appends the
+feature's decisions ledger, which later tickets get in their task. The project's context map needs
+`test_file_command`; `test_globs` and `done_dir` are optional; `TICKET_CHECKS` and `LAND_TRAILERS`
+(`\n`-separated, e.g. co-author lines) come from `projects/<repo>.env`.
+
+## Benchmark
+
+`bench/` holds frozen tasks on fixture repos materialized with fixed commit shas (`bench/README.md`).
+Each task has a hidden check the worker never sees, a reference solution and cheat patches;
+`validate.mjs` proves the base fails, the reference passes and every cheat fails. `lib/bench.mjs`
+runs tasks through the harness per role and records the hidden check as a `bench` event; `expect:
+blocked` tasks pass only when the worker stops BLOCKED and the behaviour is intact. The task files are
+harness-agnostic: run another harness on the same task, base sha and check to compare.
 
 Each run leaves `runs/<project>/<name>/`: `summary.json` (setup/agent/test exit codes, commits,
 `blocked`, `sealed_violation`, `review_violation`), `final.md` (the worker's last message),
@@ -77,10 +156,17 @@ written; the harness records it. This exit cut test-cheating sharply in Impossib
 It is also how a worker asks a question: it phrases BLOCKED as one, and the orchestrator answers with
 `continue`.
 
-**Watching**: `watch <repo> <run>` prints a live feed of a run (harness steps, each tool call, the
-worker's messages). When [herdr](https://herdr.dev) is running, every run opens a tab running `watch`
-in an `agent-box` workspace and reports its state to herdr: working, blocked while a question waits,
-done with a one-line verdict. Enter closes the tab. `AGENT_BOX_HERDR=0` turns it off.
+**Watching**: when [herdr](https://herdr.dev) is running, every run opens a tab in an `agent-box`
+workspace. Left: the real OpenCode TUI attached to the worker's session (the container runs `opencode
+serve`, the worker runs `opencode run --attach`, the pane runs `podman exec -it ... opencode attach`),
+with its subagent sessions; typing there reaches the worker. Right: the agent-box feed (`watch`):
+phases, every tool call, questions the moment they are asked, the verdict and `next`; it reports the
+state to herdr (working, blocked, done). Enter closes the tab. `AGENT_BOX_TUI=0` keeps only the feed,
+`AGENT_BOX_HERDR=0` turns tabs off. Without herdr: `watch <repo> <run>`, `tui <repo> <run>`, or
+`stats live` for every running worker at once.
+
+**Concurrency**: at most `AGENT_BOX_SLOTS` containers run at once (default 4), whatever starts them;
+the rest wait for a slot.
 
 **Measurements** live in [research/findings.md](research/findings.md), with the method to compare
 another harness (Lykos) against this one on the same task files.
@@ -126,13 +212,15 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | review-gemini | Gemini 3.8 Flash | reviewer when the change came from Composer or DeepSeek |
 | deep-review, bughunt | `antigravity/gemini-3.1-pro-high` | slow, thorough; large or risky diffs (read-only) |
 | adjudicate | Opus 4.6 thinking | settles a disputed high-severity finding (read-only) |
-| advise / advise-alt | GPT-5.6 Sol / Opus 4.6 | `delegate.sh ask`: one-pass debate partner, never a coder |
-| grok | `cursor/cursor-grok-4.6-high` | not reachable on 2026-10-12 (Cursor `not_found`) |
+| advise / advise-alt | Kimi K3 (`cursor/kimi-k3-high`) / Opus 4.6 | `delegate.sh ask`: one-pass debate partner, never a coder; Kimi has a small budget |
+| explore | Gemini 3.8 Flash | `delegate.sh explore`: read-only research digest |
+| tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
+| review-spec / review-std | DeepSeek Flash / Composer 2.5 fast | ticket mode: the two review axes |
 
 Sonnet and Opus are never a first attempt and never in a fan-out. OmniRoute drops `reasoning_effort`
 for `antigravity/claude-*`, and Cursor ids carry their effort in the name. Codex/GPT models are not
-coding workers: they fail at multi-step agent work through this router. Sol is reachable only for
-one-pass advice, and on 2026-10-12 not at all (Cursor `not_found`, Codex token invalidated).
+coding workers: they fail at multi-step agent work through this router. GPT-5.6 Sol and Grok 4.6 are
+not available (2026-10-12).
 
 Measured so far (one task each, so treat as anecdotes): on a comment fix, Composer 134 s and Gemini
 3.8 Flash 280 s both passed; on the dual-loopback fix, DeepSeek 326 s and Gemini 669 s both passed.
@@ -169,7 +257,13 @@ Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 | | |
 | --- | --- |
 | `delegate.sh` | Host side: pack, bundle in, container lifecycle, bundle out, fetch, report, fanout, review |
-| `lib/pack.mjs` | Deterministic context pack |
+| `lib/pack.mjs` | Deterministic context pack (named files pasted, code index of the task's identifiers, red command, scope) |
+| `lib/checks.mjs`, `lib/ledger.mjs` | Evidence flags, verdict and `next`; the ledger writer, labels and outcomes |
+| `lib/stats.mjs`, `lib/stats/` | Ledger dashboard and TUI |
+| `lib/ticket.mjs`, `lib/ticket/` | Ticket mode and its worker prompts (adapted from Matt Pocock's skills, MIT) |
+| `lib/bench.mjs`, `bench/` | Benchmark runner and the frozen suites |
+| `lib/watch.mjs`, `lib/forward.mjs` | Live feed; review findings into a fix round |
+| `image/progress.mjs`, `image/plugin.js`, `image/syntax-check.mjs` | Live progress file; syntax check after every edit |
 | `image/run-task.sh` | Container side: clone, setup, config, OpenCode, sealed check, tests, bundle |
 | `image/make-config.mjs` | Per-run OpenCode config: agents, scout, permissions, skills, effort |
 | `image/preamble*.md`, `image/skills/` | Operating conditions and worker skills |
