@@ -12,7 +12,17 @@ function touched(tool, args = {}) {
   return [];
 }
 
+// The Read tool's own output (path and type tags, numbered lines) pasted as file content. Composer did
+// this twice in one bench run (2026-10-12, trivial-low-stock) and needed 4 more steps to recover.
+const READ_DUMP = /^\s*<path>[^\n]*<\/path>\s*\n\s*<type>(?:file|directory)<\/type>/;
+
 export const AgentBox = async ({ directory }) => ({
+  "tool.execute.before": async (input, output) => {
+    const text = input.tool === "write" ? output.args?.content : input.tool === "edit" ? output.args?.newString : null;
+    if (typeof text === "string" && READ_DUMP.test(text))
+      throw new Error("Rejected: this content is the read tool's output (<path>, <type> tags and numbered lines), not file text. "
+        + "Write only the file's own lines, without the tags and without the 'N: ' line numbers. The file was not changed.");
+  },
   "tool.execute.after": async (input, output) => {
     for (const f of touched(input.tool, input.args)) {
       const file = f.startsWith("/") ? f : `${directory}/${f}`;

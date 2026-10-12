@@ -434,9 +434,9 @@ herdr_open() {
   tab="$(jq -r '.result.tab.tab_id' <<<"$tabjson")"; pane="$(jq -r '.result.root_pane.pane_id' <<<"$tabjson")"
   [ -n "$pane" ] && [ "$pane" != null ] || return 0
   # Script files, so no quoting has to survive the pane's shell (PowerShell on Windows).
-  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q AB_TAB_LINGER=%q\nexec %q watch %q %q\n' "$tab" "${AB_TAB_LINGER:-}" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
+  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q AB_TAB_LINGER=%q AGENT_BOX_PROJECT_ENV=%q\nexec %q watch %q %q\n' "$tab" "${AB_TAB_LINGER:-}" "${AGENT_BOX_PROJECT_ENV:-}" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
   if [ "${TUI:-0}" = 1 ]; then
-    printf '#!/usr/bin/env bash\nexec %q tui %q %q\n' "$BOX/delegate.sh" "$REPO" "$name" >"$dir/tui.sh"
+    printf '#!/usr/bin/env bash\nexport AGENT_BOX_PROJECT_ENV=%q\nexec %q tui %q %q\n' "${AGENT_BOX_PROJECT_ENV:-}" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/tui.sh"
     feed="$(herdr pane split "$pane" --direction right --ratio "${AGENT_BOX_TUI_RATIO:-0.66}" --cwd "$(winpath "$BOX")" 2>/dev/null | jq -r '.result.pane.pane_id')"
     herdr_launch "$pane" "$dir/tui.sh"
     if [ -n "$feed" ] && [ "$feed" != null ]; then herdr_launch "$feed" "$dir/watch.sh"; fi

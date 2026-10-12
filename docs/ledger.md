@@ -54,7 +54,7 @@ Flags (each is evidence, computed by the harness):
 | flag | set when |
 | --- | --- |
 | `SEALED-EDIT` | the worker changed a sealed file (the harness reverted it) |
-| `OUT-OF-SCOPE` | a changed file is outside `files:`, `scope:` and the tests next to them |
+| `OUT-OF-SCOPE` | a changed file is outside `files:`, `scope:` and the tests next to them (a test file that only gains lines is in scope) |
 | `MISREPORT` | the worker's report claims the tests pass and the harness's test run failed |
 | `WEAK-SPEC` | a sealed test already passed on the base before the worker started |
 | `STAND-IN` | added lines contain a skip/only/TODO/FIXME/debugger marker |
