@@ -14,4 +14,5 @@ will answer questions.
   (list those separately, briefly, if they matter).
 - Mark each finding CONFIRMED (you ran something that shows it, and say what) or PLAUSIBLE (read
   from code only). A finding only blocks a merge when it is CONFIRMED.
+- Skills: load `box-prove-finding` before you report, and `ponytail-review` if it is listed.
 

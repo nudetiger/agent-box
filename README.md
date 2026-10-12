@@ -37,6 +37,7 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh run    <repo> <task.md> --model <id> [--effort E] [--review] [--web] ...
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
 ./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
+./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
 ```
@@ -72,19 +73,26 @@ written; the harness records it. This exit cut test-cheating sharply in Impossib
 
 | role | model | use |
 | --- | --- | --- |
-| implement | `deepseek/deepseek-flash` | default implementer |
-| implement-hard | `deepseek/deepseek-flash-high` | cross-module work, retry after a failed gate |
-| feature / feature-hard | `gemini-3.8-flash-tiered` medium / high | second family, parallel attempt |
+| implement / implement-hard | `gemini-3.8-flash-tiered` medium / high | **main worker** (large quota) |
+| implement-alt | `cu/composer-2.5-fast` | second family, fan-out partner |
+| implement-alt2 | `deepseek/deepseek-flash` | third family, hard bugs only (paid per token) |
 | escalate | `antigravity/claude-sonnet-4-6` | after two cheap gate failures |
 | last-resort | `antigravity/claude-opus-4-6-thinking` | one attempt with the full failure history |
 | write / draft | Sonnet 4.6 / Gemini 3.8 Flash | prose that ships / throwaway prose |
-| review / review-alt | DeepSeek Flash / Gemini 3.8 Flash | default two-family review gate (read-only) |
+| review / review-alt | DeepSeek Flash / Composer 2.5 fast | default two-family review gate (read-only) |
+| review-gemini | Gemini 3.8 Flash | reviewer when the change came from Composer or DeepSeek |
 | deep-review, bughunt | `antigravity/gemini-3.1-pro-high` | slow, thorough; large or risky diffs (read-only) |
 | adjudicate | Opus 4.6 thinking | settles a disputed high-severity finding (read-only) |
+| advise / advise-alt | GPT-5.6 Sol / Opus 4.6 | `delegate.sh ask`: one-pass debate partner, never a coder |
+| grok | `cursor/cursor-grok-4.6-high` | not reachable on 2026-10-12 (Cursor `not_found`) |
 
 Sonnet and Opus are never a first attempt and never in a fan-out. OmniRoute drops `reasoning_effort`
-for `antigravity/claude-*`, so those roles carry no effort. Codex/GPT models are excluded: they fail
-at multi-step agent work through this router.
+for `antigravity/claude-*`, and Cursor ids carry their effort in the name. Codex/GPT models are not
+coding workers: they fail at multi-step agent work through this router. Sol is reachable only for
+one-pass advice, and on 2026-10-12 not at all (Cursor `not_found`, Codex token invalidated).
+
+Measured so far (one task each, so treat as anecdotes): on a comment fix, Composer 134 s and Gemini
+3.8 Flash 280 s both passed; on the dual-loopback fix, DeepSeek 326 s and Gemini 669 s both passed.
 
 ## Inside the container
 
@@ -92,9 +100,9 @@ at multi-step agent work through this router.
 
 - **`worker`** agent (edits; sealed globs denied) or **`reviewer`** agent (no edits in the repo;
   scratch files under `/tmp`).
-- **`scout`** subagent on DeepSeek Flash: read-only search that every worker may call, so premium
+- **`scout`** subagent on Gemini 3.8 Flash: read-only search that every worker may call, so premium
   workers spend their quota on reasoning.
-- **Skills**: the project's own `.claude/skills/` (filtered by `worker_skills` in the context map, so
+- **Skills**: Ponytail (`ponytail`, `ponytail-review`; baked into the image), the project's own `.claude/skills/` (filtered by `worker_skills` in the context map, so
   skills that interview a human are hidden) plus agent-box's `box-verify` and `box-prove-finding`.
 - `reasoning_effort` from the role, as a model option.
 

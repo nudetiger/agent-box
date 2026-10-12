@@ -33,6 +33,8 @@ Usage: delegate.sh <command> ...
                                  Same task on several roles in parallel; prints a comparison table
   review   <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]
                                  Generated read-only review by several reviewers in parallel
+  ask      <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
+                                 One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
   clean                          Remove leftover agent-box containers
 
@@ -302,8 +304,35 @@ cmd_review() {
   done
 }
 
+# Single-pass advisor: debate, critique or brainstorm with another model. No container, no tools.
+cmd_ask() {
+  local repo="$1"; shift
+  local role="advise" model="" prompt="-" files=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --prompt) prompt="$2"; shift 2 ;;
+      --file) files+=("$(winpath "$2")"); shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  load_project "$repo"; need_key
+  if [ -z "$model" ]; then
+    local var="ROLE_${role//-/_}"
+    [ -n "${!var:-}" ] || die "unknown role $role"
+    read -r model EFFORT <<<"${!var}"
+  fi
+  mkdir -p "$BOX/runs/$PROJECT/ask"
+  local out; out="$BOX/runs/$PROJECT/ask/$(date +%Y%m%d-%H%M%S)-$role.md"
+  [ "$prompt" = - ] || prompt="$(winpath "$prompt")"
+  OMNIROUTE_HOST_URL="$OMNIROUTE_HOST_URL" EFFORT="${EFFORT:-}" \
+    node "$(winpath "$BOX/lib/ask.mjs")" "$model" "$prompt" "$(winpath "$out")" "${files[@]}"
+}
+
 case "${1:-}" in
   build) cmd_build ;;
+  ask) shift; cmd_ask "$@" ;;
   fanout) shift; cmd_fanout "$@" ;;
   review) shift; cmd_review "$@" ;;
   models) shift; cmd_models "$@" ;;

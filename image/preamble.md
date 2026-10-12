@@ -19,6 +19,7 @@ reasonable decisions and record them in your final message.
 - Your final message must contain: what you changed, the test result exactly as the command printed
   its summary, and anything you were unsure about or did not finish. Do not claim success you did not
   verify. A reviewer will check the diff and rerun the tests.
-- Skills: if a skill fits the task (for example test-driven development or bug diagnosis), load it
-  and follow it.
+- Skills: load `ponytail` before you write code (the smallest change that fully solves the task),
+  and `box-verify` before your final message. Load any other listed skill that fits, such as
+  test-driven development or bug diagnosis.
 

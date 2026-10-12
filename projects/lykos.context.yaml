@@ -500,4 +500,4 @@ test_file_command: "npx --no-install tsx --test {files}"
 
 # Skills a worker may load from the repo's .claude/skills (agent-box box-* skills are always allowed).
 # Left out: skills that interview a human, publish to the tracker, or orchestrate their own subagents.
-worker_skills: [tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents, no-ai-slop, awesome-tui-design, resolving-merge-conflicts]
+worker_skills: [ponytail, ponytail-review, tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents, no-ai-slop, awesome-tui-design, resolving-merge-conflicts]
