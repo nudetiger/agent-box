@@ -38,6 +38,7 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ```bash
 ./delegate.sh run    <repo> <task.md> --role <role> [--name N] [--base REF] [--timeout MIN] [--test CMD]
 ./delegate.sh run    <repo> <task.md> --model <id> [--effort E] [--review] [--web] ...
+./delegate.sh continue <repo> <run-name> (-m TEXT | -f FILE) [--timeout MIN]    # resume that worker's session
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
 ./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
@@ -71,6 +72,16 @@ reverts any change made through bash before the harness runs the tests, flagged 
 
 **BLOCKED**: workers are told they may stop with `BLOCKED: <reason>` when the task cannot be done as
 written; the harness records it. This exit cut test-cheating sharply in ImpossibleBench (see research).
+It is also how a worker asks a question: it phrases BLOCKED as one, and the orchestrator answers with
+`continue`.
+
+**Continue**: every run saves its OpenCode session (`opencode-data.tgz`, session id in
+`summary.json`) and its settings (`meta.sh`). `continue` starts a fresh container on the run's branch,
+restores the session and sends the message: the worker keeps everything it read and tried, and the
+same model, sealed files, test and checks apply. The result is `agent/<run>-r2`, `-r3`...; the base
+stays the first round's, so the sealed check covers every round. Continuing an earlier round again
+forks it (`-r2b`). Verified 2026-10-12: a resumed Gemini worker edited without re-reading the file
+and recalled what it read in round 1 (cache read 155k tokens).
 
 ## Roles (`agent-box.conf`)
 

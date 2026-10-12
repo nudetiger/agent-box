@@ -29,6 +29,10 @@ Usage: delegate.sh <command> ...
                                  Run one task. Result lands as branch agent/<name> in <repo>.
                                  --role picks the model from agent-box.conf. --review (or a read-only
                                  role) discards every edit and skips tests; the output is the report.
+  continue <repo> <run-name> (-m TEXT | -f FILE) [--name N] [--timeout MIN]
+                                 Resume that run's worker session with a follow-up (answer to its
+                                 BLOCKED question, review findings, next step). Same model, sealed
+                                 files and test; starts on its branch. Result: agent/<run>-r2, -r3...
   fanout   <repo> <task.md> --roles a,b[,c] [--name N] [run options]
                                  Same task on several roles in parallel; prints a comparison table
   review   <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]
@@ -121,11 +125,18 @@ launch() {
   mkdir -p "$run_dir"
 
   local base_sha; base_sha="$(git -C "$REPO" rev-parse --verify "$base^{commit}")" || die "bad base $base"
+  # A continued round starts on its previous head but keeps the first round's base (ORIG_BASE).
+  local start_sha="$base_sha"; [ -n "${ORIG_BASE:-}" ] && base_sha="$ORIG_BASE"
   [ -n "$(git -C "$REPO" status --porcelain)" ] && echo "agent-box: note: uncommitted changes in $REPO are NOT sent; base is $base_sha" >&2
   local bundle_ref="$base"; [ "$base" = "HEAD" ] || git -C "$REPO" show-ref --quiet "$base" || bundle_ref="HEAD"
   git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" "$bundle_ref" 2>/dev/null \
     || git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" --all
-  if [ -n "$task" ]; then
+  if [ -n "${CONTINUE_SESSION:-}" ]; then
+    # Follow-up: no new pack. The worker already has it in its session; the message is the task.
+    cp "$task" "$run_dir/message.md"
+    cp "$CONTINUE_FROM/task-body.md" "$run_dir/task-body.md" 2>/dev/null || true
+    cp "$CONTINUE_FROM/task.md" "$run_dir/task.md" 2>/dev/null || true
+  elif [ -n "$task" ]; then
     cp "$task" "$run_dir/task.md"
     # Deterministic context pack: files, areas, governing docs, traps, terms, tests, sealed globs.
     local map="$BOX/projects/$PROJECT.context.yaml" map_arg="-"
@@ -140,6 +151,11 @@ launch() {
     SKILLS_ALLOW="$(node -e 'console.log(JSON.parse(process.argv[1]).skills.join(","))' "$meta")"
     export SEALED TEST_CMD SKILLS_ALLOW
   fi
+  # Everything `continue` needs to resume this run with the same model, rules and checks.
+  local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN; do
+    printf '%s=%q\n' "$v" "${!v:-}"
+  done >"$run_dir/meta.sh"
+  printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
   local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
@@ -152,16 +168,20 @@ launch() {
     host_ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
     [ -n "$host_ip" ] || host_ip="192.168.127.254"
   fi
-  export BRANCH="$branch" BASE_SHA="$base_sha" SKIP_AGENT="$skip_agent"
+  export BRANCH="$branch" BASE_SHA="$base_sha" START_SHA="$start_sha" SKIP_AGENT="$skip_agent"
   dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
     --add-host "host.docker.internal:$host_ip" \
     -v agent-box-npm-cache:/home/node/.npm -v agent-box-gradle-cache:/home/node/.gradle \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
+    -e START_SHA -e CONTINUE_SESSION -e ROUND \
     "$IMAGE" >/dev/null
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
-  if [ -n "$task" ]; then
+  if [ -n "${CONTINUE_SESSION:-}" ]; then
+    dk cp "$(winpath "$run_dir/message.md")" "$cname:/in/task.md"
+    dk cp "$(winpath "$CONTINUE_FROM/opencode-data.tgz")" "$cname:/in/opencode-data.tgz"
+  elif [ -n "$task" ]; then
     dk cp "$(winpath "$run_dir/task-body.md")" "$cname:/in/task.md"
     dk cp "$(winpath "$run_dir/context.md")" "$cname:/in/context.md"
   fi
@@ -212,6 +232,54 @@ cmd_run() {
   export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL="${SCOUT_MODEL:-}"
   [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
+}
+
+# Resumes a finished run's OpenCode session in a fresh container: same worker, same model, same
+# sealed files and test, starting on its own branch. Answers a BLOCKED question, passes review
+# findings, or asks for the next step. Any earlier round can be continued again, which forks it.
+cmd_continue() {
+  local repo="$1" from="$2"; shift 2
+  local msg_file="" name="" timeout=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m|--message) msg_file="$(mktemp)"; printf '%s\n' "$2" >"$msg_file"; shift 2 ;;
+      -f|--file) [ -f "$2" ] || die "message file not found: $2"; msg_file="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      --timeout) timeout="$2"; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [ -n "$msg_file" ] || die "continue needs -m TEXT or -f FILE"
+  load_project "$repo"; need_key
+  local prev="$BOX/runs/$PROJECT/$from"
+  for f in summary.json meta.sh opencode-data.tgz; do
+    [ -f "$prev/$f" ] || die "run $from cannot be continued: no $f (runs made before session saving have none)"
+  done
+  local session commits head
+  read -r session commits head < <(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log((s.session||"")+" "+s.commits+" "+s.head)' "$(winpath "$prev/summary.json")")
+  [ -n "$session" ] || die "run $from recorded no session id"
+  # shellcheck disable=SC1091
+  . "$prev/meta.sh"
+  [ -n "$timeout" ] && TIMEOUT_MIN="$timeout"
+  # Start where the previous round ended: its branch, or (no commits, e.g. a review or an early
+  # BLOCKED) the commit it ran on, through a temporary ref so it can be bundled.
+  local start="agent/$from"
+  if ! git -C "$REPO" show-ref --verify --quiet "refs/heads/$start"; then
+    [ "$commits" = 0 ] || die "branch $start is gone from $REPO; fetch it again from $prev/result.bundle"
+    start="refs/heads/agent-box-tmp/start-$from"
+    git -C "$REPO" update-ref "$start" "$head" || die "commit $head is not in $REPO"
+  fi
+  ROUND=$(( RUN_ROUND + 1 ))
+  if [ -z "$name" ]; then
+    local root; root="$(sed -E 's/-r[0-9]+[a-z]?$//' <<<"$from")"
+    name="$root-r$ROUND"; local k; for k in b c d e f g h; do
+      [ -e "$BOX/runs/$PROJECT/$name" ] || break; name="$root-r$ROUND$k"
+    done
+  fi
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ROUND
+  CONTINUE_SESSION="$session" CONTINUE_FROM="$prev" ORIG_BASE="$RUN_BASE_SHA" \
+    launch "$name" "$msg_file" "$start" 0
+  case "$start" in refs/heads/agent-box-tmp/*) git -C "$REPO" update-ref -d "$start" ;; esac
 }
 
 # One line per run: the evidence an orchestrator selects on. Agent claims are not in it.
@@ -338,6 +406,7 @@ case "${1:-}" in
   models) shift; cmd_models "$@" ;;
   baseline) shift; cmd_baseline "$@" ;;
   run) shift; cmd_run "$@" ;;
+  continue) shift; cmd_continue "$@" ;;
   show) shift; cmd_show "$@" ;;
   clean) cmd_clean ;;
   *) usage; [ -n "${1:-}" ] && exit 1 ;;

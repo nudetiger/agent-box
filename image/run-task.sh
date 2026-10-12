@@ -15,7 +15,10 @@ log() { printf '[run-task %s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/harn
 # 1. Clone. The container owns this .git; nothing here is ever executed on the host.
 git -c advice.detachedHead=false clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
 cd /work/repo
-git checkout -q -b "$BRANCH" "$BASE_SHA" || { log "checkout of $BASE_SHA failed"; exit 11; }
+# START_SHA: where the worker starts (a continued run starts on its previous round's head). BASE_SHA
+# stays the original base, so the sealed check, review guard and bundle cover every round.
+START_SHA="${START_SHA:-$BASE_SHA}"
+git checkout -q -b "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
 git config user.name "agent-box (${MODEL:-none})"
 git config user.email "agent-box@localhost"
 git remote remove origin 2>/dev/null || true
@@ -45,14 +48,24 @@ if [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
 elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   agent_name="$(node /opt/agent-box/make-config.mjs)" || { log "config generation failed"; exit 12; }
   preamble=/opt/agent-box/preamble.md; [ "${REVIEW:-0}" = 1 ] && preamble=/opt/agent-box/preamble-review.md
-  prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"
-            [ -f /in/context.md ] && { echo; cat /in/context.md; }
-            printf '\n# Task\n\n'; cat /in/task.md)"
+  session_args=()
+  if [ -n "${CONTINUE_SESSION:-}" ]; then
+    # Follow-up round: the previous round's session store comes back, and the worker resumes with
+    # everything it read and tried. The message is the orchestrator's answer or next request.
+    mkdir -p ~/.local/share
+    tar xzf /in/opencode-data.tgz -C ~/.local/share || { log "session restore failed"; exit 13; }
+    session_args=(--session "$CONTINUE_SESSION")
+    prompt="$(printf '# Follow-up from the orchestrator (round %s)\n\nYour earlier work is committed on this branch. The operating conditions from your first message still apply, including the final-message format and BLOCKED.\n\n' "${ROUND:-2}"; cat /in/task.md)"
+  else
+    prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"
+              [ -f /in/context.md ] && { echo; cat /in/context.md; }
+              printf '\n# Task\n\n'; cat /in/task.md)"
+  fi
   printf '%s\n' "$prompt" >"$OUT/prompt.md"
   variant_args=(); [ -n "${VARIANT:-}" ] && variant_args=(--variant "$VARIANT")
-  log "agent: $agent_name on omniroute/$MODEL${EFFORT:+ ($EFFORT)}${SCOUT_MODEL:+, scout $SCOUT_MODEL}, timeout ${TIMEOUT_MIN}m"
+  log "agent: $agent_name on omniroute/$MODEL${EFFORT:+ ($EFFORT)}${SCOUT_MODEL:+, scout $SCOUT_MODEL}, timeout ${TIMEOUT_MIN}m${CONTINUE_SESSION:+, resuming $CONTINUE_SESSION}"
   timeout --kill-after=30 "${TIMEOUT_MIN}m" \
-    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${variant_args[@]}" --title "$BRANCH" "$prompt" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${variant_args[@]}" "${session_args[@]}" --title "$BRANCH" "$prompt" \
     >"$OUT/events.jsonl" 2>"$OUT/opencode.log"
   agent_exit=$?
   log "agent exit $agent_exit"
@@ -68,6 +81,10 @@ elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
     const m = last.match(/^\s*BLOCKED:\s*(.+)$/m);
     fs.writeFileSync("/out/blocked.txt", m ? m[1].trim() : "");
   ' 2>>"$OUT/harness.log" || true
+  # Keep the session so `delegate.sh continue` can resume it. Logs and binaries are not needed.
+  session_id="$(jq -r 'select(.sessionID) | .sessionID' "$OUT/events.jsonl" 2>/dev/null | tail -n 1)"
+  [ -d ~/.local/share/opencode ] && tar czf "$OUT/opencode-data.tgz" -C ~/.local/share \
+    --exclude=opencode/log --exclude=opencode/bin opencode 2>>"$OUT/harness.log"
 fi
 blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 
@@ -123,9 +140,11 @@ jq -n \
   --argjson setup "$setup_exit" --argjson agent "$agent_exit" --argjson test "$test_exit" \
   --argjson seconds "$(( $(date +%s) - started ))" \
   --argjson review "${REVIEW:-0}" --argjson violation "$review_violation" \
+  --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
     setup_exit:$setup, agent_exit:$agent, test_exit:$test, seconds:$seconds,
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
-    review:($review==1), review_violation:$violation}' >"$OUT/summary.json"
+    review:($review==1), review_violation:$violation,
+    session:(if $session == "" then null else $session end), round:$round, start:$start}' >"$OUT/summary.json"
 log "done"
