@@ -65,7 +65,10 @@ elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
     fs.writeFileSync(require("os").homedir() + "/.config/opencode/opencode.json", JSON.stringify(cfg, null, 2));
   '
   preamble=/opt/agent-box/preamble.md; [ "${REVIEW:-0}" = 1 ] && preamble=/opt/agent-box/preamble-review.md
-  prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"; cat /in/task.md)"
+  prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"
+            [ -f /in/context.md ] && { echo; cat /in/context.md; }
+            printf '\n# Task\n\n'; cat /in/task.md)"
+  printf '%s\n' "$prompt" >"$OUT/prompt.md"
   variant_args=(); [ -n "${VARIANT:-}" ] && variant_args=(--variant "$VARIANT")
   log "agent: omniroute/$MODEL, timeout ${TIMEOUT_MIN}m"
   timeout --kill-after=30 "${TIMEOUT_MIN}m" \
@@ -73,7 +76,20 @@ elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
     >"$OUT/events.jsonl" 2>"$OUT/opencode.log"
   agent_exit=$?
   log "agent exit $agent_exit"
+  # The final assistant message, and whether it ends in a BLOCKED line.
+  node -e '
+    const fs = require("fs");
+    const texts = [];
+    for (const l of fs.readFileSync("/out/events.jsonl", "utf8").split("\n")) {
+      try { const e = JSON.parse(l); if (e.type === "text" && e.part && e.part.text) texts.push(e.part.text); } catch {}
+    }
+    const last = texts.length ? texts[texts.length - 1] : "";
+    fs.writeFileSync("/out/final.md", last);
+    const m = last.match(/^\s*BLOCKED:\s*(.+)$/m);
+    fs.writeFileSync("/out/blocked.txt", m ? m[1].trim() : "");
+  ' 2>>"$OUT/harness.log" || true
 fi
+blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
 #    becomes one labelled commit, so nothing is lost.
@@ -88,6 +104,22 @@ if [ "${REVIEW:-0}" = 1 ]; then
   git reset -q --hard "$BASE_SHA"; git clean -qfd
 elif [ -n "$(git status --porcelain)" ]; then
   git add -A && git commit -q -m "agent-box: uncommitted changes left by the agent" && leftovers=1
+fi
+
+# 4b. Sealed files: any change the worker made to them is reverted before the harness tests, and
+#     recorded. SEALED holds newline-separated globs relative to the repo root.
+sealed_touched=()
+if [ -n "${SEALED:-}" ] && [ "${REVIEW:-0}" != 1 ]; then
+  specs=(); while IFS= read -r g; do [ -n "$g" ] && specs+=(":(glob)$g"); done <<<"$SEALED"
+  mapfile -t sealed_touched < <(git diff --name-only "$BASE_SHA..HEAD" -- "${specs[@]}")
+  if [ "${#sealed_touched[@]}" -gt 0 ]; then
+    printf '%s\n' "${sealed_touched[@]}" >"$OUT/sealed-violation.txt"
+    log "worker changed sealed files: ${sealed_touched[*]} (reverted)"
+    for f in "${sealed_touched[@]}"; do
+      if git cat-file -e "$BASE_SHA:$f" 2>/dev/null; then git checkout -q "$BASE_SHA" -- "$f"; else git rm -q -f -- "$f"; fi
+    done
+    git commit -q -m "agent-box: revert worker edits to sealed files" -- "${sealed_touched[@]}" || true
+  fi
 fi
 
 # 5. Tests, run by the harness, never trusted from the agent. Skipped for read-only reviews.
@@ -111,7 +143,9 @@ jq -n \
   --argjson setup "$setup_exit" --argjson agent "$agent_exit" --argjson test "$test_exit" \
   --argjson seconds "$(( $(date +%s) - started ))" \
   --argjson review "${REVIEW:-0}" --argjson violation "$review_violation" \
+  --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
     setup_exit:$setup, agent_exit:$agent, test_exit:$test, seconds:$seconds,
+    blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation}' >"$OUT/summary.json"
 log "done"

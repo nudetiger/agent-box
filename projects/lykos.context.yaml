@@ -1,0 +1,499 @@
+# Context map for Lykos: drafted by a Sonnet 4.6 worker on 2026-10-12 (run w1-context-map), checked by delegate.sh context-check.
+# Areas: source globs -> governing docs, glossary terms, tests, traps. Used by lib/pack.mjs to build each task brief.
+areas:
+
+  - name: lykos/tools
+    paths:
+      - "lykos/tools/**/*.ts"
+    docs:
+      - path: "docs/plan/phases.md#p10"
+        reason: "Full spec for every tool, the transport (tool_search / tool_call), residency model and the schema-tax observation."
+      - path: "docs/reference/extension-policy.md"
+        reason: "Intake bar rules, how declared Pi tools reach the model, changesFiles contract, tool risk-tier declaration."
+      - path: "docs/reference/lsp.md"
+        reason: "lsp tool configuration, trust rules, readiness protocol and not-ready error."
+      - path: "docs/findings.md§1.4"
+        reason: "Schema-tax numbers and measured costs per resident tool; binding whenever resident set changes."
+      - path: "docs/adr/0009-sixteen-resident-tools.md"
+        reason: "Original resident-tool set commitment."
+      - path: "docs/adr/0014-tools-reach-the-model-through-a-transport.md"
+        reason: "Transport-first architecture; auto-demotion is explicitly prohibited."
+      - path: "docs/adr/0024-the-transport-is-two-dedicated-resident-tools.md"
+        reason: "tool_search and tool_call as the exact wire shape."
+      - path: "docs/adr/0022-residency-and-prompt-presence-are-two-separate-settings.md"
+        reason: "residency (resident/mounted/off) and prompt presence (full/named/hidden) are distinct settings."
+      - path: "docs/adr/0031-one-edit-mode-a-numbered-read-and-exact-text-replacement.md"
+        reason: "Only one editor; pi-hashline-edit dropped; exact-text-replace enforced."
+      - path: "docs/adr/0018-host-reaching-tools-ship-contained.md"
+        reason: "computer and browser must be contained; no standalone use."
+    glossary:
+      - "Resident tool"
+      - "Mounted tool"
+      - "Transport"
+      - "Hook"
+      - "Kill criterion"
+      - "Prune"
+      - "Shake"
+    tests:
+      glob: "lykos/tools/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/tools/*.test.ts"
+    traps:
+      - "Adding a tool to the resident set raises the per-turn schema cost permanently — every resident tool must be itemised with its measured cost (findings §1.4, phases.md P10 schema-tax observation). [RESIDENT_GROWTH_ITEMISED in lykos/session/phase10-acceptance.ts]"
+      - "Nothing demotes or deletes a tool automatically — lykos tools reports, a human decides (ADR-0014). [docs/adr/0014]"
+      - "A tool that changes files must declare changesFiles: true; an undeclared tool is checked by git fingerprint — but outside a git repo undeclared calls are not counted (extension-policy.md §3). [lykos/tools/tool-surface.ts]"
+      - "pi-hashline-edit must never be loaded; boot drops it and issues a stderr notice (ADR-0031, extension-policy.md §2). [lykos/config/extensions.ts withoutHashlineEdit()]"
+      - "The transport validator must return the schema on a mismatch; silently dropping an argument is worse than a missing tool (phases.md P10 risk note)."
+
+  - name: lykos/session
+    paths:
+      - "lykos/session/**/*.ts"
+      - "lykos/session.ts"
+    docs:
+      - path: "docs/reference/sessions-and-archive.md"
+        reason: "Identity hierarchy (project/task/session/call), resumption semantics, transcript format, checkpoints, archival."
+      - path: "docs/reference/specialists.md"
+        reason: "Boot-freeze discipline, mid-session switch rules, shipped library."
+      - path: "docs/findings.md§2.5"
+        reason: "Frozen-head invariant; stream rules are tail-only; assembly order is fixed."
+      - path: "docs/findings.md§2.1"
+        reason: "Ownership boundary — session lifecycle is Lykos-owned; Pi owns the loop and HTTP."
+      - path: "docs/adr/0021-the-prompt-prefix-is-held-still-and-variation-goes-in-the-stream.md"
+        reason: "Prefix stability rule: model and tool list kept on switch; variation goes to tail."
+      - path: "docs/adr/0036-a-delegated-run-is-a-lykos-session-with-contained-tools.md"
+        reason: "Delegated session is an ordinary session; MCP tool names the mode."
+      - path: "docs/adr/0027-pis-agent-directory-is-generated-under-lykos.md"
+        reason: "Pi's agent dir resolves to ~/.lykos/pi-host (via config/pi-host.ts), never ~/.pi."
+    glossary:
+      - "Session"
+      - "Head block"
+      - "Prefix break"
+      - "Self-compact"
+      - "Context strategy"
+      - "Continuation"
+      - "Delegated session"
+      - "Worktree"
+      - "Write in place"
+      - "Session id"
+    tests:
+      glob: "lykos/session/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/session/*.test.ts"
+    traps:
+      - "Nothing enters the frozen head unless it is fixed for the whole session — dynamic content (timestamps, mutable state) must go in tail or user messages (CLAUDE.md rule 9, findings §2.5)."
+      - "System prompt assembly order is fixed: system identity → project instructions → specialist instructions → output diet → tool instructions (findings §2.5)."
+      - "A mid-session specialist switch does NOT change the model, tool list in request, or instructions — only thinkingLevel, mode (full-screen only), and off-limits restrictions apply live (specialists.md §2.1)."
+      - "Runtime state in .lykos/, never .pi/ (CLAUDE.md rule 8, findings §2.2)."
+      - "endSession is the one permitted UPDATE on a session row; calls/events are append-only (findings §2.4)."
+
+  - name: lykos/gate
+    paths:
+      - "lykos/gate/**/*.ts"
+    docs:
+      - path: "docs/findings.md§2.6"
+        reason: "Complete gate invariants: no short-circuits, destructive commands cannot be allowlisted, opaque interpreters, scope clamp."
+      - path: "docs/adr/0030-a-failed-gate-reruns-its-failed-test-files-once.md"
+        reason: "Rerun logic, conditions that block a rerun, flaky-test semantics."
+      - path: "docs/reference/cli-and-config.md§3.1"
+        reason: "Detailed rerun rules (node:test spec reporter, tap, rerun command derivation)."
+    glossary:
+      - "Gate"
+      - "Interaction mode"
+      - "Containment floor"
+      - "Verified success"
+      - "Kill criterion"
+    tests:
+      glob: "lykos/gate/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/gate/*.test.ts"
+    traps:
+      - "Every mutation (file write, edit, shell command) must reach ApprovalGate.request() — no short-circuits (findings §2.6). [lykos/gate/approval.ts]"
+      - "Destructive commands (rm -rf, git push --force, git reset --hard, git clean -f, curl | sh, permission sweeps) can never be allowlisted (findings §2.6)."
+      - "Opaque interpreters (bash -c, python -c, xargs) cannot be allowlisted by interpreter name alone (findings §2.6). [lykos/gate/command-safety.ts]"
+      - "A rewritten hook argument is re-classified by the gate before it runs — never approved on its pre-rewrite form (GLOSSARY: Hook; phases.md P11)."
+      - "The gate is never a default extension (GLOSSARY: Default extension)."
+      - "Guard the real input, not a stand-in — CLAUDE.md Traps: 'A guard that is never given anything to guard is decorative.'"
+
+  - name: lykos/loop
+    paths:
+      - "lykos/loop/**/*.ts"
+    docs:
+      - path: "docs/plan/phases.md#p4"
+        reason: "Which twelve strength mechanisms must fire and what their demonstrations require."
+      - path: "docs/plan/phases.md#p11"
+        reason: "Hook bus expansion, stream rules, memory-proposal connection."
+      - path: "docs/findings.md§2.5"
+        reason: "Stream rules are tail-only; interrupting firings record cache cost."
+      - path: "docs/adr/0039-a-prune-is-a-recorded-decision-applied-to-each-request.md"
+        reason: "Prune semantics: decided once, recorded, applied every request; transcript keeps original."
+      - path: "docs/adr/0040-compaction-is-a-chain-of-methods-inside-lykos-self-compact.md"
+        reason: "Compaction method chain: note → handoff → shake → summary."
+    glossary:
+      - "Loop"
+      - "Prune"
+      - "Shake"
+      - "Compaction method"
+      - "Self-compact"
+      - "Continuation"
+      - "Context strategy"
+      - "Hook"
+      - "Stream rule"
+    tests:
+      glob: "lykos/loop/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/loop/*.test.ts"
+    traps:
+      - "Stream rule text never enters the frozen head; injections are tail-only; every interrupting firing records cache cost in the ledger (findings §2.5, ADR-0021)."
+      - "A prune is decided once and recorded — applied to every later request; the transcript always keeps the original (ADR-0039). [lykos/loop/tool-result-prune.ts]"
+      - "Pi's compaction is never switched off by any context strategy (extension-policy.md §4 lykos-continuation note)."
+
+  - name: lykos/ledger
+    paths:
+      - "lykos/ledger/**/*.ts"
+    docs:
+      - path: "docs/reference/telemetry.md"
+        reason: "Complete ledger schema, all tables, all columns, counterfactual formulas."
+      - path: "docs/findings.md§1.3"
+        reason: "Three accounting traps: cache_read and cache_write are separate; avoided is a model not a measurement; gateway model name ≠ endpoint."
+      - path: "docs/findings.md§2.4"
+        reason: "Full accounting invariants: no zero-dollar defaults, never backfill, single UPDATE per session."
+    glossary:
+      - "Ledger"
+      - "Credential"
+      - "Cooldown"
+      - "Verified success"
+      - "Kill criterion"
+    tests:
+      glob: "lykos/ledger/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/ledger/*.test.ts"
+    traps:
+      - "cache_read_tokens and cache_write_tokens are recorded separately per call — never combined (findings §1.3)."
+      - "avoided is a model (formula), never a measurement. cacheAvoidedUsd accounts for the write premium penalty term (findings §1.3)."
+      - "A gateway's model name is NOT an endpoint — upstream provider must be tracked in calls.upstream_provider (findings §1.3)."
+      - "Unknown model or null price must throw or set price_basis='unpriced' with NULL dollars — never silent $0.00 (findings §2.4)."
+      - "endSession is the one permitted UPDATE on a session row; all else is append-only (findings §2.4)."
+      - "Ledger history before 2026-09-06 is lost and unverifiable — never quote those figures as evidence (CLAUDE.md Traps, findings §0)."
+      - "Prices come from primary provider documentation only — never from memory (CLAUDE.md rule 5)."
+      - "Never backfill historical rows (findings §2.4)."
+
+  - name: lykos/tui
+    paths:
+      - "lykos/tui/**/*.ts"
+    docs:
+      - path: "docs/reference/ui.md"
+        reason: "Architecture (HUD / full-screen / watch), themes, keybindings, slash commands, approval modal modes."
+      - path: "docs/reference/cli-and-config.md§3 (ui: block)"
+        reason: "All ui.* config keys, statusline and watch panel config."
+      - path: "docs/findings.md§1.1"
+        reason: "Latency budget: HUD must render in <50ms; YAML import penalty; JSON cache path."
+      - path: "docs/findings.md§2.3"
+        reason: "stderr sink in full-screen mode; stdout belongs to transport in MCP mode."
+      - path: "docs/adr/0010-ship-a-ui-not-a-flag.md"
+        reason: "The TUI is a product, not a flag."
+    glossary:
+      - "TUI"
+      - "Interaction mode"
+      - "Prefix break"
+    tests:
+      glob: "lykos/tui/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/tui/*.test.ts"
+    traps:
+      - "In full-screen mode, stderr is captured by setStderrSink() — asynchronous background writes must not go directly to the terminal (findings §2.3). [lykos/tui/io-mode.ts]"
+      - "stdout belongs to the transport in MCP mode — any write corrupts the JSON-RPC stream (CLAUDE.md rule 8, findings §2.3). One place decides IO mode, every writer asks it."
+      - "The TUI never writes the ledger and never computes a derived number — a dependency scan enforces it (phases.md P5)."
+      - "HUD hot-path must not do cold SQLite open — reads .lykos/today.json / live.json instead (findings §1.1). [lykos/ledger/live.ts]"
+
+  - name: lykos/tui/screen
+    paths:
+      - "lykos/tui/screen/**/*.ts"
+    docs:
+      - path: "docs/reference/ui.md§2"
+        reason: "Full-screen surface details: composer, approval modal, slash command dispatch."
+    glossary:
+      - "TUI"
+      - "Interaction mode"
+    tests:
+      glob: "lykos/tui/screen/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/tui/screen/*.test.ts"
+    traps:
+      - "Mode changes from a mid-session specialist switch apply on the full-screen surface only — not on the append-only surface (specialists.md §2.1)."
+
+  - name: lykos/cli
+    paths:
+      - "lykos/cli/**/*.ts"
+      - "lykos/cli.ts"
+    docs:
+      - path: "docs/reference/cli-and-config.md"
+        reason: "Complete command table, config precedence, all config keys, rerun rules, environment variables."
+      - path: "docs/reference/mcp.md"
+        reason: "session-child wire protocol, MCP tool inputs/outputs, trust rules."
+    glossary:
+      - "Delegated session"
+      - "Worktree"
+      - "Write in place"
+      - "Session id"
+      - "Containment floor"
+    tests:
+      glob: "lykos/cli/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/cli/*.test.ts"
+    traps:
+      - "No domain module imports cli/ (dependency scan rule 'no-domain-imports-cli'). [lykos/rearchitecture/dependency-scan.ts]"
+      - "lykos run --shape is retired (T185) — refused with a pointer to --containment off."
+      - "Containment level below containment.minimum is refused before boot, naming the floor and the file that set it (cli-and-config.md §3)."
+      - "containment.minimum is read from ~/.lykos/config.yaml and .lykos/config.yaml only — a specialist, env var or flag cannot set it (cli-and-config.md §3)."
+
+  - name: lykos/delegate
+    paths:
+      - "lykos/delegate/**/*.ts"
+    docs:
+      - path: "docs/reference/mcp.md"
+        reason: "Authoritative MCP contract, wire format, trust, worktree lifecycle, result fields."
+      - path: "docs/adr/0036-a-delegated-run-is-a-lykos-session-with-contained-tools.md"
+        reason: "Delegated run = ordinary Lykos session; containment defaults for MCP."
+      - path: "docs/adr/0038-each-mcp-call-runs-a-session-in-its-own-process.md"
+        reason: "Each MCP call is a separate process; paid-context confirmation skipped over MCP."
+    glossary:
+      - "Delegated session"
+      - "Worktree"
+      - "Write in place"
+      - "Session id"
+      - "Pack"
+    tests:
+      glob: "lykos/delegate/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/delegate/*.test.ts"
+    traps:
+      - "stdout belongs to the transport — every writer asks io-mode.ts before writing (findings §2.3, mcp.md wire rules). [lykos/tui/io-mode.ts]"
+      - "A child process whose stdin closes after the request is read must stop — not run on as an orphan (mcp.md wire rules)."
+      - "lykos_review runs read-only with no self-compact and never continues into a successor (mcp.md §Tools)."
+      - "The server never forwards the child's stdout — MCP stdout belongs to the transport (mcp.md wire rules)."
+
+  - name: lykos/containment
+    paths:
+      - "lykos/containment/**/*.ts"
+    docs:
+      - path: "docs/reference/cli-and-config.md§3 (containment: block)"
+        reason: "All containment config keys, level semantics, minimum floor, image resolution order, path translation rules and known gaps."
+      - path: "docs/adr/0037-a-specialist-may-carry-containment.md"
+        reason: "Specialist may declare containment level/network/image; coordinator's stated level overrides it."
+      - path: "docs/adr/0018-host-reaching-tools-ship-contained.md"
+        reason: "Computer and browser must be contained."
+    glossary:
+      - "Containment"
+      - "Containment floor"
+      - "Delegated session"
+      - "Worktree"
+    tests:
+      glob: "lykos/containment/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/containment/*.test.ts"
+    traps:
+      - "A boundary that reports success and leaks is worse than no boundary (phases.md P12 risk note)."
+      - ".git, .lykos and .pi are read-only inside the container in every mode (cli-and-config.md containment block)."
+      - "containment.minimum is read from user and project config only — floor from the higher of the two; a specialist, env var or flag cannot set it."
+      - "auto that finds no runtime counts as off — under a floor of auto or required it refuses (cli-and-config.md)."
+
+  - name: lykos/config
+    paths:
+      - "lykos/config/**/*.ts"
+    docs:
+      - path: "docs/reference/cli-and-config.md§2"
+        reason: "Six-layer config precedence, key-by-key merge semantics."
+      - path: "docs/reference/specialists.md"
+        reason: "Specialist as sixth layer; discovery order (project → global → shipped)."
+      - path: "docs/reference/extension-policy.md§2"
+        reason: "withoutHashlineEdit() — boot drops pi-hashline-edit from any config that still declares it."
+      - path: "docs/adr/0019-shipped-profiles-are-a-bundled-lowest-precedence-source.md"
+        reason: "Shipped specialists are lowest-precedence; never edited in place."
+      - path: "docs/adr/0027-pis-agent-directory-is-generated-under-lykos.md"
+        reason: "Pi's agent dir is ~/.lykos/pi-host (via config/pi-host.ts), never ~/.pi/agent."
+    glossary:
+      - "Layer"
+      - "Specialist"
+      - "Default extension"
+    tests:
+      glob: "lykos/config/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/config/*.test.ts"
+    traps:
+      - "Runtime state in .lykos/, never .pi/ (CLAUDE.md rule 8)."
+      - "pi-hashline-edit is silently dropped at boot with a stderr notice — never re-add it (ADR-0031). [lykos/config/extensions.ts]"
+      - "Sections merge key-by-key: a higher layer setting one key leaves siblings from lower layers intact. A list (extensions:, lykos_extensions:) replaces, not merges (cli-and-config.md §2)."
+      - "edit.mode was removed — a config that sets it fails to load (cli-and-config.md §3)."
+      - "containment.global_image is reserved for the loader — a config file that sets it fails to load (cli-and-config.md §3)."
+
+  - name: lykos/credentials
+    paths:
+      - "lykos/credentials/**/*.ts"
+    docs:
+      - path: "docs/reference/model-access.md"
+        reason: "Credential pool, rotation, cooldown, R1/R2/R3 routes, price_basis, auth failure messages."
+      - path: "docs/adr/0025-lykos-owns-credentials.md"
+        reason: "Lykos holds its own credentials; never reads another product's store."
+      - path: "docs/adr/0026-a-subscription-never-falls-back-to-a-metered-key-without-opt-in.md"
+        reason: "Subscription never silently downgrades to API key."
+    glossary:
+      - "Credential"
+      - "Credential pool"
+      - "Rotation"
+      - "Cooldown"
+    tests:
+      glob: "lykos/credentials/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/credentials/*.test.ts"
+    traps:
+      - "No token or secret is persisted to workspace .lykos/, transcript.jsonl or the ledger (model-access.md §3)."
+      - "A subscription pool falls back to metered keys only when fallbackToApiKey is explicitly set (ADR-0026)."
+      - "Auth failure message must never use 'specialist' or 'not found' — those words name a config error, not a bad credential (model-access.md §4)."
+      - "Prices come from primary provider documentation only — never from memory (CLAUDE.md rule 5)."
+
+  - name: lykos/extensions
+    paths:
+      - "lykos/extensions/**/*.ts"
+    docs:
+      - path: "docs/reference/extension-policy.md"
+        reason: "Complete Lykos extension API, ten events, three capabilities, registration rules, default extensions."
+      - path: "docs/adr/0028-a-default-extension-may-ship-off-and-its-list-entry-is-its-only-switch.md"
+        reason: "Default extension's list entry is its only switch."
+      - path: "docs/adr/0035-core-for-primitives-and-boundaries-extensions-for-policy.md"
+        reason: "Extension vs core boundary: extensions handle policy, core handles primitives."
+    glossary:
+      - "Lykos extension"
+      - "Default extension"
+      - "Resident tool"
+      - "Mounted tool"
+      - "Hook"
+    tests:
+      glob: "lykos/extensions/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/extensions/*.test.ts"
+    traps:
+      - "A throwing extension is reported and counted, not swallowed (extension-policy.md §3)."
+      - "The tier an extension declares is declared, not trusted — the gate treats every extension tool as hard-write (extension-policy.md §3)."
+      - "runChildSession must never throw — returns ok/blocked/error/unavailable (extension-policy.md §3)."
+      - "An extension cannot register an interface surface — the entry point exists but refuses (extension-policy.md §3)."
+      - "Only the standalone and interactive sessions run the Lykos extension host — the delegate container does not (extension-policy.md §3)."
+
+  - name: lykos/memory
+    paths:
+      - "lykos/memory/**/*.ts"
+      - "lykos/memory.ts"
+    docs:
+      - path: "docs/findings.md§2.7"
+        reason: "Memory discipline: human acceptance required; invalidation over deletion; stream rule as proposal source."
+      - path: "docs/adr/0017-a-general-memory-surface-supersedes-mistake-memory.md"
+        reason: "Scope is no longer restricted to mistakes; acceptance rule is unchanged."
+      - path: "docs/adr/0016-embeddings-are-a-profile-choice.md"
+        reason: "Embeddings no longer prohibited globally; a specialist may select an embeddings backend."
+      - path: "docs/reference/cli-and-config.md§3 (memory: block)"
+        reason: "memory.enabled, scope, max_inject_tokens config keys."
+    glossary:
+      - "Seal"
+      - "Dispute"
+    tests:
+      glob: "lykos/memory/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/memory/*.test.ts"
+    traps:
+      - "Memories enter the active set only upon explicit human acceptance — automatic acceptance is the poisoning entry point (findings §2.7, ADR-0017)."
+      - "Invalidation over deletion — superseded memories are marked invalidated with date and provenance, never deleted (findings §2.7)."
+      - "No area has a governing doc for lykos/memory/*.ts specifically beyond findings §2.7 and ADR-0017."
+
+  - name: lykos/context
+    paths:
+      - "lykos/context/**/*.ts"
+    docs:
+      - path: "docs/reference/extension-policy.md§4 (lykos-repo-map)"
+        reason: "Repo map is built once, appended last after every Lykos head block; ships off."
+      - path: "docs/reference/cli-and-config.md§3 (retrieval: block)"
+        reason: "retrieval.repo_map config keys."
+    glossary:
+      - "Head block"
+    tests:
+      glob: "lykos/context/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/context/*.test.ts"
+    traps:
+      - "Repo map is built once and the same bytes appended every turn — it must not vary mid-session or it breaks prefix caching (extension-policy.md §4)."
+      - "lykos-repo-map ships off — it is not in the shipped extensions: list; a project must list it explicitly (ADR-0028)."
+
+  - name: lykos/git
+    paths:
+      - "lykos/git/**/*.ts"
+    docs:
+      - path: "docs/reference/sessions-and-archive.md§2.2"
+        reason: "Checkpoint semantics, refs/lykos/checkpoints, Lykos-Session/Lykos-Turn trailers, worktree lifecycle."
+      - path: "docs/reference/cli-and-config.md (lykos rewind)"
+        reason: "Rewind is by hash (≥4 chars), not index — index shifts."
+      - path: "docs/reference/telemetry.md§2.1 (commits table)"
+        reason: "commits rows written at commit time, not session end; session_id is not a foreign key."
+    glossary:
+      - "Worktree"
+      - "Session"
+      - "Seal"
+    tests:
+      glob: "lykos/git/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/git/*.test.ts"
+    traps:
+      - "commits rows are written at commit time — a killed session retains them even though it has no sessions row (telemetry.md §2.1)."
+      - "Host git helper runs with hooks and fsmonitor off — this is intentional (extension-policy.md §4 lykos-repo-map)."
+      - "commit tool is absent when git is not available or outside a git repo — session prints one notice (telemetry.md §2.1 sessions.notes)."
+
+  - name: lykos/providers
+    paths:
+      - "lykos/providers/**/*.ts"
+    docs:
+      - path: "docs/reference/model-access.md"
+        reason: "R1/R2/R3 routes, price_basis values, credential pool and rotation."
+      - path: "docs/findings.md§1.3"
+        reason: "DeepSeek zero write premium; Anthropic write premium at 1.25×/2×; provider-boundary isolation destroys prefix warmth."
+    glossary:
+      - "Credential"
+      - "Credential pool"
+      - "Rotation"
+      - "Cooldown"
+    tests:
+      glob: "lykos/providers/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/providers/**/*.test.ts"
+    traps:
+      - "Provider-boundary isolation: cache warm on Anthropic is not warm on DeepSeek; unpinned gateway destroys prefix warmth (findings §1.3)."
+      - "Prices come from primary provider documentation only (CLAUDE.md rule 5, findings §2.4)."
+
+  - name: lykos/rearchitecture
+    paths:
+      - "lykos/rearchitecture/**/*.ts"
+    docs:
+      - path: "docs/plan/phases.md#p0.5"
+        reason: "Dependency-scan rules, what each rule enforces, which were pending."
+    glossary: []
+    tests:
+      glob: "lykos/rearchitecture/**/*.test.ts"
+      command: "npx --no-install tsx --test lykos/rearchitecture/dependency-scan.test.ts"
+    traps:
+      - "All six scan rules must stay green — the scan is exempt from kill criteria because zero violations means nobody violated it, not that the scan is dead (phases.md P0.5)."
+
+  - name: lykos/specialists (shipped files)
+    paths:
+      - "lykos/specialists/*.yaml"
+    docs:
+      - path: "docs/reference/specialists.md"
+        reason: "Eighteen-field vocabulary, shipped library, boot-freeze discipline."
+      - path: "docs/adr/0019-shipped-profiles-are-a-bundled-lowest-precedence-source.md"
+        reason: "Shipped files are never edited in place."
+      - path: "docs/adr/0023-the-specialist-vocabulary-is-seventeen-fields.md"
+        reason: "Vocabulary closed at (now) eighteen fields."
+    glossary:
+      - "Specialist"
+      - "Pack"
+      - "Skill"
+      - "Interaction mode"
+    tests:
+      glob: "lykos/config/specialists.test.ts"
+      command: "npx --no-install tsx --test lykos/config/specialists.test.ts"
+    traps:
+      - "No shipped specialist may set an inert field (rules or memory until their phases land) — a test asserts this (specialists.md §1.2)."
+      - "There is no shipped implement specialist — switching to minimal or deliberate from plan does not restore write mode (specialists.md §3)."
+      - "Shipped specialists are lowest precedence — override by copying to project or global directory (ADR-0019)."
+
+always:
+  - path: "CLAUDE.md"
+    reason: "Project rules and traps. Ignore its Git section: workers never push and never add trailers."
+  - path: "GLOSSARY.md"
+    reason: "Canonical vocabulary. Use these words in code, comments and commit messages."
+  - path: "docs/findings.md"
+    reason: "Measured facts and standing rules; read the sections the area lists."
+
+# AGENTS.md in this repo is a stale copy of CLAUDE.md (says local-only, Codex trailer). Workers are told to prefer CLAUDE.md.
+prefer_over_agents_md: "CLAUDE.md"
+
+# Narrowest verification when the task names files with sibling tests. {files} is space-joined test paths.
+test_file_command: "npx --no-install tsx --test {files}"

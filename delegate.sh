@@ -119,7 +119,20 @@ launch() {
   local bundle_ref="$base"; [ "$base" = "HEAD" ] || git -C "$REPO" show-ref --quiet "$base" || bundle_ref="HEAD"
   git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" "$bundle_ref" 2>/dev/null \
     || git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" --all
-  [ -n "$task" ] && cp "$task" "$run_dir/task.md"
+  if [ -n "$task" ]; then
+    cp "$task" "$run_dir/task.md"
+    # Deterministic context pack: files, areas, governing docs, traps, terms, tests, sealed globs.
+    local map="$BOX/projects/$PROJECT.context.yaml" map_arg="-"
+    [ -f "$map" ] && map_arg="$(winpath "$map")"
+    local meta; meta="$(node "$(winpath "$BOX/lib/pack.mjs")" "$(winpath "$REPO")" "$(winpath "$task")" \
+      "$map_arg" "$(winpath "$run_dir")" "$base_sha")" || die "context pack failed"
+    printf '%s\n' "$meta" >"$run_dir/pack.json"
+    SEALED="$(node -e 'console.log(JSON.parse(process.argv[1]).sealed.join("\n"))' "$meta")"
+    local pack_test; pack_test="$(node -e 'console.log(JSON.parse(process.argv[1]).test)' "$meta")"
+    if [ -z "${TEST_FROM_FLAG:-}" ] && [ -n "$pack_test" ]; then TEST_CMD="$pack_test"; fi
+    node -e 'for (const w of JSON.parse(process.argv[1]).warnings) console.error("agent-box: pack: " + w)' "$meta"
+    export SEALED TEST_CMD
+  fi
 
   local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
@@ -137,10 +150,13 @@ launch() {
     --add-host "host.docker.internal:$host_ip" \
     -v agent-box-npm-cache:/home/node/.npm \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
-    -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN \
+    -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED \
     "$IMAGE" >/dev/null
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
-  [ -n "$task" ] && dk cp "$(winpath "$run_dir/task.md")" "$cname:/in/task.md"
+  if [ -n "$task" ]; then
+    dk cp "$(winpath "$run_dir/task-body.md")" "$cname:/in/task.md"
+    dk cp "$(winpath "$run_dir/context.md")" "$cname:/in/context.md"
+  fi
 
   echo "agent-box: $name started ($ENGINE container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
   dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
@@ -179,7 +195,7 @@ cmd_run() {
       --timeout) TIMEOUT_MIN="$2"; shift 2 ;;
       --variant) VARIANT="$2"; shift 2 ;;
       --web) ALLOW_WEB=1; shift ;;
-      --test) TEST_CMD="$2"; shift 2 ;;
+      --test) TEST_CMD="$2"; TEST_FROM_FLAG=1; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
