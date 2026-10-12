@@ -201,26 +201,33 @@ and recalled what it read in round 1 (cache read 155k tokens).
 
 | role | model | use |
 | --- | --- | --- |
-| implement / implement-hard | `gemini-3.8-flash-tiered` medium / high | **main worker** (large quota) |
-| implement-alt | `cu/composer-2.5-fast` | second family, fan-out partner |
-| quick | `cu/composer-2.5-fast` | fast lane: small, clear tasks |
-| implement-alt2 | `deepseek/deepseek-flash-max` | third family, hard bugs only (paid per token) |
-| escalate | `antigravity/claude-sonnet-4-6` | after two cheap gate failures |
-| last-resort | `antigravity/claude-opus-4-6-thinking` | one attempt with the full failure history |
-| write / draft | Sonnet 4.6 / Gemini 3.8 Flash | prose that ships / throwaway prose |
-| review / review-alt | DeepSeek Flash / Composer 2.5 fast | default two-family review gate (read-only) |
-| review-gemini | Gemini 3.8 Flash | reviewer when the change came from Composer or DeepSeek |
-| deep-review, bughunt | `antigravity/gemini-3.1-pro-high` | slow, thorough; large or risky diffs (read-only) |
-| adjudicate | Opus 4.6 thinking | settles a disputed high-severity finding (read-only) |
-| advise / advise-alt | Kimi K3 (`cursor/kimi-k3-high`) / Opus 4.6 | `delegate.sh ask`: one-pass debate partner, never a coder; Kimi has a small budget |
-| explore | Gemini 3.8 Flash | `delegate.sh explore`: read-only research digest |
+| implement | `gemini-3.8-flash-tiered` high | **main worker** (largest quota) |
+| implement-hard, implement-alt | `deepseek/deepseek-flash-max` | retry after a gate failure; fan-out partner (bench 4/5, fastest) |
+| implement-alt2 | `cu/composer-2.5-fast` | third fan-out candidate, selected only by tests |
+| quick | `cu/composer-2.5-fast` | trivial edits whose place is known; the gate decides |
+| escalate, last-resort | `antigravity/claude-opus-4-6-thinking` | after two cheap gate failures; one attempt with the full history |
+| write / draft | Opus 4.6 / Gemini 3.8 Flash high | prose that ships / drafts |
+| review / review-alt | DeepSeek Flash / Opus 4.6 | default two-family review gate (read-only) |
+| review-gemini | Gemini 3.8 Flash high | reviewer when the change came from DeepSeek |
+| review-kimi | Kimi K3 (`cursor/kimi-k3-high`) | third view on risky diffs, until 2026-10-24 |
+| deep-review | Opus 4.6 | large or risky diffs (read-only) |
+| bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
+| adjudicate | Kimi K3, Opus 4.6 after 2026-10-24 | settles a disputed finding (read-only) |
+| advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |
+| explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
 | tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
-| review-spec / review-std | DeepSeek Flash / Composer 2.5 fast | ticket mode: the two review axes |
+| review-spec / review-std | DeepSeek Flash / Opus 4.6 | ticket mode: the two review axes |
 
-Sonnet and Opus are never a first attempt and never in a fan-out. OmniRoute drops `reasoning_effort`
-for `antigravity/claude-*`, and Cursor ids carry their effort in the name. Codex/GPT models are not
-coding workers: they fail at multi-step agent work through this router. GPT-5.6 Sol and Grok 4.6 are
-not available (2026-10-12).
+Budget (user, 2026-10-12): Gemini has the largest quota and does the bulk; DeepSeek is cheap, used where
+it is strong; Opus 4.6 has ~$30-40 per 5 hours; Kimi K3 has $20 that ends 2026-10-24. Sonnet 4.6 has no
+role: Opus or Gemini is better at each job, so it is only a stand-in when Opus is rate-limited. Composer
+misreported tool results and passed an impossible task without BLOCKED (research/findings.md §6), so it
+works only where a test decides and its words are never trusted: no reviews, research or advice.
+
+For Antigravity Gemini, `high`, `xhigh` and `max` map to the same 32768-token thinking budget, so `high`
+is the top tier. OmniRoute drops `reasoning_effort` for `antigravity/claude-*`, and Cursor ids carry
+their effort in the name. Codex/GPT models are not coding workers: they fail at multi-step agent work
+through this router. GPT-5.6 Sol and Grok 4.6 are not available (2026-10-12).
 
 Measured so far (one task each, so treat as anecdotes): on a comment fix, Composer 134 s and Gemini
 3.8 Flash 280 s both passed; on the dual-loopback fix, DeepSeek 326 s and Gemini 669 s both passed.

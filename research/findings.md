@@ -87,6 +87,9 @@ Task: add one Javadoc sentence to `CloseMatcher.of`. All diffs were one line, al
 | 2026-10-12 | RakunMiniItems Javadoc (ask tool) | Gemini 3.8 Flash | followed an answer that contradicted its stated preference; replaced a 7-line Javadoc with 1 line (scope) |
 | 2026-10-12 | RakunMiniItems Javadoc | Composer 2.5 fast | twice broke the file with a whole-file write, then repaired it with `git checkout`/`sed`; final diff correct both times |
 
+| 2026-10-12 | ticketdemo `box/slugify` review (agentic) | Kimi K3 high | 53 s, 9 steps, 121k in; one CONFIRMED finding, verified real: `maxLength: null`, `NaN` or `"abc"` returns `""` |
+| 2026-10-12 | same branch | Opus 4.6 thinking | 131 s, 8 steps, 22k in + 95k cached; no findings; listed `null` and `NaN` as checked and judged them safe (a miss) |
+
 Scope creep seen: Composer once, Gemini once. Misreported test results: none seen (not yet checked
 mechanically).
 
