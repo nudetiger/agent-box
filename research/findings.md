@@ -203,6 +203,71 @@ Land in stages; give workers a step budget and a syntax check after each edit; m
 5 reps before a model matrix; score first-try passes and rescued runs separately. All four adopted.
 Its advice to drop the TUI and herdr attach was not taken: the user asked for both.
 
+## 10. Third round: the one-path workflow, and two real Lykos tickets against Sonnet 5.5 (2026-10-13)
+
+Harness 727edcd to b8a1078. One worker at a time, except that two containers overlapped while the
+Lykos runs and the core suite shared the machine, so seconds here are under load.
+
+### Core suite, `implement` = Gemini 3.8 Flash at high effort, 1 rep
+
+12/12 (round 1 at default effort: 10/12). Seconds 58 to 530, steps 6 to 41. feature-report-sort
+with 4 more reps: 0/4, every failure the same text sort of a numeric column (`['120','15','15','7']`),
+so with the first rep **1/5** (default effort: 2/5). Higher effort did not fix it.
+
+The same task through the workflow (one run, `clikit-sort`): implement 235 s, hidden check fails;
+`review-spec` (DeepSeek Flash) 84 s, finding 1 CONFIRMED with a repro, the exact hidden failure;
+`continue --findings` 169 s, hidden check passes. 488 s in all.
+
+### Lykos T188 (#43) and T190 (#45), difficulty high, against the Sonnet 5.5 pipeline
+
+Set-up (`bench/suites/real/lykos-t188-prune`, `lykos-t190-compaction-chain`): the base is the real
+parent commit (59e7a95, 84eb48f) plus the landed change's own test files as the sealed acceptance
+test (taken from the issue lineage before any master merge: 3a03091, 0cbfddb) plus 112 oh-my-pi
+source files Sonnet was told to read. Task text: the issue body as Sonnet saw it (later checkbox
+ticks undone, the post-review spec-correction comment left out), spec #15 (last edited before the
+Sonnet run), and Sonnet's own prompt. Hidden check: the sealed tests, the sibling tests of every
+file the landed change touched, and `tsc --noEmit`; it fails on the base and passes on the landed
+reference, both measured.
+
+| | T188 | T190 |
+| --- | --- | --- |
+| Sonnet 5.5 first commit on the hidden check | e5aab20: 181/191 | 6d1e58d: 172/182 |
+| Old pipeline to landed (subagents only) | Sonnet 2 implement attempts + 1 fix, 88.5 active min; Opus 5.5 4+4 reviews, 11.9 min; wall 4 h 36 min | Sonnet 1 implement + 1 fix, 84.4 active min; Opus 5.5 5+5 reviews, 18.0 min; wall 4 h 58 min |
+| Old pipeline at API list price | $10.37 | $11.87 |
+| Gemini round 1 | pass 264/264, 1965 s, 209 steps | pass 195/195, 2650 s, 258 steps |
+| review-spec (DeepSeek Flash) | 655 s; 1 CONFIRMED bug (images and thinking count 0 tokens in the cache guard; the landed code counts both), 1 dead check, 1 missing test | 1051 s; shakes not replayed on resume (CONFIRMED; the landed Sonnet code had the same gap, fixed later as #48), side call misses transport and budgets (the old round 3 found the same) |
+| review-std (Opus 4.6) | 473 s; hardcoded entry-type string (the old round 3 fixed the same), no glossary entry | 1354 s; thinking blocks missing from `tokens_after`, no glossary entry, no ADR, two image constants |
+| Gemini fix round (`continue --findings`) | pass 264/264, 594 s, 52 steps | pass 195/195, 1426 s, 103 steps |
+| New workflow, all steps | 3687 s (3214 s with the two reviews in parallel) | 6481 s (5430 s in parallel) |
+| New workflow at API list price | $8.29 (Gemini $5.91, DeepSeek $0.08, Opus 4.6 $2.30) | $11.78 (Gemini $9.94, DeepSeek $0.15, Opus 4.6 $1.69) |
+| New workflow, money actually billed | DeepSeek $0.08; the rest is subscription quota | DeepSeek $0.15 |
+
+Prices (primary pages, read 2026-10-13, USD per MTok): Sonnet 5.5 input 2, 1 h cache write 4, cache
+read 0.10, output 10; Opus 5.5 input 4, 5 min write 5, read 0.20, output 20; Opus 4.6 input 5, read
+0.50, output 25; Gemini 3.8 Flash input 0.75, cache 0.075, output 3.75 (through 2026-12-31);
+deepseek-flash off-peak miss 0.15, hit 0.003, output 0.60.
+
+Not comparable, and why:
+
+- **The agent-box worker saw the landed tests; Sonnet wrote its own.** Those tests encode what the old
+  review rounds added, so Sonnet's first-commit score is not a capability comparison. It measures the
+  workflow as designed (acceptance test first), with the cost of writing that test left out: here it
+  came free from history.
+- Old pipeline costs leave out the main session, which ran the review-round fixes the subagents did
+  not. Claude Code transcripts record low output tokens (1,117 output over 76 calls in one run), so
+  those dollar figures are a floor. OmniRoute reports no cache writes for Opus 4.6.
+- Hidden checks cover tests and types, not docs: Gemini's first rounds wrote no ADR or glossary entry
+  on either ticket; the Opus review asked for both and the fix round added them.
+- One run per ticket.
+
+### Harness defects found by this round
+
+- `delegate.sh review` relaunches itself as `"$0"`: called as `bash delegate.sh`, both reviewers die
+  with "command not found" and the table says "(no summary)". Not fixed yet (`$BOX/delegate.sh`).
+- `pack.mjs` quoted GLOSSARY.md from the working tree, not the base commit (fixed, 0045e96).
+- SENSITIVE matched any file name containing "lock" (`tool-result-prune-blocks.test.ts`) (fixed,
+  c4e42ed, b8a1078).
+
 ## Unmeasured
 
 Token budget per 5 hours; review precision and recall beyond the cases above; misreport rate; any
