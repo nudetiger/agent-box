@@ -10,7 +10,7 @@ always:
 # warning fails this too.
 test_file_command: "bash ./gradlew --no-daemon --console=plain test {tests}"
 
-worker_skills: [tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents]
+worker_skills: [ponytail, ponytail-review, tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents]
 
 areas:
 
