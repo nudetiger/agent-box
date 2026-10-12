@@ -15,6 +15,7 @@ case "$ENGINE" in docker|podman) ;; *) echo "agent-box: unknown engine $ENGINE" 
 die() { echo "agent-box: $*" >&2; exit 1; }
 # The engine gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
 dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" "$ENGINE" "$@"; }
+cname_of() { echo "agent-box-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -33,6 +34,12 @@ Usage: delegate.sh <command> ...
                                  Resume that run's worker session with a follow-up (answer to its
                                  BLOCKED question, review findings, next step). Same model, sealed
                                  files and test; starts on its branch. Result: agent/<run>-r2, -r3...
+  questions <repo> <run-name> [--wait]
+                                 Open ask_orchestrator questions of a running worker. --wait blocks
+                                 until one appears (exit 0) or the run ends (exit 1)
+  answer   <repo> <run-name> <id> (-m TEXT | -f FILE)
+                                 Answer a running worker's question; it continues where it stopped
+                                 (run --no-ask: the worker gets no ask_orchestrator tool)
   fanout   <repo> <task.md> --roles a,b[,c] [--name N] [run options]
                                  Same task on several roles in parallel; prints a comparison table
   review   <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]
@@ -152,12 +159,12 @@ launch() {
     export SEALED TEST_CMD SKILLS_ALLOW
   fi
   # Everything `continue` needs to resume this run with the same model, rules and checks.
-  local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN; do
+  local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ASK; do
     printf '%s=%q\n' "$v" "${!v:-}"
   done >"$run_dir/meta.sh"
   printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
-  local cname="agent-box-$PROJECT-${name//[^a-zA-Z0-9_.-]/-}"
+  local cname; cname="$(cname_of "$name")"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
   # Docker Desktop forwards host-gateway to the host's loopback, where OmniRoute listens. Podman
   # needs user-mode networking, whose host address is what the VM itself resolves (gvproxy's .254);
@@ -175,7 +182,7 @@ launch() {
     -v agent-box-npm-cache:/home/node/.npm -v agent-box-gradle-cache:/home/node/.gradle \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
-    -e START_SHA -e CONTINUE_SESSION -e ROUND \
+    -e START_SHA -e CONTINUE_SESSION -e ROUND -e ASK -e ASK_WAIT_S -e ASK_TIMEOUT_MIN \
     "$IMAGE" >/dev/null
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
   if [ -n "${CONTINUE_SESSION:-}" ]; then
@@ -208,7 +215,7 @@ cmd_run() {
   [ -f "$task" ] || die "task file not found: $task"
   load_project "$repo"; need_key
   local name="" base="HEAD" role=""
-  MODEL="${DEFAULT_MODEL:-}" EFFORT="" VARIANT="" ALLOW_WEB=0 REVIEW=0
+  MODEL="${DEFAULT_MODEL:-}" EFFORT="" VARIANT="" ALLOW_WEB=0 REVIEW=0 ASK="${ASK:-1}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --role) role="$2"; shift 2
@@ -224,12 +231,13 @@ cmd_run() {
       --timeout) TIMEOUT_MIN="$2"; shift 2 ;;
       --variant) VARIANT="$2"; shift 2 ;;
       --web) ALLOW_WEB=1; shift ;;
+      --no-ask) ASK=0; shift ;;
       --test) TEST_CMD="$2"; TEST_FROM_FLAG=1; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
   [ -n "$MODEL" ] || die "no model: pass --role, --model or set DEFAULT_MODEL"
-  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL="${SCOUT_MODEL:-}"
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW ASK SCOUT_MODEL="${SCOUT_MODEL:-}"
   [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
 }
@@ -276,10 +284,46 @@ cmd_continue() {
       [ -e "$BOX/runs/$PROJECT/$name" ] || break; name="$root-r$ROUND$k"
     done
   fi
-  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ROUND
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ROUND ASK
   CONTINUE_SESSION="$session" CONTINUE_FROM="$prev" ORIG_BASE="$RUN_BASE_SHA" \
     launch "$name" "$msg_file" "$start" 0
   case "$start" in refs/heads/agent-box-tmp/*) git -C "$REPO" update-ref -d "$start" ;; esac
+}
+
+# Open questions a running worker asked with ask_orchestrator. --wait blocks until one appears
+# (exit 0) or the run ends (exit 1), so an orchestrator can watch a background run with it.
+cmd_questions() {
+  local repo="$1" name="$2" wait="${3:-}"
+  load_project "$repo"
+  local c out; c="$(cname_of "$name")"
+  while :; do
+    [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] || { echo "run $name is not running"; return 1; }
+    out="$(dk exec "$c" sh -c 'cd /out/questions 2>/dev/null || exit 0
+      for f in *.md; do
+        [ -e "$f" ] || continue; case "$f" in *.answer.md) continue ;; esac
+        n="${f%.md}"; [ -e "/in/answers/$n.md" ] || [ -e "$n.timeout" ] || { printf "## question %s\n" "$n"; cat "$f"; }
+      done')"
+    [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+    [ "$wait" = --wait ] || { echo "no open questions"; return 0; }
+    sleep 5
+  done
+}
+
+# Answers question <id> of a running worker. Written atomically: the worker never reads half a file.
+cmd_answer() {
+  local repo="$1" name="$2" id="$3"; shift 3
+  local msg_file=""
+  case "${1:-}" in
+    -m|--message) msg_file="$(mktemp)"; printf '%s\n' "$2" >"$msg_file" ;;
+    -f|--file) [ -f "$2" ] || die "answer file not found: $2"; msg_file="$2" ;;
+    *) die "answer needs -m TEXT or -f FILE" ;;
+  esac
+  [[ "$id" =~ ^[0-9]+$ ]] || die "question id must be a number"
+  load_project "$repo"
+  local c; c="$(cname_of "$name")"
+  dk exec -i "$c" sh -c "cat > /in/answers/.$id.tmp && mv /in/answers/.$id.tmp /in/answers/$id.md" <"$msg_file" \
+    || die "could not deliver the answer (is run $name still running?)"
+  echo "agent-box: answered question $id of $name"
 }
 
 # One line per run: the evidence an orchestrator selects on. Agent claims are not in it.
@@ -407,6 +451,8 @@ case "${1:-}" in
   baseline) shift; cmd_baseline "$@" ;;
   run) shift; cmd_run "$@" ;;
   continue) shift; cmd_continue "$@" ;;
+  questions) shift; cmd_questions "$@" ;;
+  answer) shift; cmd_answer "$@" ;;
   show) shift; cmd_show "$@" ;;
   clean) cmd_clean ;;
   *) usage; [ -n "${1:-}" ] && exit 1 ;;

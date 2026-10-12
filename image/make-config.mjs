@@ -9,6 +9,7 @@
 //   SCOUT_MODEL  model for the read-only `scout` subagent; empty disables it
 //   SKILLS_ALLOW comma-separated skill names the agent may load; empty = all. box-* are always allowed
 //   ALLOW_WEB    1 = webfetch allowed
+//   ASK          0 = no ask_orchestrator tool (the worker can still ask with BLOCKED)
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -57,6 +58,7 @@ if (scout) {
     model: `omniroute/${scout}`,
     steps: 30,
     permission: { edit: "deny", webfetch: "deny", task: "deny", skill: { "*": "deny" } },
+    tools: { "orchestrator_*": false },
   };
 }
 
@@ -77,6 +79,10 @@ const cfg = {
   agent,
   permission: { webfetch: web },
 };
+// Mid-run questions to the orchestrator (ask-mcp.mjs). Workers only; ASK=0 turns it off.
+if (!review && env.ASK !== "0") {
+  cfg.mcp = { orchestrator: { type: "local", command: ["node", "/opt/agent-box/ask-mcp.mjs"], enabled: true } };
+}
 
 const dir = path.join(os.homedir(), ".config", "opencode");
 fs.mkdirSync(dir, { recursive: true });

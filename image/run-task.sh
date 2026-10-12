@@ -140,11 +140,14 @@ jq -n \
   --argjson setup "$setup_exit" --argjson agent "$agent_exit" --argjson test "$test_exit" \
   --argjson seconds "$(( $(date +%s) - started ))" \
   --argjson review "${REVIEW:-0}" --argjson violation "$review_violation" \
+  --argjson asked "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.md$')" \
+  --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
     setup_exit:$setup, agent_exit:$agent, test_exit:$test, seconds:$seconds,
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation,
-    session:(if $session == "" then null else $session end), round:$round, start:$start}' >"$OUT/summary.json"
+    session:(if $session == "" then null else $session end), round:$round, start:$start,
+    questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"

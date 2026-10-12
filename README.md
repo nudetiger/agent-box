@@ -39,6 +39,8 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh run    <repo> <task.md> --role <role> [--name N] [--base REF] [--timeout MIN] [--test CMD]
 ./delegate.sh run    <repo> <task.md> --model <id> [--effort E] [--review] [--web] ...
 ./delegate.sh continue <repo> <run-name> (-m TEXT | -f FILE) [--timeout MIN]    # resume that worker's session
+./delegate.sh questions <repo> <run-name> [--wait]                              # open questions of a running worker
+./delegate.sh answer <repo> <run-name> <id> (-m TEXT | -f FILE)                 # answer one; it keeps working
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
 ./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
@@ -74,6 +76,16 @@ reverts any change made through bash before the harness runs the tests, flagged 
 written; the harness records it. This exit cut test-cheating sharply in ImpossibleBench (see research).
 It is also how a worker asks a question: it phrases BLOCKED as one, and the orchestrator answers with
 `continue`.
+
+**Mid-run questions**: workers get an `ask_orchestrator` tool (`image/ask-mcp.mjs`, a dependency-free
+local MCP server; off with `run --no-ask`, never given to reviewers or the scout). A question lands in
+`/out/questions/<n>.md` inside the running container; `questions <repo> <run> --wait` returns it, and
+`answer <repo> <run> <n> -m TEXT` delivers the answer while the worker waits. Each tool call waits at
+most 45 s (`ASK_WAIT_S`), under MCP clients' usual 60 s request timeout; the worker calls
+`wait_for_answer` to keep waiting, and after 10 min (`ASK_TIMEOUT_MIN`) it is told to decide itself.
+Questions and answers stay in `runs/<project>/<run>/questions/`; `summary.json` counts them.
+Verified 2026-10-12: a Gemini worker asked, waited through one empty 45 s call, received an answer
+that contradicted its own preferred option, and followed it.
 
 **Continue**: every run saves its OpenCode session (`opencode-data.tgz`, session id in
 `summary.json`) and its settings (`meta.sh`). `continue` starts a fresh container on the run's branch,
