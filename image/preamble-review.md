@@ -15,4 +15,12 @@ will answer questions.
 - Mark each finding CONFIRMED (you ran something that shows it, and say what) or PLAUSIBLE (read
   from code only). A finding only blocks a merge when it is CONFIRMED.
 - Skills: load `box-prove-finding` before you report, and `ponytail-review` if it is listed.
+- End your final message with every finding in this block (`[]` when there are none); the harness
+  records each one and the orchestrator answers each by its number:
+
+  ```agent-box-findings
+  [{"severity": "critical|high|medium|low", "confidence": "CONFIRMED|PLAUSIBLE",
+    "category": "logic|edge_case|missing_test|weak_test|requirement|security|scope|standard",
+    "file": "<path>", "line": 0, "issue": "<one line>", "scenario": "<input or state -> wrong result>"}]
+  ```
 

@@ -63,6 +63,8 @@ load_project() {
   REPO="$(cd "$1" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repo: $1"
   PROJECT="$(basename "$REPO" | tr '[:upper:]' '[:lower:]')"
   local env="$BOX/projects/$PROJECT.env"
+  # Benchmark fixture repos share one settings file (projects/bench.env).
+  [ -f "$env" ] || [ -z "${AGENT_BOX_PROJECT_ENV:-}" ] || env="$AGENT_BOX_PROJECT_ENV"
   [ -f "$env" ] || die "no project file $env (copy projects/example.env)"
   set -a; # shellcheck disable=SC1090
   . "$env"; set +a
@@ -94,6 +96,7 @@ cmd_clean() {
 # Prints the final agent message and token totals from OpenCode's JSON event stream.
 report() {
   local dir="$1"
+  [ -f "$dir/verdict.txt" ] && { echo "== verdict"; cat "$dir/verdict.txt"; }
   echo "== summary"; cat "$dir/summary.json" 2>/dev/null || echo "(no summary.json, see harness.log)"
   [ -f "$dir/commits.txt" ] && { echo "== commits"; cat "$dir/commits.txt"; }
   [ -f "$dir/diffstat.txt" ] && { echo "== diffstat"; tail -n 1 "$dir/diffstat.txt"; }
@@ -146,6 +149,7 @@ launch() {
     cp "$task" "$run_dir/message.md"
     cp "$CONTINUE_FROM/task-body.md" "$run_dir/task-body.md" 2>/dev/null || true
     cp "$CONTINUE_FROM/task.md" "$run_dir/task.md" 2>/dev/null || true
+    cp "$CONTINUE_FROM/pack.json" "$run_dir/pack.json" 2>/dev/null || true
   elif [ -n "$task" ]; then
     cp "$task" "$run_dir/task.md"
     # Deterministic context pack: files, areas, governing docs, traps, terms, tests, sealed globs.
@@ -159,16 +163,24 @@ launch() {
     if [ -z "${TEST_FROM_FLAG:-}" ] && [ -n "$pack_test" ]; then TEST_CMD="$pack_test"; fi
     node -e 'for (const w of JSON.parse(process.argv[1]).warnings) console.error("agent-box: pack: " + w)' "$meta"
     SKILLS_ALLOW="$(node -e 'console.log(JSON.parse(process.argv[1]).skills.join(","))' "$meta")"
-    export SEALED TEST_CMD SKILLS_ALLOW
+    # Red check (sealed tests must fail on the base) and the step budget, from the task frontmatter.
+    [ "${NO_RED:-0}" = 1 ] || RED_CMD="$(node -e 'console.log(JSON.parse(process.argv[1]).red || "")' "$meta")"
+    [ -n "${STEPS:-}" ] || STEPS="$(node -e 'console.log(JSON.parse(process.argv[1]).steps || "")' "$meta")"
+    export SEALED TEST_CMD SKILLS_ALLOW RED_CMD STEPS
   fi
   # Everything `continue` needs to resume this run with the same model, rules and checks.
-  local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ASK; do
+  local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ASK ROLE STEPS AUTOFIX SKIP_AGENT REVIEW_TARGET PREAMBLE; do
     printf '%s=%q\n' "$v" "${!v:-}"
   done >"$run_dir/meta.sh"
   printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
   local cname; cname="$(cname_of "$name")"
-  trap "dk rm -f '$cname' >/dev/null 2>&1 || true" EXIT INT TERM
+  slot_acquire "$name"
+  trap "dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
+  # The real OpenCode TUI attaches to the worker when herdr shows the run (AGENT_BOX_TUI=0: feed only).
+  TUI=0
+  if [ "$skip_agent" != 1 ] && [ "${AGENT_BOX_TUI:-1}" != 0 ] && herdr_ok; then TUI=1; fi
+  export TUI ROLE="${ROLE:-}" AUTOFIX="${AUTOFIX:-1}" HIDDEN="${HIDDEN_DIR:+1}" PREAMBLE="${PREAMBLE:-}"
   # Docker Desktop forwards host-gateway to the host's loopback, where OmniRoute listens. Podman
   # needs user-mode networking, whose host address is what the VM itself resolves (gvproxy's .254);
   # the gateway Podman would inject reaches the WSL interface, not loopback.
@@ -186,8 +198,10 @@ launch() {
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
     -e START_SHA -e CONTINUE_SESSION -e ROUND -e ASK -e ASK_WAIT_S -e ASK_TIMEOUT_MIN \
+    -e RED_CMD -e STEPS -e AUTOFIX -e AUTOFIX_MIN -e TUI -e ROLE -e HIDDEN -e PREAMBLE \
     "$IMAGE" >/dev/null
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
+  [ -n "${HIDDEN_DIR:-}" ] && dk cp "$(winpath "$HIDDEN_DIR")/." "$cname:/in/hidden"
   if [ -n "${CONTINUE_SESSION:-}" ]; then
     dk cp "$(winpath "$run_dir/message.md")" "$cname:/in/task.md"
     dk cp "$(winpath "$CONTINUE_FROM/opencode-data.tgz")" "$cname:/in/opencode-data.tgz"
@@ -206,8 +220,39 @@ launch() {
     git -C "$REPO" fetch -q "$(winpath "$run_dir/result.bundle")" "refs/heads/$branch:refs/heads/$branch" \
       && echo "agent-box: fetched into $REPO as branch $branch" >&2
   fi
+  slot_release
+  # Checks, verdict, next action and the ledger entry (lib/ledger.mjs, docs/ledger.md).
+  if [ -f "$run_dir/summary.json" ] && [ "${LEDGER_SKIP:-0}" != 1 ]; then
+    local lopts=()
+    [ -n "${LEDGER_MODE:-}" ] && lopts+=(--mode "$LEDGER_MODE")
+    [ -n "${LEDGER_PARENT:-}" ] && lopts+=(--parent "$LEDGER_PARENT")
+    [ -n "${LEDGER_BENCH:-}" ] && lopts+=(--bench "$LEDGER_BENCH")
+    [ -n "${LEDGER_FEATURE:-}" ] && lopts+=(--feature "$LEDGER_FEATURE")
+    [ -n "${LEDGER_TICKET:-}" ] && lopts+=(--ticket "$LEDGER_TICKET")
+    [ -n "${REVIEW_TARGET:-}" ] && lopts+=(--target "$REVIEW_TARGET")
+    node "$(winpath "$BOX/lib/ledger.mjs")" finish "$(winpath "$REPO")" "$(winpath "$run_dir")" "${lopts[@]}" >"$run_dir/verdict.txt" 2>>"$run_dir/harness.log" \
+      || echo "ledger: could not record this run (see harness.log)" >"$run_dir/verdict.txt"
+  fi
   report "$run_dir"
 }
+
+# Concurrency slots: at most AGENT_BOX_SLOTS containers at once (default 4), whatever starts them
+# (fanout, bench, ticket mode, several orchestrators). A slot whose owner process died is reclaimed.
+SLOT=""
+slot_acquire() {
+  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0
+  mkdir -p "$d"
+  while :; do
+    for i in $(seq 1 "$n"); do
+      if mkdir "$d/$i" 2>/dev/null; then echo "$$ $1" >"$d/$i/owner"; SLOT="$d/$i"; return 0; fi
+      read -r pid _ <"$d/$i/owner" 2>/dev/null || pid=""
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$d/$i"; fi
+    done
+    [ "$waited" = 0 ] && echo "agent-box: $1 waits for a free slot ($n in use; AGENT_BOX_SLOTS)" >&2
+    waited=1; sleep 3
+  done
+}
+slot_release() { [ -n "$SLOT" ] && rm -rf "$SLOT"; SLOT=""; return 0; }
 
 cmd_baseline() {
   load_project "$1"
@@ -237,11 +282,20 @@ cmd_run() {
       --web) ALLOW_WEB=1; shift ;;
       --no-ask) ASK=0; shift ;;
       --test) TEST_CMD="$2"; TEST_FROM_FLAG=1; shift 2 ;;
+      --steps) STEPS="$2"; shift 2 ;;
+      --autofix) AUTOFIX="$2"; shift 2 ;;
+      --no-autofix) AUTOFIX=0; shift ;;
+      --no-red) NO_RED=1; shift ;;
+      --hidden) HIDDEN_DIR="$2"; shift 2 ;;          # benchmark check: files copied in before the tests
+      --bench) LEDGER_BENCH="$2"; shift 2 ;;          # benchmark attempt: suite/task in the ledger
+      --mode) LEDGER_MODE="$2"; shift 2 ;;
+      --preamble) PREAMBLE="$2"; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
   [ -n "$MODEL" ] || die "no model: pass --role, --model or set DEFAULT_MODEL"
-  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW ASK SCOUT_MODEL="${SCOUT_MODEL:-}"
+  ROLE="$role"
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW ASK ROLE SCOUT_MODEL="${SCOUT_MODEL:-}" STEPS="${STEPS:-}" AUTOFIX="${AUTOFIX:-1}" NO_RED="${NO_RED:-0}"
   [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
 }
@@ -251,18 +305,29 @@ cmd_run() {
 # findings, or asks for the next step. Any earlier round can be continued again, which forks it.
 cmd_continue() {
   local repo="$1" from="$2"; shift 2
-  local msg_file="" name="" timeout=""
+  local msg_file="" name="" timeout="" findings="" drop="" cause="worker_careless" text=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      -m|--message) msg_file="$(mktemp)"; printf '%s\n' "$2" >"$msg_file"; shift 2 ;;
-      -f|--file) [ -f "$2" ] || die "message file not found: $2"; msg_file="$2"; shift 2 ;;
+      -m|--message) text="$2"; shift 2 ;;
+      -f|--file) [ -f "$2" ] || die "message file not found: $2"; text="$(cat "$2")"; shift 2 ;;
+      --findings) findings="$2"; shift 2 ;;   # REVIEW-RUN[:n,m][+REVIEW-RUN...]: forward these findings
+      --drop) drop="$2"; shift 2 ;;           # REVIEW-RUN:n,m: findings checked and wrong (false positives)
+      --cause) cause="$2"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       --timeout) timeout="$2"; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
-  [ -n "$msg_file" ] || die "continue needs -m TEXT or -f FILE"
+  [ -n "$text" ] || [ -n "$findings" ] || die "continue needs -m TEXT, -f FILE or --findings REVIEW-RUN[:n,m]"
   load_project "$repo"; need_key
+  msg_file="$(mktemp)"
+  # Review findings go to the worker verbatim from findings.json, never retyped; the ledger records
+  # which were forwarded and which were dropped as false positives.
+  if [ -n "$findings" ]; then
+    node "$(winpath "$BOX/lib/forward.mjs")" "$(winpath "$BOX/runs/$PROJECT")" "$findings" "$drop" "$cause" "$PROJECT" >"$msg_file" \
+      || die "could not read the findings ($findings)"
+  fi
+  [ -n "$text" ] && printf '%s\n' "$text" >>"$msg_file"
   local prev="$BOX/runs/$PROJECT/$from"
   for f in summary.json meta.sh opencode-data.tgz; do
     [ -f "$prev/$f" ] || die "run $from cannot be continued: no $f (runs made before session saving have none)"
@@ -288,8 +353,8 @@ cmd_continue() {
       [ -e "$BOX/runs/$PROJECT/$name" ] || break; name="$root-r$ROUND$k"
     done
   fi
-  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ROUND ASK
-  CONTINUE_SESSION="$session" CONTINUE_FROM="$prev" ORIG_BASE="$RUN_BASE_SHA" \
+  export MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ROUND ASK ROLE STEPS AUTOFIX
+  CONTINUE_SESSION="$session" CONTINUE_FROM="$prev" ORIG_BASE="$RUN_BASE_SHA" LEDGER_PARENT="$from" \
     launch "$name" "$msg_file" "$start" 0
   case "$start" in refs/heads/agent-box-tmp/*) git -C "$REPO" update-ref -d "$start" ;; esac
 }
@@ -298,24 +363,27 @@ cmd_continue() {
 # reports the worker's state to herdr. Ends when the run's container is gone.
 cmd_watch() {
   load_project "$1"
-  local name="$2" c dir model="" i
+  local name="$2" c dir model="" role="" i
   c="$(cname_of "$name")"; dir="$BOX/runs/$PROJECT/$name"
-  [ -f "$dir/meta.sh" ] && model="$(. "$dir/meta.sh"; echo "$MODEL")"
+  [ -f "$dir/meta.sh" ] && read -r model role < <(. "$dir/meta.sh"; echo "$MODEL ${ROLE:-}")
   for i in $(seq 1 60); do [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && break; sleep 1; done
   # The exec ends with an error when the run removes its container: that is the normal end.
   { dk exec "$c" sh -c 'tail -n +1 -F /out/harness.log /out/events.jsonl 2>/dev/null' 2>/dev/null || true; } \
-    | node "$(winpath "$BOX/lib/watch.mjs")" "$name" "$model" || true
-  for i in $(seq 1 30); do [ -f "$dir/summary.json" ] && break; sleep 1; done
-  local verdict="no summary.json (run interrupted?)"
-  [ -f "$dir/summary.json" ] && verdict="$(jq -r '"tests \(if .test_exit == 0 then "pass" elif .test_exit == -1 then "not run" else "FAIL (\(.test_exit))" end), \(.commits) commit(s), \(.seconds)s" + (if .blocked then ", BLOCKED: \(.blocked)" else "" end) + (if (.sealed_violation|length) > 0 then ", SEALED-EDIT" else "" end)' "$dir/summary.json")"
-  echo; echo "== $name done: $verdict"
+    | AB_COLS="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" node "$(winpath "$BOX/lib/watch.mjs")" "$name" "$model" "$role" || true
+  # The verdict line comes from lib/ledger.mjs (checks + ledger), written after the container is gone.
+  for i in $(seq 1 60); do [ -f "$dir/verdict.txt" ] && break; sleep 1; done
+  local verdict="no verdict (run interrupted?)"
+  [ -f "$dir/summary.json" ] && verdict="$(jq -r '"\(.verdict // "?"), tests \(if .test_exit == 0 then "pass" elif .test_exit == -1 then "not run" else "FAIL (\(.test_exit))" end)\(if (.autofix // 0) > 0 then " after \(.autofix) auto-fix" else "" end), \(.commits) commit(s), \(.seconds)s" + (if .blocked then ", BLOCKED: \(.blocked)" else "" end) + (if ((.flags // []) | length) > 0 then ", " + ([.flags[].flag] | join(" ")) else "" end)' "$dir/summary.json")"
+  echo; printf '\e[1m== %s done: %s\e[0m\n' "$name" "$verdict"
+  [ -f "$dir/summary.json" ] && jq -r '"   next: \(.next // "?")"' "$dir/summary.json"
   [ -f "$dir/diffstat.txt" ] && tail -n 1 "$dir/diffstat.txt"
   if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
     local short="${model##*/}"; short="${short%-tiered}"
     "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
       --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
     read -r -p "Enter closes this tab. " _ || true
-    "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true
+    if [ -n "${AB_HERDR_TAB:-}" ]; then "$HERDR_BIN_PATH" tab close "$AB_HERDR_TAB" >/dev/null 2>&1 || true
+    else "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true; fi
   fi
 }
 
@@ -331,20 +399,54 @@ herdr_ws() {
   [ -n "$ws" ] || ws="$(herdr workspace create --label agent-box --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
   echo "$ws"
 }
+# Each run's tab: the real OpenCode TUI attached to the worker on the left (TUI=1), the agent-box feed
+# (harness steps, tool calls, verdict; reports state to herdr) on the right.
 herdr_open() {
-  local name="$1" ws pane script
+  local name="$1" ws tabjson tab pane feed dir="$BOX/runs/$PROJECT/$1"
   herdr_ok || return 0
   ws="$(herdr_ws)"; [ -n "$ws" ] && [ "$ws" != null ] || return 0
-  pane="$(herdr tab create --workspace "$ws" --label "$name" --cwd "$(winpath "$BOX")" 2>/dev/null | jq -r '.result.root_pane.pane_id')"
+  tabjson="$(herdr tab create --workspace "$ws" --label "$name" --cwd "$(winpath "$BOX")" 2>/dev/null)" || return 0
+  tab="$(jq -r '.result.tab.tab_id' <<<"$tabjson")"; pane="$(jq -r '.result.root_pane.pane_id' <<<"$tabjson")"
   [ -n "$pane" ] && [ "$pane" != null ] || return 0
-  # A script file, so no quoting has to survive the pane's shell (PowerShell on Windows).
-  script="$BOX/runs/$PROJECT/$name/watch.sh"
-  printf '#!/usr/bin/env bash\nexec %q watch %q %q\n' "$BOX/delegate.sh" "$REPO" "$name" >"$script"
-  if command -v cygpath >/dev/null; then
-    herdr pane run "$pane" "& '$(cygpath -w "$(command -v bash)")' -l '$(cygpath -m "$script")'" >/dev/null 2>&1 || true
+  # Script files, so no quoting has to survive the pane's shell (PowerShell on Windows).
+  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q\nexec %q watch %q %q\n' "$tab" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
+  if [ "${TUI:-0}" = 1 ]; then
+    printf '#!/usr/bin/env bash\nexec %q tui %q %q\n' "$BOX/delegate.sh" "$REPO" "$name" >"$dir/tui.sh"
+    feed="$(herdr pane split "$pane" --direction right --ratio "${AGENT_BOX_TUI_RATIO:-0.66}" --cwd "$(winpath "$BOX")" 2>/dev/null | jq -r '.result.pane.pane_id')"
+    herdr_launch "$pane" "$dir/tui.sh"
+    if [ -n "$feed" ] && [ "$feed" != null ]; then herdr_launch "$feed" "$dir/watch.sh"; fi
   else
-    herdr pane run "$pane" "bash -l '$script'" >/dev/null 2>&1 || true
+    herdr_launch "$pane" "$dir/watch.sh"
   fi
+}
+herdr_launch() {
+  if command -v cygpath >/dev/null; then
+    herdr pane run "$1" "& '$(cygpath -w "$(command -v bash)")' -l '$(cygpath -m "$2")'" >/dev/null 2>&1 || true
+  else
+    herdr pane run "$1" "bash -l '$2'" >/dev/null 2>&1 || true
+  fi
+}
+
+# The real OpenCode TUI, attached to a running worker's session through the OpenCode server inside its
+# container (run-task.sh starts it when TUI=1). Typing into it reaches the worker: that is steering.
+cmd_tui() {
+  load_project "$1"
+  local name="$2" c sid="" i
+  c="$(cname_of "$name")"
+  printf '\e[2m%s: waiting for the worker to start (setup and checks run first)...\e[0m\n' "$name"
+  for i in $(seq 1 900); do
+    if [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != true ]; then
+      [ "$i" -gt 30 ] && break; sleep 1; continue
+    fi
+    sid="$(dk exec "$c" sh -c "jq -r 'select(.sessionID) | .sessionID' /out/events.jsonl 2>/dev/null | head -n 1" 2>/dev/null | tr -d '\r')"
+    [ -n "$sid" ] && break
+    sleep 2
+  done
+  if [ -n "$sid" ]; then
+    dk exec -it "$c" opencode attach http://127.0.0.1:4096 --session "$sid" || true
+  fi
+  printf '\n%s: the worker is gone; its OpenCode session is saved for `continue`.\n' "$name"
+  if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then sleep 2; "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true; fi
 }
 
 # Open questions a running worker asked with ask_orchestrator. --wait blocks until one appears
@@ -475,6 +577,70 @@ cmd_review() {
   done
 }
 
+# Ledger: reasons and decisions. note labels why something failed; accept/reject/merged/discard record
+# the orchestrator's decision on a run (the trust ledger). refs lists what still needs a reason.
+cmd_note() {
+  local repo="$1" run="$2"; shift 2
+  load_project "$repo"
+  node "$(winpath "$BOX/lib/ledger.mjs")" note "$PROJECT" "$run" "$@"
+}
+cmd_outcome() {
+  local result="$1" repo="$2" run="$3"; shift 3
+  load_project "$repo"
+  node "$(winpath "$BOX/lib/ledger.mjs")" outcome "$PROJECT" "$run" --result "$result" "$@"
+}
+cmd_refs() {
+  load_project "$1"
+  node "$(winpath "$BOX/lib/ledger.mjs")" refs "$PROJECT" "$2"
+}
+
+# Read-only research: a worker answers one question about the code with file:line evidence, so the
+# orchestrator reads a digest instead of the files. Follow up with `continue <repo> <run> -m ...`.
+cmd_explore() {
+  local repo="$1" question="$2"; shift 2
+  local role="explore" name="" passthru=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      *) passthru+=("$1"); shift ;;
+    esac
+  done
+  load_project "$repo"
+  [ -n "$name" ] || name="ex-$(date +%Y%m%d-%H%M%S)"
+  local task="$BOX/runs/$PROJECT/.$name.md"
+  mkdir -p "$BOX/runs/$PROJECT"
+  printf '%s\n' "$question" >"$task"
+  "$0" run "$repo" "$task" --role "$role" --review --preamble explore --mode explore --name "$name" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name.log" 2>&1 \
+    || { tail -n 20 "$BOX/runs/$PROJECT/.$name.log"; die "explore run failed"; }
+  local out="$BOX/runs/$PROJECT/$name"
+  echo "== $name ($(jq -r '"\(.seconds)s"' "$out/summary.json" 2>/dev/null))"
+  cat "$out/final.md" 2>/dev/null || echo "(no answer; see $out)"
+}
+
+# Different tasks in parallel, each its own worker and branch (concurrency capped by the slots).
+cmd_batch() {
+  local repo="$1"; shift
+  local tasks=() passthru=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      *.md) tasks+=("$1"); shift ;;
+      *) passthru+=("$1"); shift ;;
+    esac
+  done
+  [ "${#tasks[@]}" -gt 0 ] || die "batch needs one or more task.md files"
+  load_project "$repo"
+  herdr_ok && herdr_ws >/dev/null
+  local stamp names=() t n; stamp="$(date +%Y%m%d-%H%M%S)"
+  for t in "${tasks[@]}"; do
+    n="b$stamp-$(basename "$t" .md | tr -c 'a-zA-Z0-9\n' '-' | cut -c1-30)"
+    "$0" run "$repo" "$t" --name "$n" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    names+=("$n"); sleep 2
+  done
+  wait
+  table "$BOX/runs/$PROJECT" "${names[@]}"
+}
+
 # Single-pass advisor: debate, critique or brainstorm with another model. No container, no tools.
 cmd_ask() {
   local repo="$1"; shift
@@ -514,6 +680,17 @@ case "${1:-}" in
   watch) shift; cmd_watch "$@" ;;
   answer) shift; cmd_answer "$@" ;;
   show) shift; cmd_show "$@" ;;
+  tui) shift; cmd_tui "$@" ;;
+  note) shift; cmd_note "$@" ;;
+  refs) shift; cmd_refs "$@" ;;
+  accept) shift; cmd_outcome accepted "$@" ;;
+  reject) shift; cmd_outcome rejected "$@" ;;
+  merged) shift; cmd_outcome merged "$@" ;;
+  discard) shift; cmd_outcome discarded "$@" ;;
+  explore) shift; cmd_explore "$@" ;;
+  batch) shift; cmd_batch "$@" ;;
+  stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
+  dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
   *) usage; [ -n "${1:-}" ] && exit 1 ;;
 esac

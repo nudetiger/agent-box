@@ -10,6 +10,11 @@ import path from "node:path";
 
 const QDIR = "/out/questions";
 const ADIR = "/in/answers";
+// One line in the harness log, so the live feed (delegate.sh watch, herdr) shows a question the moment
+// it is asked; OpenCode reports the tool call itself only when it returns.
+const note = (msg) => {
+  try { fs.appendFileSync("/out/harness.log", `[run-task ${new Date().toISOString().slice(11, 19)}] ${msg.replace(/\s+/g, " ").slice(0, 300)}\n`); } catch { /* no log */ }
+};
 const WAIT_S = Number(process.env.ASK_WAIT_S || 45);
 const TIMEOUT_MIN = Number(process.env.ASK_TIMEOUT_MIN || 10);
 fs.mkdirSync(QDIR, { recursive: true });
@@ -25,6 +30,7 @@ async function waitFor(id) {
     if (fs.existsSync(file)) {
       const answer = fs.readFileSync(file, "utf8").trim();
       fs.writeFileSync(path.join(QDIR, `${id}.answer.md`), answer + "\n");
+      note(`answer ${id} received`);
       return `Answer to question ${id} from the orchestrator:\n\n${answer}`;
     }
     await sleep(1000);
@@ -59,6 +65,7 @@ async function call(name, args) {
     const ids = fs.readdirSync(QDIR).map((f) => parseInt(f, 10)).filter((n) => !Number.isNaN(n));
     const id = ids.length ? Math.max(...ids) + 1 : 1;
     fs.writeFileSync(path.join(QDIR, `${id}.md`), String(args.question || "").trim() + "\n");
+    note(`question ${id}: ${String(args.question || "")}`);
     return `Question ${id} sent.\n\n` + (await waitFor(id));
   }
   if (name === "wait_for_answer") {

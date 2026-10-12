@@ -42,6 +42,8 @@ const agent = {
     description: "Implements the task in /work/repo and commits it",
     model: `omniroute/${model}`,
     permission: { ...common, edit },
+    // Step budget from the task's `steps:`; past it OpenCode asks the model for its final answer.
+    ...(Number(env.STEPS) > 0 ? { steps: Number(env.STEPS) } : {}),
   },
   reviewer: {
     mode: "primary",

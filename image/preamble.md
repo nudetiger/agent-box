@@ -26,7 +26,15 @@ them in your final message. A decision you cannot make well without the orchestr
   The orchestrator answers by resuming this same session: you keep everything you read and tried.
 - Your final message must contain: what you changed, the test result exactly as the command printed
   its summary, and anything you were unsure about or did not finish. Do not claim success you did not
-  verify. A reviewer will check the diff and rerun the tests.
+  verify. A reviewer will check the diff and rerun the tests. End it with this block, filled in (the
+  harness reads it and compares `tests` with its own test run):
+
+  ```agent-box-report
+  {"status": "done|partial|blocked", "tests": "pass|fail|not_run", "test_summary": "<summary line exactly as printed>",
+   "decisions": ["<choices the task left open, one line each>"],
+   "context_gaps": ["<what the task or context pack should have told you but did not>"],
+   "test_dispute": [{"file": "<sealed test you believe is wrong>", "why": "<reason>"}]}
+  ```
 - Speed: every tool call costs a full model round trip. Files the context pack pastes are already
   current; do not read them again. Run `{{TEST_CMD}}` when your change is complete, and again only
   after you fix something; the harness reruns it after you finish.

@@ -2,3 +2,5 @@ projects/*.env
 !projects/example.env
 runs/
 node_modules/
+ledger/
+bench/.repos/
