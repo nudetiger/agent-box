@@ -1,0 +1,23 @@
+{
+  "allow": [
+    "src/args.ts",
+    "test/**"
+  ],
+  "files": {
+    "README.md": "0b409fc0e58723b801b2203a7ae779547626388817fb36939dd5660aaf2a51bb",
+    "package.json": "fca44c0733616dc81dbaa27458b1af0e721e7f10618b9f9d707f3ba0a8dede73",
+    "src/args.ts": "004017f726d5c6ad69eabddbd4a4348cedc8b7e22142005fef9fed35eb11b568",
+    "src/cli.ts": "ef9a17e67eabee11e838a9fb091bf5b5de4b64af2d3e55da0681028cab3f4d6a",
+    "src/csv.ts": "5e663c4c8b15cd824d56348b836a17e7f702a63f975b7229f05e50a36fc30b3d",
+    "src/help.ts": "00759cd7da5a379f5572aaa82575e37ffb00862a86dec172c89263258c824b06",
+    "src/main.ts": "7bdc257ab683c3a6c1d33632a7d69548a7f17e0faaa722413e40260079e673e1",
+    "src/report.ts": "b867b51cb3d08d8f81cf7eb57373114d9c47359fbff8e8a10b80ff8d75dce7cf",
+    "src/table.ts": "97c8b256aa32eb0bf319179169e7e61182df93761a7fd550212a05445eb550af",
+    "src/text.ts": "07e02a5c75a03df4423f2cadcbc054903cec8e67bff005a84061f9d3c0713ed0",
+    "test/args.test.ts": "2058019f52b8c9120d6674360a2df9d6a8d1ca22cbd726330194e33098f3bcfe",
+    "test/cli.test.ts": "941cf10975a0af3ac2ff28e28235a48d2cda0d8b3ce8002f341298c7fac2a354",
+    "test/csv.test.ts": "d1f543ff020466bdfafba8840564262eb860a2b471dd9782d9ef3c34d3990fde",
+    "test/table.test.ts": "9220de4c5e7a0e5503a16cabf0c29354a66ae00a28c7b15a1aca3ad4389588a1",
+    "test/text.test.ts": "d9a1b224b63b7f840272addb849e8643b13288f2ed0e37772f9a57683d0f1067"
+  }
+}

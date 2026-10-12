@@ -1,0 +1,7 @@
+fixture: shopcart
+check: "node --test .bench/rounding.test.ts test/money.test.ts test/cart.test.ts test/receipt.test.ts"
+kind: bugfix
+difficulty: 3
+expect: pass
+timeout_min: 20
+measures: "Diagnosis: the symptom is a discount on a receipt, the root cause is percentOf in money.ts, which tax shares; a patch where the symptom shows leaves tax wrong and fails."

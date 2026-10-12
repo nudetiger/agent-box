@@ -1,0 +1,7 @@
+fixture: clikit
+check: "node --test .bench/truncate.test.ts test/table.test.ts test/cli.test.ts"
+kind: bugfix
+difficulty: 2
+expect: pass
+timeout_min: 15
+measures: "Fixing from a description alone: the obvious slice(0, max - 1) fix breaks at widths 0 and 1, which 'never wider than max' implies."

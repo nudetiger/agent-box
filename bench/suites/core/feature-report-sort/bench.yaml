@@ -1,0 +1,7 @@
+fixture: clikit-sort
+check: "node --test test/report-sort.test.ts test/cli.test.ts .bench/sort-hidden.test.ts"
+kind: feature
+difficulty: 3
+expect: pass
+timeout_min: 20
+measures: "A small feature across parser spec, report logic and docs; hidden cases the spec implies but does not state: numeric columns sort as numbers, ties keep file order, sorting happens before --limit."

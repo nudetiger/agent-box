@@ -1,0 +1,12 @@
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 243db42..c064cc2 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -37,6 +37,7 @@ export class Inventory {
+   }
+ 
+   reserve(sku: string, qty: number): void {
++    if (qty > this.onHand(sku)) throw new InsufficientStock(sku, qty, this.onHand(sku));
+     this.#reserved.set(sku, this.reserved(sku) + qty);
+   }
+ 

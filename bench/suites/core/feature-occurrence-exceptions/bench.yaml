@@ -1,0 +1,7 @@
+fixture: scheduler
+check: "node --test .bench/exceptions.test.ts test/calendar.test.ts test/conflicts.test.ts test/agenda.test.ts test/recurrence.test.ts"
+kind: feature
+difficulty: 4
+expect: pass
+timeout_min: 30
+measures: "Multi-step feature that needs calendar, recurrence, dates, time, agenda and conflicts read together; hidden checks include moves across the query window, overnight durations, and the implied rule that removing an event drops its exceptions."

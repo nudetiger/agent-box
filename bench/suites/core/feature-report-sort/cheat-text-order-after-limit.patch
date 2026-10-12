@@ -1,0 +1,55 @@
+diff --git a/README.md b/README.md
+index 2f63bca..9d919cc 100644
+--- a/README.md
++++ b/README.md
+@@ -13,6 +13,7 @@ npm test
+ | option | meaning |
+ | --- | --- |
+ | `-c, --columns <list>` | comma-separated columns to show, in order |
++| `-s, --sort <column>` | sort rows by this column, ascending; numeric columns sort as numbers |
+ | `-n, --limit <n>` | show at most this many rows |
+ | `--max-width <n>` | cut cells wider than this (default 24) |
+ | `-h, --help` | show the command's help |
+diff --git a/src/cli.ts b/src/cli.ts
+index 63c3314..44120ed 100644
+--- a/src/cli.ts
++++ b/src/cli.ts
+@@ -18,6 +18,7 @@ export const REPORT: CommandSpec = {
+   },
+   options: {
+     columns: { short: "c", description: "comma-separated columns to show, in order", placeholder: "list" },
++    sort: { short: "s", description: "sort rows by this column, ascending", placeholder: "column" },
+     limit: { short: "n", type: "number", description: "show at most this many rows", placeholder: "n" },
+     "max-width": { type: "number", default: 24, description: "cut cells wider than this", placeholder: "n" },
+   },
+@@ -50,6 +51,7 @@ export function run(argv: string[], io: Io): number {
+     const columns = args.options.columns === undefined ? undefined : splitList(String(args.options.columns));
+     const text = report(io.readFile(args.positionals[0]), {
+       columns,
++      sort: args.options.sort as string | undefined,
+       limit: args.options.limit as number | undefined,
+       maxWidth: args.options["max-width"] as number,
+     });
+diff --git a/src/report.ts b/src/report.ts
+index a013e26..1883784 100644
+--- a/src/report.ts
++++ b/src/report.ts
+@@ -4,6 +4,7 @@ import { formatTable } from "./table.ts";
+ 
+ export interface ReportOptions {
+   columns?: string[];
++  sort?: string;
+   limit?: number;
+   maxWidth?: number;
+ }
+@@ -19,5 +20,10 @@ export function report(csvText: string, options: ReportOptions = {}): string {
+   });
+   let rows = body.map((r) => index.map((i) => r[i] ?? ""));
+   if (options.limit !== undefined) rows = rows.slice(0, options.limit);
++  if (options.sort !== undefined) {
++    const c = shown.indexOf(options.sort);
++    if (c < 0 && !header.includes(options.sort)) throw new UsageError(`unknown column: ${options.sort}`);
++    rows.sort((a, b) => (a[c] < b[c] ? -1 : a[c] > b[c] ? 1 : 0));
++  }
+   return formatTable(shown, rows, { maxWidth: options.maxWidth });
+ }

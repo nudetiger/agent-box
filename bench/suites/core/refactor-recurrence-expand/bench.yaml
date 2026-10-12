@@ -1,0 +1,7 @@
+fixture: scheduler
+check: "node --test .bench/expand.test.ts test/recurrence.test.ts test/calendar.test.ts"
+kind: refactor
+difficulty: 3
+expect: pass
+timeout_min: 20
+measures: "Behaviour preservation under restructuring; hidden pins cover what a rewrite tends to 'fix': monthly days skipped rather than clamped, week intervals counted from the Monday of the start's week, intervals anchored at the start date."

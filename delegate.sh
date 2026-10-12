@@ -254,6 +254,29 @@ slot_acquire() {
 }
 slot_release() { [ -n "$SLOT" ] && rm -rf "$SLOT"; SLOT=""; return 0; }
 
+# Setup and a test command on any commit, no agent: a merged tree before it lands, a benchmark's hidden
+# check (--hidden: files the worker never saw, copied in first). Not a run in the ledger.
+cmd_check() {
+  local repo="$1" ref="$2"; shift 2
+  local name=""
+  load_project "$repo"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --test) TEST_CMD="$2"; shift 2 ;;
+      --hidden) HIDDEN_DIR="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [ -n "$name" ] || name="check-$(date +%Y%m%d-%H%M%S)"
+  export TEST_CMD
+  MODEL="" LEDGER_SKIP=1 launch "$name" "" "$ref" 1 >/dev/null
+  jq -r '"check (.test_exit)"' "$BOX/runs/$PROJECT/$name/summary.json" 2>/dev/null || echo "check -1"
+}
+
+# Ticket mode (lib/ticket.mjs): to-tickets tickets, tests first, locked, implemented, reviewed, landed.
+cmd_ticket_js() { local sub="$1" repo="$2"; shift 2; node "$(winpath "$BOX/lib/ticket.mjs")" "$sub" "$(winpath "$(cd "$repo" && pwd)")" "$@"; }
+
 cmd_baseline() {
   load_project "$1"
   MODEL="" launch "baseline-$(date +%Y%m%d-%H%M%S)" "" HEAD 1
@@ -689,6 +712,14 @@ case "${1:-}" in
   discard) shift; cmd_outcome discarded "$@" ;;
   explore) shift; cmd_explore "$@" ;;
   batch) shift; cmd_batch "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  ticket) shift; repo="$1" t="$2"; shift 2; cmd_ticket_js run "$repo" "$(winpath "$t")" "$@" ;;
+  ticket-review) shift; cmd_ticket_js review "$@" ;;
+  land) shift; cmd_ticket_js land "$@" ;;
+  feature) shift; repo="$1" f="$2" sub="${3:-status}"; shift 2; [ $# -gt 0 ] && shift
+    case "$sub" in run) sub=run-feature ;; esac
+    cmd_ticket_js "$sub" "$repo" "$(winpath "$f")" "$@" ;;
+  defect) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js defect "$repo" "$(winpath "$f")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;

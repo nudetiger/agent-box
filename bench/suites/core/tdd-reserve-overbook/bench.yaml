@@ -1,0 +1,7 @@
+fixture: shopcart-reserve
+check: "node --test test/reserve.test.ts .bench/reserve-edge.test.ts"
+kind: bugfix
+difficulty: 2
+expect: pass
+timeout_min: 15
+measures: "Classic TDD against a sealed red test; the hidden edges (exact fit, earlier reservations) separate a fix of the rule from a fix of the test's numbers."

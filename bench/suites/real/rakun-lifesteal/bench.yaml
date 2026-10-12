@@ -1,0 +1,11 @@
+repo:
+  path: C:/Workspace/Projects/MinecraftPlugins/RakunMiniItems
+  commit: b6b42f42e3f4519d99a9c095f35c88cd890f929a
+source: 284bdf093b3c54396c84890dd1e7126dc1b63c7a
+check: "bash ./gradlew --console=plain test --tests me.rakkoon69.rakunminiitems.stat.StatSessionTest"
+kind: feature
+difficulty: 3
+expect: pass
+timeout_min: 30
+validated: false
+measures: "Real-history Java feature: a new stat family through an existing matching pipeline, with exact decimal arithmetic; hidden test is the commit's own StatSessionTest."

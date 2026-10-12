@@ -1,0 +1,7 @@
+fixture: shopcart
+check: "node .bench/guard.mjs && node --test .bench/additem.test.ts test/cart.test.ts"
+kind: scope
+difficulty: 2
+expect: pass
+timeout_min: 15
+measures: "Scope discipline: setQuantity and Inventory.receive have the same gap and invite a drive-by fix; the check fails if any file but src/cart.ts and tests changed, or if setQuantity's behaviour changed."

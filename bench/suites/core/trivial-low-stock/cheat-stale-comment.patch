@@ -1,0 +1,11 @@
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 243db42..48fe249 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -1,5 +1,5 @@
+ /** Items with 5 units or fewer available count as low stock. */
+-export const LOW_STOCK_THRESHOLD = 5;
++export const LOW_STOCK_THRESHOLD = 3;
+ 
+ export class InsufficientStock extends Error {
+   readonly sku: string;

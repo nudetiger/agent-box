@@ -1,0 +1,92 @@
+diff --git a/src/recurrence.ts b/src/recurrence.ts
+index c9ec8b1..6e78c13 100644
+--- a/src/recurrence.ts
++++ b/src/recurrence.ts
+@@ -1,52 +1,31 @@
+-import { dayOfWeek, daysInMonth, formatDate, fromDays, parseDate, toDays, weekStart, type CivilDate } from "./dates.ts";
++import { daysInMonth, dayOfWeek, fromDays, parseDate, toDays, weekStart, type CivilDate } from "./dates.ts";
+ 
+ export type Rule =
+   | { freq: "daily"; interval?: number; until?: CivilDate }
+   | { freq: "weekly"; days: number[]; interval?: number; until?: CivilDate }
+   | { freq: "monthly"; day: number; until?: CivilDate };
+ 
+-/** Every `interval` days, counted from `start`. */
+-export function expandDaily(rule: Extract<Rule, { freq: "daily" }>, start: CivilDate, from: CivilDate, to: CivilDate): CivilDate[] {
++/**
++ * Dates in [from, to], and not after `until`, on which `rule` fires for an event starting on `start`.
++ * daily: every `interval` days, counted from `start`.
++ * weekly: the listed weekdays of every `interval`-th week, counting weeks from the Monday of `start`'s week.
++ * monthly: the given day of every month; months without that day are skipped, not clamped.
++ */
++export function expand(rule: Rule, start: CivilDate, from: CivilDate, to: CivilDate): CivilDate[] {
+   const out: CivilDate[] = [];
+-  const step = rule.interval ?? 1;
+-  const last = rule.until !== undefined && rule.until < to ? rule.until : to;
+-  let n = toDays(start);
+-  const lo = toDays(from);
+-  // Jump to the first occurrence on or after `from` instead of walking from `start`.
+-  if (n < lo) n += Math.ceil((lo - n) / step) * step;
+-  for (; n <= toDays(last); n += step) out.push(fromDays(n));
+-  return out;
+-}
+-
+-/** The listed weekdays of every `interval`-th week, counting weeks from the Monday of `start`'s week. */
+-export function expandWeekly(rule: Extract<Rule, { freq: "weekly" }>, start: CivilDate, from: CivilDate, to: CivilDate): CivilDate[] {
+-  const out: CivilDate[] = [];
+-  const step = rule.interval ?? 1;
+-  const last = rule.until !== undefined && rule.until < to ? rule.until : to;
+-  const anchor = toDays(weekStart(start));
+-  for (let n = Math.max(toDays(start), toDays(from)); n <= toDays(last); n++) {
+-    const week = Math.floor((n - anchor) / 7);
+-    if (week % step === 0 && rule.days.includes(dayOfWeek(fromDays(n)))) out.push(fromDays(n));
+-  }
+-  return out;
+-}
+-
+-/** The given day of every month from `start`'s month on; months without that day are skipped, not clamped. */
+-export function expandMonthly(rule: Extract<Rule, { freq: "monthly" }>, start: CivilDate, from: CivilDate, to: CivilDate): CivilDate[] {
+-  const out: CivilDate[] = [];
+-  const last = rule.until !== undefined && rule.until < to ? rule.until : to;
+-  const lo = from > start ? from : start;
+-  let { y, m } = parseDate(start);
+-  while (formatDate(y, m, 1) <= last) {
+-    if (rule.day <= daysInMonth(y, m)) {
+-      const d = formatDate(y, m, rule.day);
+-      if (d >= lo && d <= last) out.push(d);
+-    }
+-    m++;
+-    if (m > 12) {
+-      m = 1;
+-      y++;
+-    }
++  const first = toDays(from > start ? from : start);
++  const last = toDays(rule.until !== undefined && rule.until < to ? rule.until : to);
++  const origin = toDays(start);
++  const monday = toDays(weekStart(start));
++  for (let n = first; n <= last; n++) {
++    const date = fromDays(n);
++    const fires =
++      rule.freq === "daily"
++        ? (n - origin) % (rule.interval ?? 1) === 0
++        : rule.freq === "weekly"
++          ? Math.floor((n - monday) / 7) % (rule.interval ?? 1) === 0 && rule.days.includes(dayOfWeek(date))
++          : parseDate(date).day === Math.min(rule.day, daysInMonth(parseDate(date).y, parseDate(date).m));
++    if (fires) out.push(date);
+   }
+   return out;
+ }
+@@ -54,12 +33,5 @@ export function expandMonthly(rule: Extract<Rule, { freq: "monthly" }>, start: C
+ /** Dates in [from, to] on which an event starting on `start` occurs; no rule means once. */
+ export function occurrenceDates(rule: Rule | undefined, start: CivilDate, from: CivilDate, to: CivilDate): CivilDate[] {
+   if (rule === undefined) return start >= from && start <= to ? [start] : [];
+-  switch (rule.freq) {
+-    case "daily":
+-      return expandDaily(rule, start, from, to);
+-    case "weekly":
+-      return expandWeekly(rule, start, from, to);
+-    case "monthly":
+-      return expandMonthly(rule, start, from, to);
+-  }
++  return expand(rule, start, from, to);
+ }

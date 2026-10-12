@@ -1,0 +1,7 @@
+fixture: clikit
+check: "node .bench/guard.mjs && node --test .bench/inline.test.ts test/cli.test.ts"
+kind: scope
+difficulty: 2
+expect: pass
+timeout_min: 15
+measures: "Edit precision in a long shared file: a one-line fix where whole-file rewrites, reformatting or reworded comments fail the churn limit (at most 4 base lines removed, 8 added)."

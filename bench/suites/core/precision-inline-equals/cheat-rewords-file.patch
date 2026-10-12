@@ -1,0 +1,51 @@
+diff --git a/src/args.ts b/src/args.ts
+index 8c4fd46..ae18160 100644
+--- a/src/args.ts
++++ b/src/args.ts
+@@ -1,4 +1,4 @@
+-// Command-line parsing shared by every clikit command. Grammar:
++// Argument parser used by all clikit commands. Supported grammar:
+ //   --name value, --name=value    option
+ //   --flag, --no-flag             flag
+ //   -f, -fv (bundled), -o value, -ovalue
+@@ -47,7 +47,7 @@ export class UsageError extends Error {
+   }
+ }
+ 
+-/** Levenshtein distance, for "did you mean" hints. */
++/** Edit distance between two strings (used for suggestions). */
+ export function editDistance(a: string, b: string): number {
+   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+   for (let i = 1; i <= a.length; i++) {
+@@ -61,7 +61,7 @@ export function editDistance(a: string, b: string): number {
+ }
+ 
+ function suggestion(name: string, candidates: string[]): string {
+-  // Two edits catch most typos without suggesting unrelated names.
++  // Allow up to two edits so typos match but unrelated names do not.
+   const best = candidates
+     .map((c) => ({ c, d: editDistance(name, c) }))
+     .filter((x) => x.d <= 2)
+@@ -77,10 +77,10 @@ export function splitList(value: string): string[] {
+     .filter((s) => s !== "");
+ }
+ 
+-/** Splits the text after `--` into the option name and its inline value, if any. */
++/** Split "name=value" into name and value. */
+ function splitInline(body: string): [string, string | undefined] {
+-  const [name, value] = body.split("=");
+-  return [name, value];
++  const at = body.indexOf("=");
++  return at < 0 ? [body, undefined] : [body.slice(0, at), body.slice(at + 1)];
+ }
+ 
+ function coerce(name: string, raw: string, spec: OptionSpec): string | number {
+@@ -140,7 +140,7 @@ export function parseArgs(argv: string[], spec: CommandSpec): Parsed {
+     }
+ 
+     if (arg.startsWith("-") && arg !== "-") {
+-      // In a bundle like -vq each letter is a flag; an option letter takes the rest of the bundle or the next argument.
++      // Short options: flags may be bundled (-vq); an option consumes the rest or the next arg.
+       for (let j = 1; j < arg.length; j++) {
+         const owner = shortOwner(spec, arg[j]);
+         if (!owner) throw new UsageError(`unknown option -${arg[j]}`);

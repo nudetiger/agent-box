@@ -1,0 +1,24 @@
+diff --git a/src/tax.ts b/src/tax.ts
+index 7a01f1a..547af05 100644
+--- a/src/tax.ts
++++ b/src/tax.ts
+@@ -6,6 +6,7 @@ export const TAX_RATES: Record<string, number> = {
+   "US-NY": 8.875,
+   "US-OR": 0,
+   DE: 19,
++  "CA-QC": 14.975,
+ };
+ 
+ export class UnknownRegion extends Error {
+diff --git a/test/cart.test.ts b/test/cart.test.ts
+index 86be57f..22cca86 100644
+--- a/test/cart.test.ts
++++ b/test/cart.test.ts
+@@ -45,6 +45,7 @@ test("totals: discounts, then tax on taxable lines", () => {
+   assert.equal(t.tax, 1900);
+   assert.equal(t.total, 16400);
+   assert.equal(cart.totals("US-OR").tax, 0);
++  assert.equal(cart.totals("CA-QC").tax, 1497);
+   assert.throws(() => cart.totals("XX"), UnknownRegion);
+ });
+ 

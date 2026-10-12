@@ -1,0 +1,11 @@
+repo:
+  path: C:/Workspace/Projects/Lykos
+  commit: 08a3a9ada10b8f24aed96e5d28b220316fb9d9fd
+source: c8a84a3e158f477b873aa7862ff89c83ec1c95d2
+check: "npx tsx --test lykos/loop/checkpoint.test.ts"
+kind: bugfix
+difficulty: 2
+expect: pass
+timeout_min: 30
+validated: false
+measures: "Real-history diagnosis of a hidden default (a listing helper's page size) one call away from the symptom; hidden test is the commit's own checkpoint.test.ts."

@@ -1,0 +1,22 @@
+{
+  "allow": [
+    "src/**",
+    "README.md"
+  ],
+  "files": {
+    "README.md": "404abb8801741726d38543df0b55aa5d79ffd9d694003ba36290532b12a8d802",
+    "package.json": "137f709b4ba10879a6388ba90d08377ae76572bf5d12a32e251148a1e92a4091",
+    "src/agenda.ts": "7764a1cd8c1c320c86050ac77f87e6ce77390ef988f8cefe754758bbccfae5cf",
+    "src/calendar.ts": "d921219078e9c4d0c821559d6ab6226b1ed06b3dffe6d5381a726da81df702a7",
+    "src/conflicts.ts": "41b4b7c698ea92344fe2b7556855b27822e479ec591054af8ea42653206450c0",
+    "src/dates.ts": "bf16d563fb9a47ce72c69538c43acc78421f9ae253fdebd0e5b0164d705545b1",
+    "src/index.ts": "388f6c0e2692dd1e573a3fd8b7f94c59a11a5a57a512c400ed43f419e215cb8a",
+    "src/recurrence.ts": "38037c7415b2f700b725546bea77b9a008a36922cba8cd42c898cb98478bb73f",
+    "src/time.ts": "f8eb029cdc74798c833feadcadc5ccdf34170b38ae77f4ee5cb1b5597d80b3a0",
+    "test/agenda.test.ts": "e785150641b5945abd60a9a191c4bdeb3436421576ce47abf0e6b1165c090092",
+    "test/calendar.test.ts": "b02b09a59754bd50420a057cf57c1ea1ce8d4b105e2a4e628f03fd296c9fd47c",
+    "test/conflicts.test.ts": "9d7ddc194f98fceffd016c4004c439858f38cd30a18c8b5683d870acbecaee52",
+    "test/dates.test.ts": "830f51e99ae3f67bb7137673c175a9602bee104f0aad6fd2dd62b4c6a175e3bc",
+    "test/recurrence.test.ts": "6b72ac8d904677f07dfefe709fc376066d7f485ffd68edee5ebeb2379709ea4f"
+  }
+}

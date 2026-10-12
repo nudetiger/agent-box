@@ -1,0 +1,27 @@
+diff --git a/src/args.ts b/src/args.ts
+index 8c4fd46..8fbb93d 100644
+--- a/src/args.ts
++++ b/src/args.ts
+@@ -79,8 +79,8 @@ export function splitList(value: string): string[] {
+ 
+ /** Splits the text after `--` into the option name and its inline value, if any. */
+ function splitInline(body: string): [string, string | undefined] {
+-  const [name, value] = body.split("=");
+-  return [name, value];
++  const at = body.indexOf("=");
++  return at < 0 ? [body, undefined] : [body.slice(0, at), body.slice(at + 1)];
+ }
+ 
+ function coerce(name: string, raw: string, spec: OptionSpec): string | number {
+diff --git a/test/args.test.ts b/test/args.test.ts
+index a0106c8..cd6e1b7 100644
+--- a/test/args.test.ts
++++ b/test/args.test.ts
+@@ -28,6 +28,7 @@ test("long options take the next argument or an inline value", () => {
+   assert.equal(parseArgs(["in", "--format", "json"], spec).options.format, "json");
+   assert.equal(parseArgs(["in", "--format=json"], spec).options.format, "json");
+   assert.equal(parseArgs(["in", "--format="], spec).options.format, "");
++  assert.equal(parseArgs(["in", "--format=a=b"], spec).options.format, "a=b");
+   assert.equal(parseArgs(["in", "--limit", "5"], spec).options.limit, 5);
+ });
+ 

@@ -1,0 +1,7 @@
+fixture: shopcart
+check: "node .bench/guard.mjs && node --test .bench/low-stock.test.ts"
+kind: trivial
+difficulty: 1
+expect: pass
+timeout_min: 10
+measures: "Over-exploration: steps, tool calls and tokens spent on a one-constant change whose file and line are named."

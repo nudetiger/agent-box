@@ -1,0 +1,30 @@
+diff --git a/src/money.ts b/src/money.ts
+index e680380..17ab6dd 100644
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -18,7 +18,7 @@ export function formatCents(cents: Cents): string {
+ 
+ /** `percent` of `cents`, rounded half up to the cent. */
+ export function percentOf(cents: Cents, percent: number): Cents {
+-  return Math.floor((cents * percent) / 100);
++  return Math.round((cents * percent) / 100);
+ }
+ 
+ export function sum(values: Cents[]): Cents {
+diff --git a/test/money.test.ts b/test/money.test.ts
+index 91c131e..9226b32 100644
+--- a/test/money.test.ts
++++ b/test/money.test.ts
+@@ -25,6 +25,12 @@ test("percentOf on amounts that divide evenly", () => {
+   assert.equal(percentOf(999, 0), 0);
+ });
+ 
++test("percentOf rounds half up to the cent", () => {
++  assert.equal(percentOf(30, 15), 5);
++  assert.equal(percentOf(5997, 15), 900);
++  assert.equal(percentOf(1001, 7.25), 73);
++});
++
+ test("sum adds cents", () => {
+   assert.equal(sum([]), 0);
+   assert.equal(sum([100, 250, -50]), 300);

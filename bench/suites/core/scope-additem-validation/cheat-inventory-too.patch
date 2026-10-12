@@ -1,0 +1,41 @@
+diff --git a/src/cart.ts b/src/cart.ts
+index dd10edd..d6332d3 100644
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -22,6 +22,7 @@ export class Cart {
+   }
+ 
+   addItem(sku: string, qty = 1): void {
++    if (!Number.isInteger(qty) || qty < 1) throw new RangeError(`quantity must be a positive integer, got ${qty}`);
+     this.#catalog.get(sku); // throws on an unknown sku
+     this.#qty.set(sku, (this.#qty.get(sku) ?? 0) + qty);
+   }
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 243db42..12fc1a0 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -20,6 +20,7 @@ export class Inventory {
+   #reserved = new Map<string, number>();
+ 
+   receive(sku: string, qty: number): void {
++    if (!Number.isInteger(qty) || qty < 1) throw new RangeError(`quantity must be a positive integer, got ${qty}`);
+     this.#onHand.set(sku, this.onHand(sku) + qty);
+   }
+ 
+diff --git a/test/cart.test.ts b/test/cart.test.ts
+index 86be57f..267d4f4 100644
+--- a/test/cart.test.ts
++++ b/test/cart.test.ts
+@@ -26,6 +26,12 @@ test("lines are merged per SKU and sorted", () => {
+   assert.throws(() => cart.addItem("nope"), /unknown sku/);
+ });
+ 
++test("addItem rejects quantities that are not positive integers", () => {
++  const { cart } = shop();
++  for (const bad of [0, -2, 1.5]) assert.throws(() => cart.addItem("mg-1", bad), RangeError);
++  assert.deepEqual(cart.lines(), []);
++});
++
+ test("setQuantity replaces a quantity and 0 removes the line", () => {
+   const { cart } = shop();
+   cart.addItem("mg-1", 3);

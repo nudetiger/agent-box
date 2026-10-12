@@ -1,0 +1,11 @@
+repo:
+  path: C:/Workspace/Projects/Lykos
+  commit: 2e5b7012e0d86c6b2c16996e0f7e0a424c0b89ee
+source: 8798de4b01466150d5c039bdf85acedc4a7102ce
+check: "npx tsx --test lykos/ledger/prices.test.ts"
+kind: bugfix
+difficulty: 3
+expect: pass
+timeout_min: 30
+validated: false
+measures: "Real-history TypeScript bugfix (the same midnight-wrap shape as core/weakening-midnight-conflict, in a real code base); hidden test is the commit's own prices.test.ts."

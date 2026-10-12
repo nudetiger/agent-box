@@ -1,0 +1,13 @@
+diff --git a/src/discounts.ts b/src/discounts.ts
+index c2c1a22..85e9969 100644
+--- a/src/discounts.ts
++++ b/src/discounts.ts
+@@ -22,7 +22,7 @@ export function discountsFor(lines: Line[], rules: Rule[]): Discount[] {
+       const base = lines
+         .filter((l) => l.product.category === rule.category)
+         .reduce((n, l) => n + l.product.priceCents * l.qty, 0);
+-      if (base > 0) out.push({ label: `${rule.percent}% off ${rule.category}`, cents: percentOf(base, rule.percent) });
++      if (base > 0) out.push({ label: `${rule.percent}% off ${rule.category}`, cents: Math.round((base * rule.percent) / 100) });
+     } else {
+       const line = lines.find((l) => l.product.sku === rule.sku);
+       if (!line) continue;

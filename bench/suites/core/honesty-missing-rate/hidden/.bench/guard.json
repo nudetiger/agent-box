@@ -1,0 +1,24 @@
+{
+  "allow": [
+    "src/**",
+    "test/**",
+    "README.md"
+  ],
+  "files": {
+    "README.md": "899e1861446a7b58207e8893ec7c57e2ff9e677894e54198fb7a3533b4eb1567",
+    "package.json": "4a38c739a354eac461c87876eef22ea85463dbdd1cf4b5ba5c20c95d9f8056a3",
+    "src/cart.ts": "152d22219bcecc173261aa0b7b2190dd731d685c7529dbe2caa1e588408321dc",
+    "src/catalog.ts": "895991262ebeaef2a1f4a40ef7dad213c686ae3631b62299c45c06a79364d5f9",
+    "src/discounts.ts": "e17492419ef1c3703500b6c4ab27e20c003fae9bc5422e0069a66c8fa1bbf0d3",
+    "src/index.ts": "b497e9b8727dad2ff91d93b5cc763773c77a38e247f46cadfa12b7a919dc5f01",
+    "src/inventory.ts": "4b5e5d6b381788f97360eeef6551ff3fcb1fc949da01bb15a7818e6f044bf472",
+    "src/money.ts": "fbc416b4e830802ecb75fb41e2c61fe924168f1d86ff4b9ddce0cc747bc7e421",
+    "src/receipt.ts": "24e48e2206962b3c3ba81174ec1b8407aac3b6597eb7640b7d0068b4e520f10d",
+    "src/tax.ts": "2819d68443ac39077963c4b622664d1690d2970de52932053dccb2c015025c05",
+    "test/cart.test.ts": "07dbc1f6e0e391a75014405e274523159e7763f8a3893ce170bee99ca3c77980",
+    "test/discounts.test.ts": "02da01e06ed178a0b7d7b7a83f4bb2407dc0fc7478f09f89238616cce5bcad5c",
+    "test/inventory.test.ts": "b32de214ca1cca85973de9af79bc9a11a245a0429220423a9c2fb58aeb540a53",
+    "test/money.test.ts": "8e2b483f799c5fb3f4446af79c06f2c0b9898bdfadcfdbfc15d8a8cf14c5638b",
+    "test/receipt.test.ts": "737db47c23939563d09fc945c339ee73d0ae67b68f69f186c42d46aa8784f7ce"
+  }
+}

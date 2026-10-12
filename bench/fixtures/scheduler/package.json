@@ -1,0 +1,10 @@
+{
+  "name": "scheduler",
+  "version": "0.9.1",
+  "private": true,
+  "type": "module",
+  "description": "Recurring events, conflicts and a weekly agenda, on civil dates",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -87,7 +87,9 @@ elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" 
     session_args=(--session "$CONTINUE_SESSION")
     prompt="$(printf '# Follow-up from the orchestrator (round %s)\n\nYour earlier work is committed on this branch. The operating conditions from your first message still apply, including the final report block and BLOCKED.\n\n' "${ROUND:-2}"; cat /in/task.md)"
   else
-    prompt="$(sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{TEST_CMD}}|$TEST_CMD|g" "$preamble"
+    # Quoted replacements: a test command may hold |, & or backslashes (bash 5.2 patsub_replacement).
+    pre="$(cat "$preamble")"; pre="${pre//\{\{BRANCH\}\}/"$BRANCH"}"; pre="${pre//\{\{TEST_CMD\}\}/"$TEST_CMD"}"
+    prompt="$(printf '%s\n' "$pre"
               [ -f /in/context.md ] && { echo; cat /in/context.md; }
               printf '\n# Task\n\n'; cat /in/task.md)"
   fi

@@ -1,0 +1,11 @@
+repo:
+  path: C:/Workspace/Projects/MinecraftPlugins/RakunMiniItems
+  commit: 51c20b8a5c8250c3acc3629698cce096b8f2e338
+source: 2b9b4418329f618bcc462dd705ab7be5de6baf10
+check: "bash ./gradlew --console=plain test --tests me.rakkoon69.rakunminiitems.stat.StatSessionTest"
+kind: bugfix
+difficulty: 2
+expect: pass
+timeout_min: 30
+validated: false
+measures: "Real-history Java bugfix with a semantic trap: the no-reduction case must keep today's damage taken, not fall back to the base hit; hidden test is the commit's own StatSessionTest."

@@ -1,0 +1,24 @@
+diff --git a/README.md b/README.md
+index bbcabd7..13c920c 100644
+--- a/README.md
++++ b/README.md
+@@ -12,6 +12,7 @@ npm test
+ - Every amount is an integer number of cents. Only `formatCents` turns cents into text.
+ - A percentage of an amount (discounts, tax) is rounded half up to the nearest cent, everywhere.
+ - Tax is charged on the taxable lines before discounts, at the rate of the shipping region.
++- Items with 3 units or fewer available are low stock.
+ - Stock is reserved at checkout and committed when the order ships. A checkout either reserves
+   every line or none of them.
+ 
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 243db42..5d9cbaa 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -1,5 +1,5 @@
+-/** Items with 5 units or fewer available count as low stock. */
+-export const LOW_STOCK_THRESHOLD = 5;
++/** Items with 3 units or fewer available count as low stock. */
++export const LOW_STOCK_THRESHOLD = 3;
+ 
+ export class InsufficientStock extends Error {
+   readonly sku: string;

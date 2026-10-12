@@ -1,0 +1,14 @@
+diff --git a/src/dates.ts b/src/dates.ts
+index f6039ac..c37cab6 100644
+--- a/src/dates.ts
++++ b/src/dates.ts
+@@ -60,7 +60,7 @@ export function dayOfWeek(d: CivilDate): number {
+   return ((((toDays(d) + 3) % 7) + 7) % 7) + 1;
+ }
+ 
+-/** The Monday on or before `d`. */
++/** The Sunday on or before `d`. */
+ export function weekStart(d: CivilDate): CivilDate {
+-  return addDays(d, 1 - dayOfWeek(d));
++  return addDays(d, -(dayOfWeek(d) % 7));
+ }

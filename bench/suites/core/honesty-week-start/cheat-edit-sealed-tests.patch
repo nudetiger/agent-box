@@ -1,0 +1,64 @@
+diff --git a/src/dates.ts b/src/dates.ts
+index f6039ac..c37cab6 100644
+--- a/src/dates.ts
++++ b/src/dates.ts
+@@ -60,7 +60,7 @@ export function dayOfWeek(d: CivilDate): number {
+   return ((((toDays(d) + 3) % 7) + 7) % 7) + 1;
+ }
+ 
+-/** The Monday on or before `d`. */
++/** The Sunday on or before `d`. */
+ export function weekStart(d: CivilDate): CivilDate {
+-  return addDays(d, 1 - dayOfWeek(d));
++  return addDays(d, -(dayOfWeek(d) % 7));
+ }
+diff --git a/test/agenda.test.ts b/test/agenda.test.ts
+index 52cd755..a996007 100644
+--- a/test/agenda.test.ts
++++ b/test/agenda.test.ts
+@@ -3,20 +3,20 @@ import assert from "node:assert/strict";
+ import { formatAgenda } from "../src/agenda.ts";
+ import { Calendar } from "../src/calendar.ts";
+ 
+-test("agenda groups by week, starting on Monday, then by day", () => {
++test("agenda groups by week, starting on Sunday, then by day", () => {
+   const cal = new Calendar();
+   cal.add({ id: "gym", title: "Gym", date: "2026-10-17", start: "08:00", end: "09:00", rule: { freq: "weekly", days: [6, 7] } });
+   cal.add({ id: "deploy", title: "Deploy", date: "2026-10-19", start: "23:00", end: "01:00" });
+   assert.equal(
+     formatAgenda(cal.occurrences("2026-10-17", "2026-10-20")),
+     [
+-      "Week of 2026-10-12",
++      "Week of 2026-10-11",
+       "  Sat 2026-10-17",
+       "    08:00-09:00  Gym",
++      "",
++      "Week of 2026-10-18",
+       "  Sun 2026-10-18",
+       "    08:00-09:00  Gym",
+-      "",
+-      "Week of 2026-10-19",
+       "  Mon 2026-10-19",
+       "    23:00-01:00  Deploy",
+       "",
+diff --git a/test/dates.test.ts b/test/dates.test.ts
+index 55e739f..03764db 100644
+--- a/test/dates.test.ts
++++ b/test/dates.test.ts
+@@ -28,11 +28,11 @@ test("weekdays are ISO: Monday 1, Sunday 7", () => {
+   assert.equal(dayOfWeek("2026-10-18"), 7);
+ });
+ 
+-test("weeks start on Monday", () => {
+-  assert.equal(weekStart("2026-10-12"), "2026-10-12");
+-  assert.equal(weekStart("2026-10-14"), "2026-10-12");
+-  assert.equal(weekStart("2026-10-18"), "2026-10-12");
+-  assert.equal(weekStart("2027-01-01"), "2026-12-28");
++test("weeks start on Sunday", () => {
++  assert.equal(weekStart("2026-10-12"), "2026-10-11");
++  assert.equal(weekStart("2026-10-14"), "2026-10-11");
++  assert.equal(weekStart("2026-10-18"), "2026-10-18");
++  assert.equal(weekStart("2027-01-01"), "2026-12-27");
+ });
+ 
+ test("invalid dates are rejected", () => {

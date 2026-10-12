@@ -1,0 +1,11 @@
+diff --git a/src/text.ts b/src/text.ts
+index 7c4aa86..5b16809 100644
+--- a/src/text.ts
++++ b/src/text.ts
+@@ -11,5 +11,5 @@ export function pad(s: string, w: number, align: "left" | "right" = "left"): str
+ /** Cuts `s` to fit in `max` characters, marking the cut with an ellipsis. */
+ export function truncate(s: string, max: number): string {
+   const chars = [...s];
+-  return chars.length > max ? chars.slice(0, max).join("") + "…" : s;
++  return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : s;
+ }

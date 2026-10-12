@@ -1,0 +1,109 @@
+diff --git a/src/agenda.ts b/src/agenda.ts
+index b5aacff..8002e25 100644
+--- a/src/agenda.ts
++++ b/src/agenda.ts
+@@ -27,7 +27,8 @@ export function formatAgenda(occurrences: Occurrence[]): string {
+       lines.push(`  ${DAY_NAMES[dayOfWeek(o.date) - 1]} ${o.date}`);
+       day = o.date;
+     }
+-    lines.push(`    ${formatTime(o.start)}-${formatTime(o.end)}  ${o.title}`);
++    const moved = o.movedFrom ? ` (moved from ${o.movedFrom})` : "";
++    lines.push(`    ${formatTime(o.start)}-${formatTime(o.end)}  ${o.title}${moved}`);
+   }
+   return lines.length ? lines.join("\n") + "\n" : "No events.\n";
+ }
+diff --git a/src/calendar.ts b/src/calendar.ts
+index 064e833..d5c9861 100644
+--- a/src/calendar.ts
++++ b/src/calendar.ts
+@@ -1,4 +1,4 @@
+-import type { CivilDate } from "./dates.ts";
++import { parseDate, type CivilDate } from "./dates.ts";
+ import { occurrenceDates, type Rule } from "./recurrence.ts";
+ import { DAY, parseTime, type Minutes } from "./time.ts";
+ 
+@@ -20,10 +20,17 @@ export interface Occurrence {
+   start: Minutes;
+   /** Greater than `start`; past 1440 when the occurrence runs into the next day. */
+   end: Minutes;
++  /** The original date, when this occurrence was moved. */
++  movedFrom?: CivilDate;
+ }
+ 
++/** A cancelled occurrence is null; a moved one has its new date and start. */
++type Exception = { date: CivilDate; start: Minutes } | null;
++
+ export class Calendar {
+   #events = new Map<string, EventInput>();
++  /** Per event id, keyed by the occurrence's original date. */
++  #exceptions = new Map<string, Map<CivilDate, Exception>>();
+ 
+   add(event: EventInput): void {
+     if (this.#events.has(event.id)) throw new Error(`duplicate event id: ${event.id}`);
+@@ -33,6 +40,7 @@ export class Calendar {
+ 
+   remove(id: string): void {
+     if (!this.#events.delete(id)) throw new Error(`unknown event: ${id}`);
++    this.#exceptions.delete(id);
+   }
+ 
+   get(id: string): EventInput {
+@@ -41,6 +49,23 @@ export class Calendar {
+     return event;
+   }
+ 
++  cancel(eventId: string, date: CivilDate): void {
++    this.#except(eventId, date, null);
++  }
++
++  move(eventId: string, date: CivilDate, to: { date: CivilDate; start: string }): void {
++    parseDate(to.date);
++    this.#except(eventId, date, { date: to.date, start: parseTime(to.start) });
++  }
++
++  #except(eventId: string, date: CivilDate, exception: Exception): void {
++    const e = this.get(eventId);
++    if (occurrenceDates(e.rule, e.date, date, date).length === 0) throw new RangeError(`${eventId} does not occur on ${date}`);
++    const byDate = this.#exceptions.get(eventId) ?? new Map<CivilDate, Exception>();
++    byDate.set(date, exception);
++    this.#exceptions.set(eventId, byDate);
++  }
++
+   /** Occurrences starting in [from, to], ordered by date, start time, then event id. */
+   occurrences(from: CivilDate, to: CivilDate): Occurrence[] {
+     const out: Occurrence[] = [];
+@@ -48,8 +73,15 @@ export class Calendar {
+       const start = parseTime(e.start);
+       const endTime = parseTime(e.end);
+       const end = endTime < start ? endTime + DAY : endTime;
++      const exceptions = this.#exceptions.get(e.id) ?? new Map<CivilDate, Exception>();
+       for (const date of occurrenceDates(e.rule, e.date, from, to)) {
+-        out.push({ eventId: e.id, title: e.title, date, start, end });
++        if (!exceptions.has(date)) out.push({ eventId: e.id, title: e.title, date, start, end });
++      }
++      // Moves are checked on their own: a move into the window has its original date outside it.
++      for (const [original, moved] of exceptions) {
++        if (moved && moved.date >= from && moved.date <= to) {
++          out.push({ eventId: e.id, title: e.title, date: moved.date, start: moved.start, end: moved.start + end - start, movedFrom: original });
++        }
+       }
+     }
+     return out.sort(
+diff --git a/test/calendar.test.ts b/test/calendar.test.ts
+index 04e8fa8..903f8a6 100644
+--- a/test/calendar.test.ts
++++ b/test/calendar.test.ts
+@@ -27,3 +27,13 @@ test("bad events are rejected", () => {
+   assert.throws(() => cal.add({ id: "c", title: "C", date: "2026-10-15", start: "24:00", end: "10:00" }), /not a time/);
+   assert.throws(() => cal.remove("zzz"), /unknown event/);
+ });
++
++test("cancel and move change single occurrences", () => {
++  const cal = new Calendar();
++  cal.add({ id: "standup", title: "Standup", date: "2026-10-12", start: "09:00", end: "09:15", rule: { freq: "daily" } });
++  cal.cancel("standup", "2026-10-13");
++  cal.move("standup", "2026-10-14", { date: "2026-10-16", start: "10:00" });
++  const got = cal.occurrences("2026-10-12", "2026-10-16").map((o) => `${o.date} ${o.start} ${o.movedFrom ?? ""}`.trim());
++  assert.deepEqual(got, ["2026-10-12 540", "2026-10-15 540", "2026-10-16 540", "2026-10-16 600 2026-10-14"]);
++  assert.throws(() => cal.cancel("standup", "2026-10-01"), RangeError);
++});

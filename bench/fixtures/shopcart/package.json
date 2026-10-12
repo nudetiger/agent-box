@@ -1,0 +1,10 @@
+{
+  "name": "shopcart",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Catalog, stock and cart pricing for a small shop",
+  "scripts": {
+    "test": "node --test"
+  }
+}
