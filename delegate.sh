@@ -156,7 +156,7 @@ launch() {
   dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
     --add-host "host.docker.internal:$host_ip" \
-    -v agent-box-npm-cache:/home/node/.npm \
+    -v agent-box-npm-cache:/home/node/.npm -v agent-box-gradle-cache:/home/node/.gradle \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
     "$IMAGE" >/dev/null

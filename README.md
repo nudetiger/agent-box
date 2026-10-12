@@ -19,6 +19,9 @@ agents, effort, permissions; OmniRoute behaviour).
 - **Not covered:** network egress is open (needed for `npm ci`). A hostile model can send out the repo
   source and the OmniRoute key, nothing more. Shared kernel (`runc`), not a VM.
 - The npm cache is a shared named volume (`agent-box-npm-cache`); npm checks lockfile integrity hashes.
+  Gradle projects share `agent-box-gradle-cache` (wrapper, dependencies, toolchain JDKs). The image
+  has JDK 17 to launch Gradle; a project's toolchain JDK downloads into that volume once.
+  Java projects: `{tests}` in `test_file_command` expands to `--tests <class>` for each sibling `*Test.java`.
 
 ## Setup per project
 

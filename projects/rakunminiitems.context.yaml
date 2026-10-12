@@ -1,0 +1,109 @@
+# Context map for RakunMiniItems (Paper 26.2 plugin, Java 25, Gradle). Written by Claude Opus 5.5 on 2026-10-12
+# from the repo's GLOSSARY.md, CODING_STANDARDS.md, docs/adr and docs/navigators. Used by lib/pack.mjs.
+always:
+  - "AGENTS.md"
+  - "CODING_STANDARDS.md"
+  - "GLOSSARY.md"
+  - "docs/phases.md"
+
+# Narrowest check: the sibling *Test classes of the named files. The compiler runs with -Werror, so any new
+# warning fails this too.
+test_file_command: "bash ./gradlew --no-daemon --console=plain test {tests}"
+
+worker_skills: [tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents]
+
+areas:
+
+  - name: stat
+    paths:
+      - "src/main/java/me/rakkoon69/rakunminiitems/stat/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/stat/**"
+    docs:
+      - path: "docs/adr/0009-families-apply-flat-then-percent.md"
+        reason: "How a family combines contributions: flat amounts first, then the summed percent."
+      - path: "docs/navigators/mmoitems-mythiclib.md"
+        reason: "MMOItems/MythicLib API used to read item stats."
+      - path: "docs/prototypes/stat-files.html"
+        reason: "Prototype of the stat file format."
+    glossary: ["Stat", "Contribution", "Family", "Holder", "Animal", "Undead", "Animals Bonus Damage", "Animals Bonus Damage Percentage", "Undead Mobs Lifesteal", "Undead Mobs Damage Reduction"]
+    tests:
+      glob: "src/test/java/me/rakkoon69/rakunminiitems/stat/**"
+      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.stat.*'"
+    traps:
+      - "Matching contributions add, with no shared cap. That add is code, not config (docs/phases.md)."
+      - "Bonus damage: flat amounts add to the hit first, then the summed percent multiplies the result (ADR 0009)."
+
+  - name: enchant
+    paths:
+      - "src/main/java/me/rakkoon69/rakunminiitems/enchant/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/EnchantHookTest.java"
+    docs:
+      - path: "docs/adr/0001-enchant-registry-is-startup.md"
+        reason: "Enchant registry values are fixed at startup."
+      - path: "docs/adr/0004-enchant-descriptions-are-a-packet-prefix.md"
+        reason: "Descriptions are a packet prefix (supersedes ADR 0002)."
+      - path: "docs/adr/0005-description-numbers-are-colored-by-effect.md"
+        reason: "Description number colors."
+      - path: "docs/navigators/paper-enchantments.md"
+        reason: "Paper's enchantment registry API."
+      - path: "docs/navigators/ecoenchants.md"
+        reason: "Reference implementation notes."
+      - path: "docs/navigators/excellentenchants.md"
+        reason: "Reference implementation notes."
+    glossary: ["Enchant", "Description", "Rarity", "Acquisition", "Vanilla rules"]
+    tests:
+      command: "bash ./gradlew --no-daemon --console=plain test --tests me.rakkoon69.rakunminiitems.EnchantHookTest"
+    traps:
+      - "ADR 0002 is superseded. Descriptions are a packet prefix, never written into item lore."
+
+  - name: config-and-warnings
+    paths:
+      - "src/main/java/me/rakkoon69/rakunminiitems/config/**"
+      - "src/main/java/me/rakkoon69/rakunminiitems/log/**"
+      - "src/main/java/me/rakkoon69/rakunminiitems/files/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/config/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/log/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/files/**"
+    docs:
+      - path: "docs/adr/0008-spine-is-a-pruned-rakunloots.md"
+        reason: "The spine is ported from RakunLoots and pruned to what this repo calls."
+    glossary: ["Warning level", "Warning kind", "Warnings file"]
+    tests:
+      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.config.*' --tests 'me.rakkoon69.rakunminiitems.log.*' --tests 'me.rakkoon69.rakunminiitems.files.*'"
+    traps:
+      - "Warning texts are fixed wording, listed under Warning kind in GLOSSARY.md. A message text has a test on its exact wording (CODING_STANDARDS.md)."
+      - "A warning the code raises is logged or sent. A test that only reads an in-memory list does not count."
+
+  - name: command
+    paths:
+      - "src/main/java/me/rakkoon69/rakunminiitems/command/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/command/**"
+    docs:
+      - path: "docs/adr/0008-spine-is-a-pruned-rakunloots.md"
+        reason: "Command framework is ported from RakunLoots."
+    glossary: []
+    tests:
+      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.command.*'"
+    traps:
+      - "Every admin command replies, on success and on failure. A parse error reaches the sender with the file and line."
+
+  - name: boot
+    paths:
+      - "src/main/java/me/rakkoon69/rakunminiitems/boot/**"
+      - "src/main/java/me/rakkoon69/rakunminiitems/*.java"
+      - "src/main/resources/**"
+      - "build.gradle"
+      - "src/test/java/me/rakkoon69/rakunminiitems/boot/**"
+      - "src/test/java/me/rakkoon69/rakunminiitems/PluginDescriptorTest.java"
+      - "src/test/java/me/rakkoon69/rakunminiitems/ShadedLibraryTest.java"
+    docs:
+      - path: "docs/adr/0008-spine-is-a-pruned-rakunloots.md"
+        reason: "What the spine is and what was pruned."
+      - path: "docs/adr/0006-framework-before-content.md"
+        reason: "Build order: frameworks first."
+    glossary: []
+    tests:
+      command: "bash ./gradlew --no-daemon --console=plain test"
+    traps:
+      - "A file copied from RakunLoots keeps only members a caller here uses, and names its source path and RakunLoots commit in a header (ADR 0008)."
+      - "State lives in an instance the plugin owns. A static mutable field needs a written reason."
