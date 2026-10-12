@@ -77,6 +77,14 @@ written; the harness records it. This exit cut test-cheating sharply in Impossib
 It is also how a worker asks a question: it phrases BLOCKED as one, and the orchestrator answers with
 `continue`.
 
+**Speed**: the delay between tool calls is model time (Gemini 3.8 Flash 7-10 s per step, DeepSeek 3-5 s,
+Composer ~2 s; measured over 16 Lykos runs), so the harness cuts steps: small named files and sealed
+tests are pasted into the pack (8 KB each, 24 KB total), the Ponytail and box-verify rules are in the
+preamble instead of loaded as skills, and `gradlew`/`mvnw` are made executable. One task (add a
+one-line Javadoc, RakunMiniItems, 2026-10-12, one run each): Gemini before 66 calls / 546 s, after 50
+calls / 345 s (Gradle daemon also on); Composer `quick` 19 calls / 77 s. Gemini still explores widely
+on trivial tasks: use `quick` for those.
+
 **Mid-run questions**: workers get an `ask_orchestrator` tool (`image/ask-mcp.mjs`, a dependency-free
 local MCP server; off with `run --no-ask`, never given to reviewers or the scout). A question lands in
 `/out/questions/<n>.md` inside the running container; `questions <repo> <run> --wait` returns it, and
@@ -101,6 +109,7 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | --- | --- | --- |
 | implement / implement-hard | `gemini-3.8-flash-tiered` medium / high | **main worker** (large quota) |
 | implement-alt | `cu/composer-2.5-fast` | second family, fan-out partner |
+| quick | `cu/composer-2.5-fast` | fast lane: small, clear tasks |
 | implement-alt2 | `deepseek/deepseek-flash-max` | third family, hard bugs only (paid per token) |
 | escalate | `antigravity/claude-sonnet-4-6` | after two cheap gate failures |
 | last-resort | `antigravity/claude-opus-4-6-thinking` | one attempt with the full failure history |

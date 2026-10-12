@@ -8,7 +8,7 @@ always:
 
 # Narrowest check: the sibling *Test classes of the named files. The compiler runs with -Werror, so any new
 # warning fails this too.
-test_file_command: "bash ./gradlew --no-daemon --console=plain test {tests}"
+test_file_command: "bash ./gradlew --console=plain test {tests}"
 
 worker_skills: [ponytail, ponytail-review, tdd, diagnosing-bugs, codebase-design, domain-modeling, writing-for-agents]
 
@@ -28,7 +28,7 @@ areas:
     glossary: ["Stat", "Contribution", "Family", "Holder", "Animal", "Undead", "Animals Bonus Damage", "Animals Bonus Damage Percentage", "Undead Mobs Lifesteal", "Undead Mobs Damage Reduction"]
     tests:
       glob: "src/test/java/me/rakkoon69/rakunminiitems/stat/**"
-      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.stat.*'"
+      command: "bash ./gradlew --console=plain test --tests 'me.rakkoon69.rakunminiitems.stat.*'"
     traps:
       - "Matching contributions add, with no shared cap. That add is code, not config (docs/phases.md)."
       - "Bonus damage: flat amounts add to the hit first, then the summed percent multiplies the result (ADR 0009)."
@@ -52,7 +52,7 @@ areas:
         reason: "Reference implementation notes."
     glossary: ["Enchant", "Description", "Rarity", "Acquisition", "Vanilla rules"]
     tests:
-      command: "bash ./gradlew --no-daemon --console=plain test --tests me.rakkoon69.rakunminiitems.EnchantHookTest"
+      command: "bash ./gradlew --console=plain test --tests me.rakkoon69.rakunminiitems.EnchantHookTest"
     traps:
       - "ADR 0002 is superseded. Descriptions are a packet prefix, never written into item lore."
 
@@ -69,7 +69,7 @@ areas:
         reason: "The spine is ported from RakunLoots and pruned to what this repo calls."
     glossary: ["Warning level", "Warning kind", "Warnings file"]
     tests:
-      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.config.*' --tests 'me.rakkoon69.rakunminiitems.log.*' --tests 'me.rakkoon69.rakunminiitems.files.*'"
+      command: "bash ./gradlew --console=plain test --tests 'me.rakkoon69.rakunminiitems.config.*' --tests 'me.rakkoon69.rakunminiitems.log.*' --tests 'me.rakkoon69.rakunminiitems.files.*'"
     traps:
       - "Warning texts are fixed wording, listed under Warning kind in GLOSSARY.md. A message text has a test on its exact wording (CODING_STANDARDS.md)."
       - "A warning the code raises is logged or sent. A test that only reads an in-memory list does not count."
@@ -77,13 +77,14 @@ areas:
   - name: command
     paths:
       - "src/main/java/me/rakkoon69/rakunminiitems/command/**"
+      - "src/main/java/me/rakkoon69/rakunminiitems/match/**"
       - "src/test/java/me/rakkoon69/rakunminiitems/command/**"
     docs:
       - path: "docs/adr/0008-spine-is-a-pruned-rakunloots.md"
         reason: "Command framework is ported from RakunLoots."
     glossary: []
     tests:
-      command: "bash ./gradlew --no-daemon --console=plain test --tests 'me.rakkoon69.rakunminiitems.command.*'"
+      command: "bash ./gradlew --console=plain test --tests 'me.rakkoon69.rakunminiitems.command.*'"
     traps:
       - "Every admin command replies, on success and on failure. A parse error reaches the sender with the file and line."
 
@@ -103,7 +104,7 @@ areas:
         reason: "Build order: frameworks first."
     glossary: []
     tests:
-      command: "bash ./gradlew --no-daemon --console=plain test"
+      command: "bash ./gradlew --console=plain test"
     traps:
       - "A file copied from RakunLoots keeps only members a caller here uses, and names its source path and RakunLoots commit in a header (ADR 0008)."
       - "State lives in an instance the plugin owns. A static mutable field needs a written reason."

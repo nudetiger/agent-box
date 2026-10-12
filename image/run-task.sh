@@ -19,6 +19,10 @@ cd /work/repo
 # stays the original base, so the sealed check, review guard and bundle cover every round.
 START_SHA="${START_SHA:-$BASE_SHA}"
 git checkout -q -b "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
+# Build wrappers committed without the executable bit (common from Windows) would cost the worker a
+# failed call. Mode changes stay out of the diff.
+git config core.fileMode false
+for w in gradlew mvnw; do [ -f "$w" ] && chmod +x "$w"; done
 git config user.name "agent-box (${MODEL:-none})"
 git config user.email "agent-box@localhost"
 git remote remove origin 2>/dev/null || true
