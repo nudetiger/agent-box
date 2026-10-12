@@ -1,0 +1,13 @@
+repo:
+  path: C:/Workspace/Projects/Lykos
+  commit: bench/t188-base
+base_sha: c8de16c796de93a3f4886494af01844e19efd221
+source: 3a030911f70e8bf6e5cdf914c9337fc76dd2a1cb
+first_attempt: e5aab20d8a936fcb700531393ef658f0e58409e7  # Sonnet 5.5's first implementation commit
+check: "npx tsx --test lykos/cli/doctor.test.ts lykos/cli/scripted-prune-session.test.ts lykos/cli/scripted-prune.test.ts lykos/config/extensions.test.ts lykos/extensions/defaults/lykos-prune.test.ts lykos/ledger/ledger.test.ts lykos/loop/tool-result-prune.test.ts lykos/session/boot.test.ts lykos/session/live-capture.test.ts lykos/tools/lsp.test.ts lykos/cli/show.test.ts lykos/config/scaffold.test.ts lykos/session/transcript.test.ts && npx tsc --noEmit"
+kind: feature
+difficulty: 5
+expect: pass
+timeout_min: 60
+validated: false
+measures: "Real Lykos ticket (issue #43, difficulty high) that Sonnet 5.5 implemented on 2026-10-10/11; workflow form: the landed change's own tests are the sealed acceptance test, the base adds them and the oh-my-pi sources to the real parent commit; hidden check adds the sibling tests of every file the landed change touched, and the typecheck."
