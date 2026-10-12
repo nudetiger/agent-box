@@ -34,6 +34,9 @@ Usage: delegate.sh <command> ...
                                  Resume that run's worker session with a follow-up (answer to its
                                  BLOCKED question, review findings, next step). Same model, sealed
                                  files and test; starts on its branch. Result: agent/<run>-r2, -r3...
+  watch    <repo> <run-name>     Live feed of a running worker: harness steps, tool calls, messages.
+                                 With herdr running, every run opens one automatically in a tab of
+                                 the "agent-box" workspace (AGENT_BOX_HERDR=0 turns that off)
   questions <repo> <run-name> [--wait]
                                  Open ask_orchestrator questions of a running worker. --wait blocks
                                  until one appears (exit 0) or the run ends (exit 1)
@@ -193,6 +196,7 @@ launch() {
     dk cp "$(winpath "$run_dir/context.md")" "$cname:/in/context.md"
   fi
 
+  [ "$skip_agent" = 1 ] || herdr_open "$name"
   echo "agent-box: $name started ($ENGINE container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
   dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
   dk cp "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
@@ -290,6 +294,59 @@ cmd_continue() {
   case "$start" in refs/heads/agent-box-tmp/*) git -C "$REPO" update-ref -d "$start" ;; esac
 }
 
+# Live feed of a run: harness steps, every tool call, the worker's messages. In a herdr pane it also
+# reports the worker's state to herdr. Ends when the run's container is gone.
+cmd_watch() {
+  load_project "$1"
+  local name="$2" c dir model="" i
+  c="$(cname_of "$name")"; dir="$BOX/runs/$PROJECT/$name"
+  [ -f "$dir/meta.sh" ] && model="$(. "$dir/meta.sh"; echo "$MODEL")"
+  for i in $(seq 1 60); do [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && break; sleep 1; done
+  # The exec ends with an error when the run removes its container: that is the normal end.
+  { dk exec "$c" sh -c 'tail -n +1 -F /out/harness.log /out/events.jsonl 2>/dev/null' 2>/dev/null || true; } \
+    | node "$(winpath "$BOX/lib/watch.mjs")" "$name" "$model" || true
+  for i in $(seq 1 30); do [ -f "$dir/summary.json" ] && break; sleep 1; done
+  local verdict="no summary.json (run interrupted?)"
+  [ -f "$dir/summary.json" ] && verdict="$(jq -r '"tests \(if .test_exit == 0 then "pass" elif .test_exit == -1 then "not run" else "FAIL (\(.test_exit))" end), \(.commits) commit(s), \(.seconds)s" + (if .blocked then ", BLOCKED: \(.blocked)" else "" end) + (if (.sealed_violation|length) > 0 then ", SEALED-EDIT" else "" end)' "$dir/summary.json")"
+  echo; echo "== $name done: $verdict"
+  [ -f "$dir/diffstat.txt" ] && tail -n 1 "$dir/diffstat.txt"
+  if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+    local short="${model##*/}"; short="${short%-tiered}"
+    "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
+      --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
+    read -r -p "Enter closes this tab. " _ || true
+    "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true
+  fi
+}
+
+# herdr: one tab per run in an "agent-box" workspace, running `watch`. Silently does nothing when
+# herdr is not installed or not running, or AGENT_BOX_HERDR=0.
+herdr_ok() {
+  [ "${AGENT_BOX_HERDR:-auto}" != 0 ] && command -v herdr >/dev/null \
+    && herdr status server 2>/dev/null | grep -q 'status: running'
+}
+herdr_ws() {
+  local ws
+  ws="$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[] | select(.label == "agent-box") | .workspace_id' | head -n 1)"
+  [ -n "$ws" ] || ws="$(herdr workspace create --label agent-box --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
+  echo "$ws"
+}
+herdr_open() {
+  local name="$1" ws pane script
+  herdr_ok || return 0
+  ws="$(herdr_ws)"; [ -n "$ws" ] && [ "$ws" != null ] || return 0
+  pane="$(herdr tab create --workspace "$ws" --label "$name" --cwd "$(winpath "$BOX")" 2>/dev/null | jq -r '.result.root_pane.pane_id')"
+  [ -n "$pane" ] && [ "$pane" != null ] || return 0
+  # A script file, so no quoting has to survive the pane's shell (PowerShell on Windows).
+  script="$BOX/runs/$PROJECT/$name/watch.sh"
+  printf '#!/usr/bin/env bash\nexec %q watch %q %q\n' "$BOX/delegate.sh" "$REPO" "$name" >"$script"
+  if command -v cygpath >/dev/null; then
+    herdr pane run "$pane" "& '$(cygpath -w "$(command -v bash)")' -l '$(cygpath -m "$script")'" >/dev/null 2>&1 || true
+  else
+    herdr pane run "$pane" "bash -l '$script'" >/dev/null 2>&1 || true
+  fi
+}
+
 # Open questions a running worker asked with ask_orchestrator. --wait blocks until one appears
 # (exit 0) or the run ends (exit 1), so an orchestrator can watch a background run with it.
 cmd_questions() {
@@ -356,6 +413,7 @@ cmd_fanout() {
   done
   [ -n "$roles" ] || die "fanout needs --roles a,b[,c]"
   load_project "$repo"
+  herdr_ok && herdr_ws >/dev/null  # create the workspace once, before parallel runs race for it
   [ -n "$name" ] || name="fan-$(date +%Y%m%d-%H%M%S)"
   local names=() r
   for r in ${roles//,/ }; do
@@ -381,6 +439,7 @@ cmd_review() {
     esac
   done
   load_project "$repo"
+  herdr_ok && herdr_ws >/dev/null
   git -C "$REPO" rev-parse --verify --quiet "$branch^{commit}" >/dev/null || die "no such branch $branch"
   [ -n "$against" ] || against="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo HEAD)"
   local base; base="$(git -C "$REPO" merge-base "$against" "$branch")"
@@ -452,6 +511,7 @@ case "${1:-}" in
   run) shift; cmd_run "$@" ;;
   continue) shift; cmd_continue "$@" ;;
   questions) shift; cmd_questions "$@" ;;
+  watch) shift; cmd_watch "$@" ;;
   answer) shift; cmd_answer "$@" ;;
   show) shift; cmd_show "$@" ;;
   clean) cmd_clean ;;

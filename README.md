@@ -77,8 +77,16 @@ written; the harness records it. This exit cut test-cheating sharply in Impossib
 It is also how a worker asks a question: it phrases BLOCKED as one, and the orchestrator answers with
 `continue`.
 
-**Speed**: the delay between tool calls is model time (Gemini 3.8 Flash 7-10 s per step, DeepSeek 3-5 s,
-Composer ~2 s; measured over 16 Lykos runs), so the harness cuts steps: small named files and sealed
+**Watching**: `watch <repo> <run>` prints a live feed of a run (harness steps, each tool call, the
+worker's messages). When [herdr](https://herdr.dev) is running, every run opens a tab running `watch`
+in an `agent-box` workspace and reports its state to herdr: working, blocked while a question waits,
+done with a one-line verdict. Enter closes the tab. `AGENT_BOX_HERDR=0` turns it off.
+
+**Measurements** live in [research/findings.md](research/findings.md), with the method to compare
+another harness (Lykos) against this one on the same task files.
+
+**Speed**: the delay between tool calls is model time (Gemini 3.8 Flash 4.6-10.6 s per step, DeepSeek
+Flash 5.4-9.0 s, Composer 2.4 s; 16 Lykos runs, research/findings.md §1), so the harness cuts steps: small named files and sealed
 tests are pasted into the pack (8 KB each, 24 KB total), the Ponytail and box-verify rules are in the
 preamble instead of loaded as skills, and `gradlew`/`mvnw` are made executable. One task (add a
 one-line Javadoc, RakunMiniItems, 2026-10-12, one run each): Gemini before 66 calls / 546 s, after 50
