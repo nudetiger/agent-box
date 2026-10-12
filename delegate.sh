@@ -404,7 +404,9 @@ cmd_watch() {
     local short="${model##*/}"; short="${short%-tiered}"
     "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
       --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
-    read -r -p "Enter closes this tab. " _ || true
+    # AB_TAB_LINGER (seconds) closes the tab by itself: benchmarks open many tabs.
+    if [ -n "${AB_TAB_LINGER:-}" ]; then read -r -t "$AB_TAB_LINGER" -p "Enter closes this tab (or wait ${AB_TAB_LINGER}s). " _ || true
+    else read -r -p "Enter closes this tab. " _ || true; fi
     if [ -n "${AB_HERDR_TAB:-}" ]; then "$HERDR_BIN_PATH" tab close "$AB_HERDR_TAB" >/dev/null 2>&1 || true
     else "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true; fi
   fi
@@ -432,7 +434,7 @@ herdr_open() {
   tab="$(jq -r '.result.tab.tab_id' <<<"$tabjson")"; pane="$(jq -r '.result.root_pane.pane_id' <<<"$tabjson")"
   [ -n "$pane" ] && [ "$pane" != null ] || return 0
   # Script files, so no quoting has to survive the pane's shell (PowerShell on Windows).
-  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q\nexec %q watch %q %q\n' "$tab" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
+  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q AB_TAB_LINGER=%q\nexec %q watch %q %q\n' "$tab" "${AB_TAB_LINGER:-}" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
   if [ "${TUI:-0}" = 1 ]; then
     printf '#!/usr/bin/env bash\nexec %q tui %q %q\n' "$BOX/delegate.sh" "$REPO" "$name" >"$dir/tui.sh"
     feed="$(herdr pane split "$pane" --direction right --ratio "${AGENT_BOX_TUI_RATIO:-0.66}" --cwd "$(winpath "$BOX")" 2>/dev/null | jq -r '.result.pane.pane_id')"
@@ -590,7 +592,7 @@ cmd_review() {
   local names=() r
   for r in ${roles//,/ }; do
     local n="rv-$stamp-$r"
-    "$0" run "$repo" "$task" --role "$r" --review --base "$branch" --name "$n" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    REVIEW_TARGET="$branch" "$0" run "$repo" "$task" --role "$r" --review --base "$branch" --name "$n" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
   wait
