@@ -218,13 +218,17 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
 | bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
 | tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
-| review-spec | `deepseek/deepseek-flash` | requirements, edge cases, test strength, against the spec |
+| review-spec | `deepseek/deepseek-flash-max` | requirements, edge cases, test strength, against the spec |
 | review-std | Opus 4.6 | the repo's documented standards, design, smells |
 | adjudicate | Kimi K3 (`cursor/kimi-k3-high`), Opus after 2026-10-24 | settles a disputed finding (read-only) |
 | advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |
 
 One worker per task; `fanout` stays available but no workflow uses it. `review` and ticket mode run the
 same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
+
+**Per project**: any `ROLE_*`, `REVIEW_ROLES`, `SCOUT_MODEL` or `TICKET_ESCALATE_*` line in
+`projects/<repo>.env` overrides `agent-box.conf` for that project, in `delegate.sh` and in ticket mode
+alike. `delegate.sh roles <repo>` prints what is in effect and marks the project's own lines.
 
 Budget (user, 2026-10-12/13). Quota pools: Opus and Sonnet share one, all Gemini models share one;
 DeepSeek and Kimi each have their own. Gemini does the bulk; DeepSeek takes retries, the quick lane and

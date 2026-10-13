@@ -51,7 +51,10 @@ Usage: delegate.sh <command> ...
   ask      <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
-  clean                          Remove leftover agent-box containers
+  roles    <repo>                The roles in effect for the project: agent-box.conf, overridden by
+                                 any ROLE_*, REVIEW_ROLES, SCOUT_MODEL or TICKET_ESCALATE_* line in
+                                 its projects/<repo>.env
+  clean                         Remove leftover agent-box containers
 
 Engine: docker (default) or podman, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 
@@ -67,6 +70,7 @@ load_project() {
   # Benchmark fixture repos share one settings file (projects/bench.env).
   [ -f "$env" ] || [ -z "${AGENT_BOX_PROJECT_ENV:-}" ] || env="$AGENT_BOX_PROJECT_ENV"
   [ -f "$env" ] || die "no project file $env (copy projects/example.env)"
+  PROJECT_ENV="$env"
   set -a; # shellcheck disable=SC1090
   . "$env"; set +a
   OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"
@@ -560,7 +564,7 @@ cmd_fanout() {
 # made it, plus every --spec file.
 cmd_review() {
   local repo="$1" branch="$2"; shift 2
-  local roles="${REVIEW_ROLES:-review-spec,review-std}" against="" focus="" specs=()
+  local roles="" against="" focus="" specs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --roles) roles="$2"; shift 2 ;;
@@ -571,6 +575,8 @@ cmd_review() {
     esac
   done
   load_project "$repo"
+  # After load_project: the project file may set its own REVIEW_ROLES.
+  roles="${roles:-${REVIEW_ROLES:-review-spec,review-std}}"
   herdr_ok && herdr_ws >/dev/null
   git -C "$REPO" rev-parse --verify --quiet "$branch^{commit}" >/dev/null || die "no such branch $branch"
   [ -n "$against" ] || against="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo HEAD)"
@@ -630,6 +636,18 @@ cmd_outcome() {
 cmd_refs() {
   load_project "$1"
   node "$(winpath "$BOX/lib/ledger.mjs")" refs "$PROJECT" "$2"
+}
+
+# The roles in effect for one project. agent-box.conf is sourced first and the project file second, so
+# a line there wins; "project" marks the settings it sets.
+cmd_roles() {
+  load_project "$1"
+  local v src name
+  for v in $(compgen -v | grep -E '^(ROLE_[A-Za-z0-9_]+|REVIEW_ROLES|READ_ONLY_ROLES|SCOUT_MODEL|TICKET_ESCALATE_ROLE|TICKET_ESCALATE_AFTER)$'); do
+    src=conf; grep -qE "^(export[[:space:]]+)?$v=" "$PROJECT_ENV" && src=project
+    name="$v"; [[ "$v" == ROLE_* ]] && { name="${v#ROLE_}"; name="${name//_/-}"; }
+    printf '%-22s %-8s %s\n' "$name" "$src" "${!v}"
+  done
 }
 
 # Read-only research: a worker answers one question about the code with file:line evidence, so the
@@ -721,6 +739,7 @@ case "${1:-}" in
   tui) shift; cmd_tui "$@" ;;
   note) shift; cmd_note "$@" ;;
   refs) shift; cmd_refs "$@" ;;
+  roles) shift; cmd_roles "$@" ;;
   accept) shift; cmd_outcome accepted "$@" ;;
   reject) shift; cmd_outcome rejected "$@" ;;
   merged) shift; cmd_outcome merged "$@" ;;
