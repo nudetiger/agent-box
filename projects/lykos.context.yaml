@@ -146,6 +146,8 @@ areas:
   - name: lykos/ledger
     paths:
       - "lykos/ledger/**/*.ts"
+    requires:
+      - "A new or changed table or column: update docs/reference/telemetry.md §2 (The Ledger Schema)."
     docs:
       - path: "docs/reference/telemetry.md"
         reason: "Complete ledger schema, all tables, all columns, counterfactual formulas."
@@ -218,6 +220,8 @@ areas:
     paths:
       - "lykos/cli/**/*.ts"
       - "lykos/cli.ts"
+    requires:
+      - "A new or changed command or flag: update docs/reference/cli-and-config.md §1 (CLI Commands)."
     docs:
       - path: "docs/reference/cli-and-config.md"
         reason: "Complete command table, config precedence, all config keys, rerun rules, environment variables."
@@ -290,6 +294,8 @@ areas:
   - name: lykos/config
     paths:
       - "lykos/config/**/*.ts"
+    requires:
+      - "A new or changed config key: document it in docs/reference/cli-and-config.md §3 (Configuration Keys)."
     docs:
       - path: "docs/reference/cli-and-config.md§2"
         reason: "Six-layer config precedence, key-by-key merge semantics."
@@ -483,6 +489,13 @@ areas:
       - "No shipped specialist may set an inert field (rules or memory until their phases land) — a test asserts this (specialists.md §1.2)."
       - "There is no shipped implement specialist — switching to minimal or deliberate from plan does not restore write mode (specialists.md §3)."
       - "Shipped specialists are lowest precedence — override by copying to project or global directory (ADR-0019)."
+
+# Definition of done for docs (lib/pack.mjs appends it to every task). From CLAUDE.md "Before you finish".
+requires:
+  - "A new domain term in code, comments or docs: add it to GLOSSARY.md in its existing **Term**: format."
+  - "A design decision a later reader would ask about (a new mechanism, a rule, a choice between options): an ADR in docs/adr/, numbered after the last one."
+  - "Behaviour that a doc in docs/ describes: update that doc in the same change."
+  - "A change that makes a statement in docs/ or problems/ false: fix that statement."
 
 always:
   - path: "CLAUDE.md"
