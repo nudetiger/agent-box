@@ -176,6 +176,13 @@ state to herdr (working, blocked, done). Enter closes the tab. `AGENT_BOX_TUI=0`
 `AGENT_BOX_HERDR=0` turns tabs off. Without herdr: `watch <repo> <run>`, `tui <repo> <run>`, or
 `stats live` for every running worker at once.
 
+A `loop` opens one more tab of its own (`loop-watch <repo> <loop>` without herdr), fed by
+`runs/<project>/_loops/<loop>/progress.jsonl`: each round and its kind, the step running now with its
+time, every finding with its severity and where it went (PROVEN, dropped, note, QUESTION, TRIAGE,
+advice), what is fixed and still open, regressions, each decision and escalation, and when it stops,
+what the orchestrator does next with the command. The check that reruns the reproductions has no tab
+of its own; it shows only here.
+
 **Concurrency**: at most `AGENT_BOX_SLOTS` containers run at once (default 4), whatever starts them;
 the rest wait for a slot.
 

@@ -62,6 +62,9 @@ Usage: delegate.sh <command> ...
                                  decide, or the run's own
   loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--add FILE] [-m TEXT|@FILE] [--max-rounds N]
                                  Your decisions on a stopped loop, then it goes on with a fix round
+  loop-watch <repo> <loop>       Live view of a loop: rounds, the running step and its time, each
+                                 finding and where it went, decisions, what to do when it stops.
+                                 With herdr running, the loop opens it in a tab of its own
   ask     <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
@@ -428,12 +431,42 @@ cmd_watch() {
     local short="${model##*/}"; short="${short%-tiered}"
     "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
       --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
-    # AB_TAB_LINGER (seconds) closes the tab by itself: benchmarks open many tabs.
-    if [ -n "${AB_TAB_LINGER:-}" ]; then read -r -t "$AB_TAB_LINGER" -p "Enter closes this tab (or wait ${AB_TAB_LINGER}s). " _ || true
-    else read -r -p "Enter closes this tab. " _ || true; fi
-    if [ -n "${AB_HERDR_TAB:-}" ]; then "$HERDR_BIN_PATH" tab close "$AB_HERDR_TAB" >/dev/null 2>&1 || true
-    else "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true; fi
+    herdr_close_tab
   fi
+}
+
+# In a herdr tab: Enter closes it. AB_TAB_LINGER (seconds) closes it by itself: benchmarks open many tabs.
+herdr_close_tab() {
+  [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  if [ -n "${AB_TAB_LINGER:-}" ]; then read -r -t "$AB_TAB_LINGER" -p "Enter closes this tab (or wait ${AB_TAB_LINGER}s). " _ || true
+  else read -r -p "Enter closes this tab. " _ || true; fi
+  if [ -n "${AB_HERDR_TAB:-}" ]; then "$HERDR_BIN_PATH" tab close "$AB_HERDR_TAB" >/dev/null 2>&1 || true
+  else "$HERDR_BIN_PATH" pane close "$HERDR_PANE_ID" >/dev/null 2>&1 || true; fi
+}
+
+# Live view of a review and fix loop: rounds, what runs now and for how long, each finding with where
+# the harness routed it, decisions, and what the orchestrator does when it stops. Ends when it stops.
+cmd_loop_watch() {
+  load_project "$1"
+  local name="$2" dir="$BOX/runs/$PROJECT/_loops/$2"
+  [ -d "$dir" ] || die "no loop $name in runs/$PROJECT/_loops"
+  AB_COLS="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" \
+    node "$(winpath "$BOX/lib/loopwatch.mjs")" "$(winpath "$dir/progress.jsonl")" "$name" "$REPO" || true
+  herdr_close_tab
+}
+
+# The loop's own herdr tab (lib/loop.mjs opens it when the loop starts or resumes).
+cmd_loop_tab() {
+  load_project "$1"
+  local name="$2" ws tabjson pane dir="$BOX/runs/$PROJECT/_loops/$2"
+  herdr_ok && [ -d "$dir" ] || return 0
+  ws="$(herdr_ws)"; [ -n "$ws" ] && [ "$ws" != null ] || return 0
+  tabjson="$(herdr tab create --workspace "$ws" --label "$name" --cwd "$(winpath "$BOX")" 2>/dev/null)" || return 0
+  pane="$(jq -r '.result.root_pane.pane_id' <<<"$tabjson")"
+  [ -n "$pane" ] && [ "$pane" != null ] || return 0
+  printf '#!/usr/bin/env bash\nexport AB_HERDR_TAB=%q AB_TAB_LINGER=%q AGENT_BOX_PROJECT_ENV=%q\nexec %q loop-watch %q %q\n' \
+    "$(jq -r '.result.tab.tab_id' <<<"$tabjson")" "${AB_TAB_LINGER:-}" "${AGENT_BOX_PROJECT_ENV:-}" "$BOX/delegate.sh" "$REPO" "$name" >"$dir/watch.sh"
+  herdr_launch "$pane" "$dir/watch.sh"
 }
 
 # herdr: one tab per run in an "agent-box" workspace, running `watch`. Silently does nothing when
@@ -770,6 +803,8 @@ case "${1:-}" in
   continue) shift; cmd_continue "$@" ;;
   questions) shift; cmd_questions "$@" ;;
   watch) shift; cmd_watch "$@" ;;
+  loop-watch) shift; cmd_loop_watch "$@" ;;
+  loop-tab) shift; cmd_loop_tab "$@" ;;
   answer) shift; cmd_answer "$@" ;;
   show) shift; cmd_show "$@" ;;
   tui) shift; cmd_tui "$@" ;;

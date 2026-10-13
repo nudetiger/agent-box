@@ -335,3 +335,27 @@ test("delegate.sh review --name and --prior: runs named by the prefix, each axis
     fs.rmSync(runs, { recursive: true, force: true });
   }
 });
+
+test("loop: progress.jsonl tells the live view every step, finding and decision, ending with what to do", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("gate runs"), R("not real")], "review-std": [] }],
+    ["check", { "1.spec.1": 1, "1.spec.2": 0 }],
+    ["continue", "pass"],
+    ["review", { "review-spec": [] }],
+    ["check", { "1.spec.1": 0 }],
+    ["review", { "review-spec": [], "review-std": [] }],
+  ]);
+  const tabs = [];
+  await loop(h.P, "impl", { name: "L" }, { ...h.deps, openTab: (P, name) => tabs.push(name) });
+  const ev = fs.readFileSync(path.join(h.P.runs, "_loops", "L", "progress.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(tabs, ["L"]);
+  assert.deepEqual(ev.map((e) => e.ev + (e.what ? `:${e.what}` : "")), [
+    "start", "round", "step:review", "done:review", "step:check", "done:check", "findings", "decide",
+    "step:fix", "done:fix",
+    "round", "step:review", "done:review", "step:check", "done:check", "findings", "decide",
+    "round", "step:review", "done:review", "findings", "decide", "end"]);
+  assert.deepEqual(ev.find((e) => e.ev === "findings").items.map((f) => [f.id, f.route, f.exit]), [["1.spec.1", "proven", 1], ["1.spec.2", "dropped", 0]]);
+  assert.deepEqual(ev[11].runs, ["L-rv2-review-spec"], "the fix review is the spec axis only");
+  assert.deepEqual(ev.at(-1), { ...ev.at(-1), next: "approve", last: "L-fix1" });
+  h.left();
+});
