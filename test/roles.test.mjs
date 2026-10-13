@@ -106,3 +106,14 @@ test("review: a branch DeepSeek wrote gets review-spec-alt", () => {
     fs.rmSync(runs, { recursive: true, force: true });
   }
 });
+
+test("ticket mode's red command: patterns grep -E accepts, matching test paths only", async () => {
+  const { redCommand } = await import("../lib/ticket.mjs");
+  const cmd = redCommand({ map: { test_file_command: "npx tsx --test {files}" }, testGlobs: ["**/*.test.*", "src/test/**"] });
+  assert.doesNotMatch(cmd, /\(\?:/);
+  const pats = [...cmd.matchAll(/'(\(\^\|\/\)[^']*)'/g)].map((m) => m[1]);
+  assert.equal(pats.length, 2);
+  const r = spawnSync("grep", ["-E", ...pats.flatMap((p) => ["-e", p])], { input: "a/b.test.ts\na/b.ts\nsrc/test/X.java\n", encoding: "utf8" });
+  assert.equal(r.stderr, "");
+  assert.deepEqual(r.stdout.trim().split("\n"), ["a/b.test.ts", "src/test/X.java"]);
+});
