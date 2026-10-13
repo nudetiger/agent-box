@@ -153,6 +153,9 @@ Objective, required behaviour, out of scope.
 same pack. From the context map it adds the areas the files belong to, their governing docs and ADRs,
 the rules a change there can break, glossary definitions quoted from the repo, recent commits per
 file, related tests and the narrowest verification command. It points at files; it does not paste them.
+The map's `requires:` lists (top level, and per area for the areas a task hits) are the docs a change
+must keep current; they go at the end of the task text as its definition of done, so the fix round and
+both reviewers see them too.
 
 **Sealed files** are enforced twice: an OpenCode `edit` deny rule, and a post-run diff check that
 reverts any change made through bash before the harness runs the tests, flagged as `SEALED-EDIT`.
