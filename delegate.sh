@@ -50,8 +50,15 @@ Usage: delegate.sh <command> ...
                                  Same task on several roles in parallel; prints a comparison table
   review   <repo> <branch> [--spec FILE ...] [--roles a,b] [--against REF] [--focus TEXT]
                                  Read-only review on two axes in parallel: review-spec (DeepSeek) and
-                                 review-std (Opus), both given the branch's task and every --spec
-  ask      <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
+                                 review-std (Opus), both given the branch's task and every --spec.
+                                 --name P names the runs P-<role>; --prior spec=FILE|std=FILE puts the
+                                 previous round's findings first, to recheck
+  loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2]
+                                 Review and fix until no CONFIRMED finding is left. A finding open
+                                 after 2 fixes, serious findings after 3 fix rounds, or a fix that
+                                 fails its tests moves the work up implement -> implement-hard ->
+                                 escalate. Prints JSON with next: approve, decide, or the run's own
+  ask     <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
   hunt     <repo> <bug.md> [--base REF] [--name N]
@@ -572,13 +579,18 @@ cmd_fanout() {
 # made it, plus every --spec file.
 cmd_review() {
   local repo="$1" branch="$2"; shift 2
-  local roles="" against="" focus="" specs=()
+  local roles="" against="" focus="" prefix="" prior_spec="" prior_std="" specs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --roles) roles="$2"; shift 2 ;;
       --against) against="$2"; shift 2 ;;
       --focus) focus="$2"; shift 2 ;;
       --spec) [ -f "$2" ] || die "no such spec file $2"; specs+=("$2"); shift 2 ;;
+      --name) prefix="$2"; shift 2 ;;        # review runs are named PREFIX-<role>
+      # The previous round's findings for one axis, rechecked first (the review loop, lib/loop.mjs).
+      --prior) [ -f "${2#*=}" ] || die "no such prior findings file ${2#*=}"
+        case "$2" in spec=*) prior_spec="${2#*=}" ;; std=*) prior_std="${2#*=}" ;; *) die "--prior takes spec=FILE or std=FILE" ;; esac
+        shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -617,19 +629,20 @@ cmd_review() {
       echo "agent-box: $impl wrote this branch and review-spec is the same family: the spec review goes to review-spec-alt (${ROLE_review_spec_alt%% *})" >&2
     fi
   fi
-  local names=() r prompt
+  local names=() r prompt prior
   for r in ${roles//,/ }; do
     case "$r" in
-      review-spec|review-spec-alt) prompt="$BOX/lib/ticket/review-spec.md" ;;
-      review-std) prompt="$BOX/lib/ticket/review-standards.md" ;;
-      *) prompt="" ;;
+      review-spec|review-spec-alt) prompt="$BOX/lib/ticket/review-spec.md"; prior="$prior_spec" ;;
+      review-std) prompt="$BOX/lib/ticket/review-standards.md"; prior="$prior_std" ;;
+      *) prompt=""; prior="" ;;
     esac
     {
       echo "---"; echo "files:"; git -C "$REPO" diff --name-only "$base" "$branch" | head -n 40 | sed 's/^/  - /'; echo "---"
       [ -n "$prompt" ] && cat "$prompt"
+      [ -n "$prior" ] && { echo; cat "$prior"; }
       cat "$body"
     } >"$tdir/task-$r.md"
-    local n="rv-$stamp-$r"
+    local n="${prefix:-rv-$stamp}-$r"
     REVIEW_TARGET="$branch" "${SELF[@]}" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
@@ -774,6 +787,7 @@ case "${1:-}" in
     cmd_ticket_js "$sub" "$repo" "$(winpath "$f")" "$@" ;;
   defect) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js defect "$repo" "$(winpath "$f")" "$@" ;;
   hunt) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js hunt "$repo" "$(winpath "$f")" "$@" ;;
+  loop) shift; repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;

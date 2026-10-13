@@ -43,6 +43,7 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh answer <repo> <run-name> <id> (-m TEXT | -f FILE)                 # answer one; it keeps working
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
 ./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
+./delegate.sh loop   <repo> <run> [--spec FILE] [--max-rounds N]  # review and fix until clean, escalating
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
@@ -227,7 +228,17 @@ and recalled what it read in round 1 (cache read 155k tokens).
 One worker per task; `fanout` stays available but no workflow uses it. `review` and ticket mode run the
 same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
 
-**Per project**: any `ROLE_*`, `REVIEW_ROLES`, `SCOUT_MODEL` or `TICKET_ESCALATE_*` line in
+**The review and fix loop** (`delegate.sh loop <repo> <run>`): review on both axes, send every
+CONFIRMED finding back to the same worker, review again, until no CONFIRMED finding is left. From the
+second round each reviewer first rechecks its own axis's findings from the round just fixed; one still
+open comes back with `"prior": "<id>"`. The work goes up `LOOP_LADDER` (implement, implement-hard,
+escalate: a fresh worker on the last passing branch, with the task, the open findings and the history)
+when a finding survives `LOOP_STUCK` (2) fixes by one worker, when critical or high findings are still
+open after `LOOP_SOFT_ROUNDS` (3) fix rounds by it, or when a fix round fails its own tests. After
+`LOOP_MAX_ROUNDS` (6) reviews, or with no rung left, it stops with `next: decide`. State:
+`runs/<project>/_loops/<name>/state.json`.
+
+**Per project**: any `ROLE_*`, `REVIEW_ROLES`, `SCOUT_MODEL`, `TICKET_ESCALATE_*` or `LOOP_*` line in
 `projects/<repo>.env` overrides `agent-box.conf` for that project, in `delegate.sh` and in ticket mode
 alike. `delegate.sh roles <repo>` prints what is in effect and marks the project's own lines.
 
