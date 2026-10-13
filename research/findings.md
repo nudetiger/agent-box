@@ -268,6 +268,52 @@ Not comparable, and why:
 - SENSITIVE matched any file name containing "lock" (`tool-result-prune-blocks.test.ts`) (fixed,
   c4e42ed, b8a1078).
 
+## 11. End to end: before and after Actions 12 and 13a, against Sonnet 5.5 (2026-10-13)
+
+Two Lykos tickets the Sonnet 5.5 pipeline needed many review rounds for, chosen because Sonnet's first
+commit fails the hidden check. Each agent-box arm got a symptom-only report (`bench/suites/real/*/
+report.md`: no file names, the issue's requirements, the exact strings the tests assert) and never
+saw the hidden tests. Rules were fixed in a driver: implement; on a gate failure one continue, then
+implement-hard, then escalate; two-axis review; every CONFIRMED finding forwarded in one fix round.
+"pre" = harness 3fd006f (worktree `agent-box-pre`), "new" = HEAD with `hunt`. One run per arm. The
+user stopped the last two runs after a day.
+
+T194 (#49, untrusted project config runs host commands; 13 of 95 hidden tests fail on the base):
+
+| arm | failing after round 1 | failing at the end | wall | list price | billed |
+| --- | --- | --- | --- | --- | --- |
+| Sonnet 5.5 + Opus 5.5 reviews | 5 (first commit bf7c387) | 0, after 3 review rounds | 71 min | $4.37 (subagents only, a floor) | Claude plan |
+| pre | 5 | 5 | 93 min | $8.68 | $0.19 |
+| new, hunt failed (dead model id), old path | 5 | 5 | 115 min | $11.01 | $0.17 |
+| new, hunt worked | 5 | 5 | 138 min | $11.02 | $0.18 |
+
+All three agent-box runs fail the same 5: the gate's command discovered from the project (3, never
+withheld) and two regressions (a trusted reviewer child, the gate inside a container). Sonnet's first
+commit failed 5 different ones: child sessions (2) and gate discovery (3), no regression. The pre
+run's DeepSeek review flagged gate discovery as CONFIRMED critical; one fix round did not close it.
+
+T174b (#40, quoted host-path translation; 8 of 62 fail on the base):
+
+| arm | failing after round 1 | failing at the end | wall | list price | billed |
+| --- | --- | --- | --- | --- | --- |
+| Sonnet 5.5 + Opus 5.5 reviews | 10 (first commit a583b85) | 0, after 6 review rounds | 206 min (shared with T182) | $3.45 (a floor) | Claude plan |
+| pre: Gemini no change twice, then DeepSeek | 1 | 1 | 68 min | $2.35 | $0.34 |
+| new: hunt, then Gemini | 1 | not reached (stopped in the fix round) | 76 min so far | $3.36 so far | $0.11 |
+
+Both agent-box arms miss one sub-case: git's subcommand after its own valued options
+(`--attr-source`, `--exec-path`, two-word options), which Sonnet reached only in review rounds 4-6.
+
+- The hunt worked twice: on T194 a 476-line red test, 12 cases, 4 locations (30 min, $1.72); on
+  T174b after one fix round (it had also edited a doc). It did not change either outcome.
+- Action 12's swap fired end to end (review-spec-alt on the DeepSeek branch) but the run was stopped
+  before its findings: its effect is unmeasured.
+- First attempt: agent-box beats Sonnet's first commit on T174b (1 against 10 failing) and ties on
+  T194 in count. Sonnet's pipeline wins at the end because it loops review rounds until clean.
+
+Harness defects found: Gemini 3.1 Pro gone upstream (bughunt and tests now Gemini Flash, 9a6e8bd);
+the red check's `(?:` patterns broke `grep -E` (9a6e8bd); a review's findings block written as one
+escaped string was dropped and the run said done (3ef0223).
+
 ## Unmeasured
 
 Token budget per 5 hours; review precision and recall beyond the cases above; misreport rate; any

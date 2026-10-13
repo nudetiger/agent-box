@@ -55,7 +55,7 @@ Usage: delegate.sh <command> ...
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
   hunt     <repo> <bug.md> [--base REF] [--name N]
-                                 A reported bug with no known location: bughunt (Gemini 3.1 Pro)
+                                 A reported bug with no known location: bughunt (Gemini Flash high)
                                  reproduces it, locates it and commits a failing test, checked red
                                  by the harness. Prints JSON with fix_task: run it with --role implement
                                  --base agent/<hunt run>

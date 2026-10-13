@@ -113,7 +113,7 @@ harness versions side by side, and live cards for running workers.
 
 Ported from AgentOrchestratingSkill. Tickets are Matt Pocock `to-tickets` files
 (`.scratch/<feature>/issues/NN-slug.md` with `**Blocked by:**`, `**Status:**`, optional `**Model:**`, and
-`- [ ]` criteria; `spec.md` beside `issues/`). Per ticket: the `tests` role (Gemini 3.1 Pro) writes the
+`- [ ]` criteria; `spec.md` beside `issues/`). Per ticket: the `tests` role (Gemini Flash high) writes the
 tests first; the harness accepts them only if nothing but test files changed, nothing is skipped, and
 they fail on the current code (one fix round otherwise); they are sealed for the implementer, which
 works on top of them; a failing implementation escalates once to `TICKET_ESCALATE_ROLE` with its
