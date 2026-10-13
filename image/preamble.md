@@ -33,8 +33,11 @@ them in your final message. A decision you cannot make well without the orchestr
   {"status": "done|partial|blocked", "tests": "pass|fail|not_run", "test_summary": "<summary line exactly as printed>",
    "decisions": ["<choices the task left open, one line each>"],
    "context_gaps": ["<what the task or context pack should have told you but did not>"],
-   "test_dispute": [{"file": "<sealed test you believe is wrong>", "why": "<reason>"}]}
+   "test_dispute": [{"file": "<sealed test you believe is wrong>", "why": "<reason>"}],
+   "disputes": [{"finding": "<review finding id you believe is wrong>", "why": "<reason>"}]}
   ```
+  A review finding you are sure is wrong: do not change code for it, list it in `disputes`; the
+  orchestrator decides. Every other finding you were sent gets fixed.
 - Speed: every tool call costs a full model round trip. Files the context pack pastes are already
   current; do not read them again. Run `{{TEST_CMD}}` when your change is complete, and again only
   after you fix something; the harness reruns it after you finish.

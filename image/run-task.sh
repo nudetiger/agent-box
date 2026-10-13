@@ -140,6 +140,28 @@ final_message() {
 }
 [ -s "$OUT/events.jsonl" ] && final_message
 session_id="$(jq -r 'select(.sessionID) | .sessionID' "$OUT/events.jsonl" 2>/dev/null | tail -n 1)"
+
+# 3b. A turn cut off at the output cap (step_finish reason "length", usually from thinking) ends the
+#     run with no edit. Resume the same session, up to CUT_RESUMES times, and ask for edits.
+cut_resumes=0
+resume_cut() {
+  while [ "$cut_resumes" -lt "${CUT_RESUMES:-2}" ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] \
+     && [ "$(node /opt/agent-box/last-stop.mjs "$OUT/events.jsonl")" = length ]; do
+    cut_resumes=$((cut_resumes + 1))
+    log "cut off at the output cap: resuming $session_id ($cut_resumes)"
+    local msg='Your last turn was cut off at the output limit while you were still thinking, so nothing was done. Stop planning the whole change at once: make the edits now with your tools, one small step at a time, and commit as you go. End with the report block.'
+    [ "${REVIEW:-0}" = 1 ] && msg='Your last turn was cut off at the output limit while you were still thinking. Stop analysing: write your review now, ending with the findings block.'
+    local t0; t0=$(date +%s)
+    timeout --kill-after=30 "${AUTOFIX_MIN:-15}m" \
+      opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" "$msg" \
+      >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+    agent_exit=$?
+    agent_s=$(( agent_s + $(date +%s) - t0 ))
+    log "cut resume $cut_resumes: agent exit $agent_exit"
+    final_message
+  done
+}
+resume_cut
 blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
@@ -210,6 +232,7 @@ while [ "$test_exit" -gt 0 ] && [ "$autofix" -lt "${AUTOFIX:-1}" ] && [ "${REVIE
   agent_s=$(( agent_s + $(date +%s) - t0 ))
   log "autofix $autofix: agent exit $agent_exit"
   final_message
+  resume_cut
   blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
   settle
   run_tests
@@ -236,14 +259,14 @@ jq -n \
   --argjson asked "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.md$')" \
   --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
-  --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" \
+  --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" --argjson cut "$cut_resumes" \
   --slurpfile report "$OUT/report.json" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | sort -u | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
     setup_exit:$setup, agent_exit:$agent, test_exit:$test, first_test_exit:$first_test, seconds:$seconds,
     phase_seconds:{setup:$setup_s, agent:$agent_s, test:$test_s},
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
-    review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix,
+    review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix, cut_resumes:$cut,
     report:($report[0]), session:(if $session == "" then null else $session end), round:$round, start:$start,
     questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"

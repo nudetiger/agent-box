@@ -43,7 +43,8 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh answer <repo> <run-name> <id> (-m TEXT | -f FILE)                 # answer one; it keeps working
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
 ./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
-./delegate.sh loop   <repo> <run> [--spec FILE] [--max-rounds N]  # review and fix until clean, escalating
+./delegate.sh loop   <repo> <run> [--spec FILE] [--max-rounds N]  # review, verify, fix until nothing blocks
+./delegate.sh loop resume <repo> <loop> [--answer T] [--drop IDs] [--add F] [-m T]  # the orchestrator's decisions
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
@@ -217,7 +218,7 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | escalate (= last-resort) | `antigravity/claude-opus-4-6-thinking` | after two failed rounds, with the failure history |
 | write / draft | Opus 4.6 / Gemini 3.8 Flash high | prose that ships / drafts |
 | explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
-| bughunt | Gemini 3.8 Flash high | `delegate.sh hunt`: reproduces a reported bug with no known location, locates it, commits a failing test (checked red); prints the fix task |
+| bughunt | Gemini 3.8 Flash high | `delegate.sh hunt`: reproduces, locates and pins a reported bug. Out of the workflow (2026-10-13): it added 23-30 min on Lykos T194/T174b and changed neither; the orchestrator hunts with an Opus 5.5 subagent instead |
 | tests | Gemini 3.8 Flash high | ticket mode: writes the failing tests first |
 | review-spec | `deepseek/deepseek-flash-max` | requirements, edge cases, test strength, against the spec |
 | review-spec-alt | Opus 4.6 | the spec review instead when the implementer is review-spec's family (DeepSeek); `review` and ticket mode swap it in by themselves |
@@ -228,15 +229,37 @@ and recalled what it read in round 1 (cache read 155k tokens).
 One worker per task; `fanout` stays available but no workflow uses it. `review` and ticket mode run the
 same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
 
-**The review and fix loop** (`delegate.sh loop <repo> <run>`): review on both axes, send every
-CONFIRMED finding back to the same worker, review again, until no CONFIRMED finding is left. From the
-second round each reviewer first rechecks its own axis's findings from the round just fixed; one still
-open comes back with `"prior": "<id>"`. The work goes up `LOOP_LADDER` (implement, implement-hard,
-escalate: a fresh worker on the last passing branch, with the task, the open findings and the history)
-when a finding survives `LOOP_STUCK` (2) fixes by one worker, when critical or high findings are still
-open after `LOOP_SOFT_ROUNDS` (3) fix rounds by it, or when a fix round fails its own tests. After
-`LOOP_MAX_ROUNDS` (6) reviews, or with no rung left, it stops with `next: decide`. State:
-`runs/<project>/_loops/<name>/state.json`.
+**The review and fix loop** (`delegate.sh loop <repo> <run>`, `lib/loop.mjs`, `lib/verify.mjs`).
+Round 1 reviews the whole change on both axes. Every behaviour finding carries a reproduction (a file
+under `/tmp` and a command); one check container per round reruns all of them on the branch, with the
+existing tests next to the change (same stem, or importing a changed module; at most
+`LOOP_NEIGHBOURS`, rerun on the base when they fail). The harness's result decides, not the reviewer's
+CONFIRMED:
+
+| finding | goes to |
+| --- | --- |
+| reproduction fails on the branch, critical/high/medium | the worker, with the reproduction; blocks |
+| reproduction fails, low | merge note |
+| reproduction passes on the branch | dropped, labelled `review_false_positive` |
+| `spec_question` | stop: `next: answer_spec` |
+| no reproduction, CONFIRMED critical/high logic, edge case, security or requirement | stop: `next: triage` |
+| no reproduction, other medium+ | sent with the next fix; one advice-only fix round at most |
+| the tests next to the change fail on the branch and pass on the base | a regression; blocks |
+| the worker disputes a finding (`disputes` in its report) that still fails | stop: `next: triage` |
+
+After a fix only the spec axis reviews the fix's own diff (`review --against` the previous run). When
+that is clean, one final full review on both axes; a first review that passes is the last. The work
+goes up `LOOP_LADDER` (a fresh worker on the last passing branch, with the task, what is open, the
+history, and the last attempt's diff and test output) when a reproduction still fails after
+`LOOP_STUCK` (2) fixes by one worker, a regression after 1, serious items after `LOOP_SOFT_ROUNDS` (3)
+fix rounds by it, or a fix fails its own tests. `LOOP_MAX_ROUNDS` (6) reviews, or no rung left:
+`next: decide`. `loop resume <repo> <loop>` takes the orchestrator's `--answer` (also given to every
+later reviewer), `--drop`, `--add`, `-m` and `--max-rounds`, and goes on. State:
+`runs/<project>/_loops/<name>/state.json`. Review runs are capped at `REVIEW_STEPS` (90) steps.
+
+**A turn cut off at the output cap** (step reason `length`, Gemini thinking ~30,700 tokens of a ~32k
+cap, Lykos T174b) is resumed in the same session up to twice (`CUT_RESUMES`) before the run ends;
+`cut_resumes` in the summary counts them.
 
 **Per project**: any `ROLE_*`, `REVIEW_ROLES`, `SCOUT_MODEL`, `TICKET_ESCALATE_*` or `LOOP_*` line in
 `projects/<repo>.env` overrides `agent-box.conf` for that project, in `delegate.sh` and in ticket mode

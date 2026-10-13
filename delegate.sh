@@ -54,10 +54,14 @@ Usage: delegate.sh <command> ...
                                  --name P names the runs P-<role>; --prior spec=FILE|std=FILE puts the
                                  previous round's findings first, to recheck
   loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2]
-                                 Review and fix until no CONFIRMED finding is left. A finding open
-                                 after 2 fixes, serious findings after 3 fix rounds, or a fix that
-                                 fails its tests moves the work up implement -> implement-hard ->
-                                 escalate. Prints JSON with next: approve, decide, or the run's own
+                                 Review, rerun each finding's reproduction and the tests next to the
+                                 change, fix what is proven, review the fix, until nothing blocks.
+                                 Stuck findings, regressions, serious findings after 3 fix rounds or
+                                 a failing fix move the work up implement -> implement-hard -> escalate.
+                                 Prints JSON with next: approve, answer_spec, triage, answer_question,
+                                 decide, or the run's own
+  loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--add FILE] [-m TEXT|@FILE] [--max-rounds N]
+                                 Your decisions on a stopped loop, then it goes on with a fix round
   ask     <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
@@ -643,7 +647,7 @@ cmd_review() {
       cat "$body"
     } >"$tdir/task-$r.md"
     local n="${prefix:-rv-$stamp}-$r"
-    REVIEW_TARGET="$branch" "${SELF[@]}" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    REVIEW_TARGET="$branch" "${SELF[@]}" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review ${REVIEW_STEPS:+--steps "$REVIEW_STEPS"} >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
   wait
@@ -787,7 +791,8 @@ case "${1:-}" in
     cmd_ticket_js "$sub" "$repo" "$(winpath "$f")" "$@" ;;
   defect) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js defect "$repo" "$(winpath "$f")" "$@" ;;
   hunt) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js hunt "$repo" "$(winpath "$f")" "$@" ;;
-  loop) shift; repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
+  loop) shift; sub=(); [ "${1:-}" = resume ] && { sub=(resume); shift; }
+    repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
