@@ -601,10 +601,21 @@ cmd_review() {
     done
     [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
   } >"$body"
+  # The spec reviewer is never the implementer's family: code DeepSeek wrote gets review-spec-alt.
+  local impl="" picked
+  [ -f "$BOX/runs/$PROJECT/${branch#agent/}/summary.json" ] \
+    && impl="$(sed -n 's/.*"model": *"\([^"]*\)".*/\1/p' "$BOX/runs/$PROJECT/${branch#agent/}/summary.json" | head -n 1)"
+  if [ -n "$impl" ] && [[ ",$roles," == *,review-spec,* ]]; then
+    picked="$(node "$(winpath "$BOX/lib/family.mjs")" spec-role "$impl" "${ROLE_review_spec%% *}" "${ROLE_review_spec_alt:-}")"
+    if [ "$picked" = review-spec-alt ]; then
+      roles="$(echo ",$roles," | sed 's/,review-spec,/,review-spec-alt,/; s/^,//; s/,$//')"
+      echo "agent-box: $impl wrote this branch and review-spec is the same family: the spec review goes to review-spec-alt (${ROLE_review_spec_alt%% *})" >&2
+    fi
+  fi
   local names=() r prompt
   for r in ${roles//,/ }; do
     case "$r" in
-      review-spec) prompt="$BOX/lib/ticket/review-spec.md" ;;
+      review-spec|review-spec-alt) prompt="$BOX/lib/ticket/review-spec.md" ;;
       review-std) prompt="$BOX/lib/ticket/review-standards.md" ;;
       *) prompt="" ;;
     esac

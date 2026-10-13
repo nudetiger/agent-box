@@ -219,6 +219,7 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
 | tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
 | review-spec | `deepseek/deepseek-flash-max` | requirements, edge cases, test strength, against the spec |
+| review-spec-alt | Opus 4.6 | the spec review instead when the implementer is review-spec's family (DeepSeek); `review` and ticket mode swap it in by themselves |
 | review-std | Opus 4.6 | the repo's documented standards, design, smells |
 | adjudicate | Kimi K3 (`cursor/kimi-k3-high`), Opus after 2026-10-24 | settles a disputed finding (read-only) |
 | advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |

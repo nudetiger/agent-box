@@ -2,7 +2,7 @@
 // delegate.sh (run, review, ask resolve roles after loading the project) and in ticket mode.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -64,6 +64,44 @@ test("review relaunches delegate.sh by its absolute path, also when called as a 
     const log = fs.readdirSync(runs).filter((f) => /^\.rv-.*-review-spec\.log$/.test(f)).map((f) => fs.readFileSync(path.join(runs, f), "utf8")).join("");
     assert.doesNotMatch(log, /command not found/);
     assert.match(log, /OMNIROUTE_API_KEY is empty/, "the relaunched run started and reached its own checks");
+  } finally {
+    fs.rmSync(runs, { recursive: true, force: true });
+  }
+});
+
+test("spec reviewer: never the implementer's family", async () => {
+  const { family, specRole } = await import("../lib/family.mjs");
+  assert.equal(family("antigravity/claude-opus-4-6-thinking"), "anthropic");
+  assert.equal(family("gemini-3.8-flash-tiered high"), "google");
+  assert.equal(family("antigravity/gemini-3.1-pro-high"), "google");
+  const ds = "deepseek/deepseek-flash-max", opus = "antigravity/claude-opus-4-6-thinking";
+  assert.equal(specRole("gemini-3.8-flash-tiered", ds, opus), "review-spec");
+  assert.equal(specRole("deepseek/deepseek-flash", ds, opus), "review-spec-alt");
+  assert.equal(specRole(undefined, ds, opus), "review-spec", "a branch agent-box did not make keeps the default");
+  assert.equal(specRole(ds, ds, "deepseek/deepseek-pro"), "review-spec", "an alt of the same family is no better");
+});
+
+test("review: a branch DeepSeek wrote gets review-spec-alt", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-alt-"));
+  const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a");
+  git("branch", "agent/ds-run");
+  const env = path.join(dir, "settings.env");
+  fs.writeFileSync(env, "OMNIROUTE_API_KEY=\n");
+  const runs = path.join(BOX, "runs", path.basename(dir).toLowerCase());
+  fs.mkdirSync(path.join(runs, "ds-run"), { recursive: true });
+  fs.writeFileSync(path.join(runs, "ds-run", "summary.json"), JSON.stringify({ model: "deepseek/deepseek-flash-max" }, null, 2));
+  try {
+    const r = spawnSync("bash", ["delegate.sh", "review", dir, "agent/ds-run"],
+      { cwd: BOX, encoding: "utf8", env: { ...process.env, AGENT_BOX_PROJECT_ENV: env, AGENT_BOX_HERDR: "0" } });
+    assert.match(r.stderr, /spec review goes to review-spec-alt/);
+    const logs = fs.readdirSync(runs).filter((f) => f.endsWith(".log"));
+    assert.ok(logs.some((f) => /-review-spec-alt\.log$/.test(f)), logs.join(", "));
+    assert.ok(logs.some((f) => /-review-std\.log$/.test(f)), "the standards axis is unchanged");
+    assert.ok(!logs.some((f) => /-review-spec\.log$/.test(f)), "no same-family spec review");
   } finally {
     fs.rmSync(runs, { recursive: true, force: true });
   }
