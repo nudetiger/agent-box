@@ -216,7 +216,7 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | escalate (= last-resort) | `antigravity/claude-opus-4-6-thinking` | after two failed rounds, with the failure history |
 | write / draft | Opus 4.6 / Gemini 3.8 Flash high | prose that ships / drafts |
 | explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
-| bughunt | `antigravity/gemini-3.1-pro-high` | slow read-only bug hunt in a module |
+| bughunt | `antigravity/gemini-3.1-pro-high` | `delegate.sh hunt`: reproduces a reported bug with no known location, locates it, commits a failing test (checked red); prints the fix task |
 | tests | `antigravity/gemini-3.1-pro-high` | ticket mode: writes the failing tests first |
 | review-spec | `deepseek/deepseek-flash-max` | requirements, edge cases, test strength, against the spec |
 | review-spec-alt | Opus 4.6 | the spec review instead when the implementer is review-spec's family (DeepSeek); `review` and ticket mode swap it in by themselves |

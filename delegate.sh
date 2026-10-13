@@ -54,6 +54,11 @@ Usage: delegate.sh <command> ...
   ask      <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
   show     <repo> <name>         Print a finished run's report again
+  hunt     <repo> <bug.md> [--base REF] [--name N]
+                                 A reported bug with no known location: bughunt (Gemini 3.1 Pro)
+                                 reproduces it, locates it and commits a failing test, checked red
+                                 by the harness. Prints JSON with fix_task: run it with --role implement
+                                 --base agent/<hunt run>
   roles    <repo>                The roles in effect for the project: agent-box.conf, overridden by
                                  any ROLE_*, REVIEW_ROLES, SCOUT_MODEL or TICKET_ESCALATE_* line in
                                  its projects/<repo>.env
@@ -768,6 +773,7 @@ case "${1:-}" in
     case "$sub" in run) sub=run-feature ;; esac
     cmd_ticket_js "$sub" "$repo" "$(winpath "$f")" "$@" ;;
   defect) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js defect "$repo" "$(winpath "$f")" "$@" ;;
+  hunt) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js hunt "$repo" "$(winpath "$f")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
