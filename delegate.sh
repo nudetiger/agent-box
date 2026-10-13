@@ -5,6 +5,9 @@
 set -euo pipefail
 
 BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# fanout, review, explore and batch start runs of this script. "$0" is whatever the caller typed: a
+# relative "delegate.sh" is not on PATH and fails with "command not found" (bench 2026-10-13).
+SELF=(bash "$BOX/delegate.sh")
 IMAGE="agent-box:latest"
 LABEL="agent-box=1"
 # Container engine: docker or podman. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
@@ -549,7 +552,7 @@ cmd_fanout() {
   [ -n "$name" ] || name="fan-$(date +%Y%m%d-%H%M%S)"
   local names=() r
   for r in ${roles//,/ }; do
-    "$0" run "$repo" "$task" --role "$r" --name "$name-$r" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name-$r.log" 2>&1 &
+    "${SELF[@]}" run "$repo" "$task" --role "$r" --name "$name-$r" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name-$r.log" 2>&1 &
     names+=("$name-$r"); sleep 2
   done
   wait
@@ -611,7 +614,7 @@ cmd_review() {
       cat "$body"
     } >"$tdir/task-$r.md"
     local n="rv-$stamp-$r"
-    REVIEW_TARGET="$branch" "$0" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    REVIEW_TARGET="$branch" "${SELF[@]}" run "$repo" "$tdir/task-$r.md" --role "$r" --review --base "$branch" --name "$n" --mode review >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
   wait
@@ -667,7 +670,7 @@ cmd_explore() {
   local task="$BOX/runs/$PROJECT/.$name.md"
   mkdir -p "$BOX/runs/$PROJECT"
   printf '%s\n' "$question" >"$task"
-  "$0" run "$repo" "$task" --role "$role" --review --preamble explore --mode explore --name "$name" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name.log" 2>&1 \
+  "${SELF[@]}" run "$repo" "$task" --role "$role" --review --preamble explore --mode explore --name "$name" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$name.log" 2>&1 \
     || { tail -n 20 "$BOX/runs/$PROJECT/.$name.log"; die "explore run failed"; }
   local out="$BOX/runs/$PROJECT/$name"
   echo "== $name ($(jq -r '"\(.seconds)s"' "$out/summary.json" 2>/dev/null))"
@@ -690,7 +693,7 @@ cmd_batch() {
   local stamp names=() t n; stamp="$(date +%Y%m%d-%H%M%S)"
   for t in "${tasks[@]}"; do
     n="b$stamp-$(basename "$t" .md | tr -c 'a-zA-Z0-9\n' '-' | cut -c1-30)"
-    "$0" run "$repo" "$t" --name "$n" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
+    "${SELF[@]}" run "$repo" "$t" --name "$n" "${passthru[@]}" >"$BOX/runs/$PROJECT/.$n.log" 2>&1 &
     names+=("$n"); sleep 2
   done
   wait
