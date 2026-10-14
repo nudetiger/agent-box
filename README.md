@@ -379,7 +379,8 @@ Every proven reproduction joins the proof suite, rerun every round. A fix round 
 at once and tells the worker to run the proof suite and the neighbour tests green before it ends.
 After a fix, the round-1 reviewer sessions are resumed on it (`continue --at agent/<fix>`, at most
 `LOOP_RECHECK_STEPS` steps): the spec reviewer, and the standards reviewer when one of its findings was
-sent. There is no final full review. Beside the first review, the base's whole suite runs once per
+sent. Each gets every sent finding, so a session on a model matching `LOOP_RECHECK_AVOID` (default
+`opus`, the scarce quota) is left out while another can recheck. There is no final full review. Beside the first review, the base's whole suite runs once per
 base commit (`BASE_SUITE_CMD`, default the project's `TEST_CMD`; `LOOP_BASE_SUITE=0` turns it off) and
 its failing test names are kept in `runs/<project>/.basecache/<sha>.json`: checks then run the neighbour
 tests on the branch only and compare names. Without a usable suite result (a crash, a timeout, no

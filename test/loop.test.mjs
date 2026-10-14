@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classify, decide, fixMessage, fixContext, recheckMessage, freshTask, loop, resume } from "../lib/loop.mjs";
+import { classify, decide, fixMessage, fixContext, recheckMessage, recheckAxes, freshTask, loop, resume } from "../lib/loop.mjs";
 
 const CFG = { maxRounds: 4, maxFixes: 3, stuck: 2, softRounds: 2, neighbours: 30, recheckSteps: 40, fresh: ["implement", "implement-hard"], selector: "advise-alt" };
 const REPRO = { file: "/tmp/r.test.ts", content: "boom()", cmd: "npx tsx --test /tmp/r.test.ts" };
@@ -450,5 +450,32 @@ test("loop: with the base suite known, a check runs its neighbours on the branch
   assert.match(m, /These already fail on the base; ignore them: `linux path`\./, "only the base failures this run hit");
   assert.equal(st.baseCache, null);
   assert.equal(st.next, "approve");
+  h.left();
+});
+
+test("recheckAxes: an Opus session is left out while another can recheck everything sent", () => {
+  const model = { spec: "deepseek/deepseek-flash-high", std: "antigravity/claude-opus-4-6-thinking" };
+  const std = [{ axis: "std" }], spec = [{ axis: "spec" }];
+  const of = (m) => (a) => m[a];
+  assert.deepEqual(recheckAxes({ spec: "a", std: "b" }, std, of(model), ""), ["spec", "std"], "no avoid: as before");
+  assert.deepEqual(recheckAxes({ spec: "a", std: "b" }, std, of(model), "opus"), ["spec"]);
+  assert.deepEqual(recheckAxes({ spec: "a", std: "b" }, spec, of(model), "opus"), ["spec"]);
+  // The spec reviewer is Opus too (review-spec-alt, DeepSeek wrote the code): another session, else Opus.
+  assert.deepEqual(recheckAxes({ spec: "a", std: "b" }, spec, of({ spec: "x/claude-opus", std: "cursor/kimi-k3" }), "opus"), ["std"]);
+  assert.deepEqual(recheckAxes({ spec: "a", std: "b" }, std, of({ spec: "x/claude-opus", std: "y/claude-opus" }), "opus"), ["spec", "std"]);
+});
+
+test("loop: with LOOP_RECHECK_AVOID matching the standards reviewer, the spec session rechecks its finding alone", async () => {
+  const docs = R("no glossary entry", { severity: "medium", category: "standard", repro: undefined });
+  const h = harness([
+    ["review", { "review-spec": [], "review-std": [docs] }],
+    ["continue", "pass"],
+    ["continue", []],
+  ]);
+  h.P.env = { LOOP_RECHECK_AVOID: "review-std" };   // the fake records each run's role as its model
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "approve");
+  assert.equal(h.calls[2][2], "L-rv1-review-spec");
+  assert.match(fs.readFileSync(h.calls[2][h.calls[2].indexOf("-f") + 1], "utf8"), /no glossary entry/);
   h.left();
 });
