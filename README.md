@@ -27,7 +27,7 @@ git clone https://github.com/nudetiger/agent-box.git
 cd agent-box
 npm ci                          # host-side helpers (one dependency: yaml)
 podman machine start            # Podman on Windows or macOS; skip on Linux or with Docker
-./delegate.sh build             # the worker image: Node, JDK 17, OpenCode (pinned in image/Dockerfile)
+./delegate.sh build             # the base worker image: Node, git, ripgrep, OpenCode (image/Dockerfile)
 ```
 
 Rebuild after changing anything under `image/`.
@@ -45,6 +45,32 @@ cp projects/example.env projects/myrepo.env    # fill OMNIROUTE_API_KEY; never c
 
 Recommended: `projects/myrepo.context.yaml`, the context map that decides which docs, traps and tests
 each worker is given (see [The task file and the context pack](#the-task-file-and-the-context-pack)).
+
+**Toolchain.** The base image has Node only (plus make, g++, python3 for node-gyp). A project that
+needs Go, Rust, CMake or a JDK gets its own image, built on the base:
+
+```bash
+cp projects/example.Dockerfile projects/myrepo.Dockerfile    # uncomment what the project needs
+./delegate.sh build /path/to/myrepo                          # builds agent-box-myrepo, used for every run
+./delegate.sh config /path/to/myrepo                         # image, caches, every setting the .env sets
+```
+
+**Settings.** Any `agent-box.conf` key can be set in the project's `.env` and wins there. The ones
+made for other stacks (examples in `projects/example.env`):
+
+| Key | What it does |
+| --- | --- |
+| `SETUP_CMD`, `TEST_CMD` | Install and test commands (default `npm ci`, `npm test`) |
+| `CACHES` | `name:/path` named volumes kept across runs, e.g. `go:/home/node/go` |
+| `CONTAINER_ENV` | Names of `.env` settings passed into the container, e.g. `GOFLAGS` |
+| `SYNTAX_<ext>` | Fast check after every edit of a `.<ext>` file, e.g. `SYNTAX_go='gofmt -e {file} >/dev/null'` |
+| `FAIL_REGEX` | Failing test names in the test output. Default knows node:test, TAP, Go, cargo, GoogleTest, pytest, Gradle |
+| `NEIGHBOUR_SOURCES` | Changed files whose neighbouring tests rerun each review round. Default: JS/TS, Java, Kotlin, Python, Go, Rust, C/C++ |
+| `SENSITIVE_EXTRA` | More paths flagged `SENSITIVE` when a worker edits them |
+| `ROLE_*`, `REVIEW_ROLES`, `LOOP_*` | Models and loop limits for this project only |
+
+`test_file_command` in the context map takes `{files}`, `{tests}` (Gradle `--tests` filters) and
+`{dirs}` (the files' directories as `./dir`, for `go test {dirs}`).
 
 ## Quick start
 
@@ -109,8 +135,8 @@ step when either changes.
 - **Not covered:** network egress is open (needed for `npm ci`). A hostile model can send out the repo
   source and the OmniRoute key, nothing more. Shared kernel (`runc`), not a VM.
 - The npm cache is a shared named volume (`agent-box-npm-cache`); npm checks lockfile integrity hashes.
-  Gradle projects share `agent-box-gradle-cache` (wrapper, dependencies, toolchain JDKs). The image
-  has JDK 17 to launch Gradle; a project's toolchain JDK downloads into that volume once.
+  Other caches are the project's `CACHES` volumes, shared by every project that names the same one
+  (RakunMiniItems: `gradle`, holding the wrapper, dependencies and toolchain JDKs).
   Java projects: `{tests}` in `test_file_command` expands to `--tests <class>` for each sibling `*Test.java`.
 
 ## Setup per project
@@ -431,9 +457,10 @@ Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 | `agent-box.conf` | Engine, roles, review defaults, scout model |
 | `projects/*.env` | Per-project key and settings. Git-ignored |
 | `projects/*.context.yaml` | Per-project context map |
+| `projects/*.Dockerfile` | Per-project image: the toolchain on top of the base (`projects/example.Dockerfile`) |
 | `research/` | The research this design rests on |
 | `runs/` | Run outputs. Git-ignored |
 | `claude-skill/agent-box/SKILL.md` | The Claude Code skill: the orchestrator's procedure |
 
-After changing anything under `image/`, run `./delegate.sh build`. To update OpenCode, change
+After changing anything under `image/`, run `./delegate.sh build`, then `./delegate.sh build <repo>` for each project with its own Dockerfile. To update OpenCode, change
 `OPENCODE_VERSION` in `image/Dockerfile` and rebuild.

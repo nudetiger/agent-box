@@ -25,7 +25,8 @@ usage() {
   cat <<'EOF'
 Usage: delegate.sh <command> ...
 
-  build                          Build the worker image
+  build    [<repo>]              Build the base worker image; with <repo>, also the project's own image
+                                 from projects/<repo>.Dockerfile (its toolchain, FROM agent-box:latest)
   models   <repo>                List models the project's OmniRoute key can use
   baseline <repo>                Clone + setup + tests in the container, no agent
   run      <repo> <task.md> [--role R | --model M] [--review] [--name N] [--base REF] [--timeout MIN]
@@ -76,7 +77,8 @@ Usage: delegate.sh <command> ...
   roles    <repo>                The roles in effect for the project: agent-box.conf, overridden by
                                  any ROLE_*, REVIEW_ROLES, SCOUT_MODEL or TICKET_ESCALATE_* line in
                                  its projects/<repo>.env
-  clean                         Remove leftover agent-box containers
+  config   <repo>                The project's image, caches and every setting its .env sets
+  clean                        Remove leftover agent-box containers
 
 Engine: docker (default) or podman, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 
@@ -93,6 +95,8 @@ load_project() {
   [ -f "$env" ] || [ -z "${AGENT_BOX_PROJECT_ENV:-}" ] || env="$AGENT_BOX_PROJECT_ENV"
   [ -f "$env" ] || die "no project file $env (copy projects/example.env)"
   PROJECT_ENV="$env"
+  # A project with its own Dockerfile runs in its own image; IMAGE in the .env file wins over both.
+  [ -f "$BOX/projects/$PROJECT.Dockerfile" ] && IMAGE="agent-box-$PROJECT:latest"
   set -a; # shellcheck disable=SC1090
   . "$env"; set +a
   OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"
@@ -105,7 +109,27 @@ load_project() {
 need_key() { [ -n "${OMNIROUTE_API_KEY:-}" ] || die "OMNIROUTE_API_KEY is empty in projects/$PROJECT.env"; }
 
 cmd_build() {
-  dk build -t "$IMAGE" "$(winpath "$BOX/image")"
+  dk build -t agent-box:latest "$(winpath "$BOX/image")"
+  [ -n "${1:-}" ] || return 0
+  load_project "$1"
+  local df="$BOX/projects/$PROJECT.Dockerfile"
+  [ -f "$df" ] || die "no $df: $PROJECT runs in the base image, nothing more to build"
+  # The context is an empty folder holding only the Dockerfile: projects/ has the .env secrets.
+  local ctx="$BOX/runs/.build-$PROJECT"
+  rm -rf "$ctx"; mkdir -p "$ctx"; cp "$df" "$ctx/Dockerfile"
+  dk build -t "$IMAGE" "$(winpath "$ctx")"; local e=$?
+  rm -rf "$ctx"; return $e
+}
+
+# -v flags for CACHES="name:/container/path ..." in the project's .env: named volumes agent-box-<name>-cache,
+# kept across runs (Go modules, cargo registry, Gradle). The npm cache is always mounted.
+cache_volumes() {
+  local c
+  CACHE_ARGS=(-v agent-box-npm-cache:/home/node/.npm)
+  for c in ${CACHES:-}; do
+    [[ "$c" == ?*:/?* ]] || die "CACHES entry '$c' is not name:/path"
+    CACHE_ARGS+=(-v "agent-box-${c%%:*}-cache:${c#*:}")
+  done
 }
 
 cmd_models() {
@@ -201,6 +225,12 @@ launch() {
   done >"$run_dir/meta.sh"
   printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
+  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 \
+    || die "no image $IMAGE: run delegate.sh build $REPO"
+  # Into the container as well: the project's SYNTAX_<ext> checks and the names in CONTAINER_ENV.
+  local v extra_env=()
+  for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
+  cache_volumes
   local cname; cname="$(cname_of "$name")"
   slot_acquire "$name"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
@@ -221,7 +251,7 @@ launch() {
   dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
     --add-host "host.docker.internal:$host_ip" \
-    -v agent-box-npm-cache:/home/node/.npm -v agent-box-gradle-cache:/home/node/.gradle \
+    "${CACHE_ARGS[@]}" "${extra_env[@]}" \
     -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
     -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
     -e START_SHA -e CONTINUE_SESSION -e ROUND -e ASK -e ASK_WAIT_S -e ASK_TIMEOUT_MIN \
@@ -731,6 +761,18 @@ cmd_roles() {
   done
 }
 
+# Everything the project's .env sets (the OmniRoute key only as set/empty), its image and its caches.
+cmd_config() {
+  load_project "$1"
+  local k state=built
+  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 || state="not built: delegate.sh build $REPO"
+  printf '%-22s %s\n' image "$IMAGE ($state)" caches "agent-box-npm-cache ${CACHES:-}"
+  for k in $(grep -oE '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$PROJECT_ENV" | sed -E 's/^export[[:space:]]+//; s/=$//' | sort -u); do
+    if [ "$k" = OMNIROUTE_API_KEY ]; then printf '%-22s %s\n' "$k" "$([ -n "${!k:-}" ] && echo set || echo empty)"
+    else printf '%-22s %s\n' "$k" "${!k-}"; fi
+  done
+}
+
 # Read-only research: a worker answers one question about the code with file:line evidence, so the
 # orchestrator reads a digest instead of the files. Follow up with `continue <repo> <run> -m ...`.
 cmd_explore() {
@@ -805,7 +847,7 @@ cmd_ask() {
 }
 
 case "${1:-}" in
-  build) cmd_build ;;
+  build) shift; cmd_build "$@" ;;
   ask) shift; cmd_ask "$@" ;;
   fanout) shift; cmd_fanout "$@" ;;
   review) shift; cmd_review "$@" ;;
@@ -823,6 +865,7 @@ case "${1:-}" in
   note) shift; cmd_note "$@" ;;
   refs) shift; cmd_refs "$@" ;;
   roles) shift; cmd_roles "$@" ;;
+  config) shift; cmd_config "$@" ;;
   accept) shift; cmd_outcome accepted "$@" ;;
   reject) shift; cmd_outcome rejected "$@" ;;
   merged) shift; cmd_outcome merged "$@" ;;

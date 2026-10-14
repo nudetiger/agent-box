@@ -1,6 +1,6 @@
 // Fast syntax check of one edited file, run by the agent-box OpenCode plugin after every edit.
 // Prints the error and exits 1 when the file does not parse; prints nothing and exits 0 otherwise,
-// or when the language is not covered. Parse only: no type check, no imports resolved.
+// or when the language is not covered. Built in: parse only, no type check, no imports resolved.
 //
 //   node syntax-check.mjs <file>
 import fs from "node:fs";
@@ -24,6 +24,15 @@ function nodeCheck(code, suffix) {
 function fail(msg) {
   console.log(msg.split("\n").filter((l) => l.trim() && !/^\s*at |^Node\.js v/.test(l)).join("\n").trim().slice(0, 1500));
   process.exit(1);
+}
+
+// A project's own check for an extension wins: SYNTAX_<ext>="gofmt -e {file} >/dev/null" in
+// projects/<repo>.env. It fails the edit when it exits non-zero; its output is the message.
+const custom = ext && process.env[`SYNTAX_${ext.slice(1)}`];
+if (custom) {
+  try { execFileSync("bash", ["-c", custom.replaceAll("{file}", '"$AB_FILE"')], { stdio: "pipe", timeout: 60000, env: { ...process.env, AB_FILE: file } }); }
+  catch (e) { fail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`.trim() || e.message); }
+  process.exit(0);
 }
 
 try {

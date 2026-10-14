@@ -1,11 +1,12 @@
-# agent-box worker image: Node, JDK 17 and OpenCode. No credentials are baked in.
-# JDK 17 launches Gradle wrappers; a build's toolchain JDK (e.g. 25) downloads once into the gradle cache volume.
+# agent-box base worker image: Node, git, the search tools and OpenCode. No credentials are baked in.
+# A project that needs more (a JDK, Go, Rust, CMake) adds it in projects/<repo>.Dockerfile, FROM this
+# image, built by `delegate.sh build <repo>`. make, g++ and python3 stay: node-gyp builds need them.
 FROM node:24-bookworm
 
 ARG OPENCODE_VERSION=1.19.0
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git jq ripgrep python3 make g++ ca-certificates curl openjdk-17-jdk-headless \
+ && apt-get install -y --no-install-recommends git jq ripgrep python3 make g++ ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && npm cache clean --force
@@ -16,7 +17,7 @@ COPY preamble.md preamble-review.md preamble-explore.md make-config.mjs ask-mcp.
 COPY plugin.js /home/node/.config/opencode/plugins/agent-box.js
 COPY skills/ /home/node/.config/opencode/skills/
 RUN chmod 755 /usr/local/bin/run-task.sh /opt/agent-box/changed-tests.sh \
- && mkdir -p /work /in /out /home/node/.npm /home/node/.gradle \
+ && mkdir -p /work /in /out /home/node/.npm \
  && chown -R node:node /work /in /out /home/node
 
 USER node

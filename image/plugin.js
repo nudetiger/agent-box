@@ -27,7 +27,7 @@ export const AgentBox = async ({ directory }) => ({
     for (const f of touched(input.tool, input.args)) {
       const file = f.startsWith("/") ? f : `${directory}/${f}`;
       try {
-        execFileSync("node", [CHECK, file], { stdio: "pipe", timeout: 15000 });
+        execFileSync("node", [CHECK, file], { stdio: "pipe", timeout: 65000 });
       } catch (e) {
         const msg = String(e.stdout || "").trim();
         if (msg) output.output = `${output.output ?? ""}\n\n[agent-box syntax check] ${f} no longer parses:\n${msg}\nFix this file before anything else.`;
