@@ -79,6 +79,9 @@ Usage: delegate.sh <command> ...
                                  any ROLE_*, REVIEW_ROLES, SCOUT_MODEL or TICKET_ESCALATE_* line in
                                  its projects/<repo>.env
   config   <repo>                The project's image, caches and every setting its .env sets
+  setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
+                                 repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
+                                 overwrites a file
   clean                        Remove leftover agent-box containers
 
 Engine: docker (default) or podman, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
@@ -224,7 +227,9 @@ launch() {
     [ -n "${STEPS:-}" ] || STEPS="$(node -e 'console.log(JSON.parse(process.argv[1]).steps || "")' "$meta")"
     export SEALED TEST_CMD SKILLS_ALLOW RED_CMD STEPS
   fi
-  # Everything `continue` needs to resume this run with the same model, rules and checks.
+  # Everything `continue` needs to resume this run with the same model, rules and checks. SKIP_AGENT
+  # first: the ledger reads a baseline from it (it was empty here, so every baseline's verdict was error).
+  SKIP_AGENT="$skip_agent"
   local v; for v in MODEL EFFORT VARIANT ALLOW_WEB REVIEW SCOUT_MODEL TEST_CMD SEALED SKILLS_ALLOW TIMEOUT_MIN ASK ROLE STEPS AUTOFIX SKIP_AGENT REVIEW_TARGET PREAMBLE; do
     printf '%s=%q\n' "$v" "${!v:-}"
   done >"$run_dir/meta.sh"
@@ -766,6 +771,13 @@ cmd_roles() {
   done
 }
 
+# First-time project files from the repo's manifests (lib/setup.mjs); never overwrites one.
+cmd_setup() {
+  local repo="${1:?usage: setup <repo> [--dry-run]}"; shift
+  [ -d "$repo" ] || die "not a folder: $repo"
+  node "$(winpath "$BOX/lib/setup.mjs")" "$(winpath "$(cd "$repo" && pwd)")" "$@"
+}
+
 # Everything the project's .env sets (the OmniRoute key only as set/empty), its image and its caches.
 cmd_config() {
   load_project "$1"
@@ -871,6 +883,7 @@ case "${1:-}" in
   refs) shift; cmd_refs "$@" ;;
   roles) shift; cmd_roles "$@" ;;
   config) shift; cmd_config "$@" ;;
+  setup) shift; cmd_setup "$@" ;;
   accept) shift; cmd_outcome accepted "$@" ;;
   reject) shift; cmd_outcome rejected "$@" ;;
   merged) shift; cmd_outcome merged "$@" ;;

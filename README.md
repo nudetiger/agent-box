@@ -37,7 +37,9 @@ Rebuild after changing anything under `image/`.
 A project is a git repo on your machine. Its settings live in `projects/<repo-folder-name-lowercase>.env`.
 
 ```bash
-cp projects/example.env projects/myrepo.env    # fill OMNIROUTE_API_KEY; never commit it (git-ignored)
+./delegate.sh setup    /path/to/myrepo         # projects/myrepo.env, .Dockerfile, .context.yaml from its manifests
+                                               # fill OMNIROUTE_API_KEY in the .env; never commit it (git-ignored)
+./delegate.sh build    /path/to/myrepo         # only when setup wrote a Dockerfile (Go, Rust, CMake, JDK, Python)
 ./delegate.sh models   /path/to/myrepo         # model ids the key can use
 ./delegate.sh roles    /path/to/myrepo         # which model each role uses here
 ./delegate.sh baseline /path/to/myrepo         # setup + tests with no agent: the starting state
@@ -46,8 +48,12 @@ cp projects/example.env projects/myrepo.env    # fill OMNIROUTE_API_KEY; never c
 Recommended: `projects/myrepo.context.yaml`, the context map that decides which docs, traps and tests
 each worker is given (see [The task file and the context pack](#the-task-file-and-the-context-pack)).
 
+`setup` reads package.json, go.mod, Cargo.toml, CMakeLists.txt, Gradle, Maven and Python manifests at
+the root or up to two folders down, and never overwrites a file; `--dry-run` prints what it would write.
+Its commands are guesses: `baseline` shows whether they work.
+
 **Toolchain.** The base image has Node only (plus make, g++, python3 for node-gyp). A project that
-needs Go, Rust, CMake or a JDK gets its own image, built on the base:
+needs Go, Rust, CMake or a JDK gets its own image, built on the base (`setup` writes it, or by hand):
 
 ```bash
 cp projects/example.Dockerfile projects/myrepo.Dockerfile    # uncomment what the project needs
