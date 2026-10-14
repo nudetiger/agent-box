@@ -1,16 +1,16 @@
-// The review and fix loop: routing, when it fixes, reviews again, escalates, stops or approves. The
-// rules are tested directly; the loop itself runs against a stand-in for delegate.sh that writes run
+// The review and fix loop: routing, when it fixes, rechecks, starts fresh attempts, stops or approves.
+// The rules are tested directly; the loop itself runs against a stand-in for delegate.sh that writes run
 // folders, so no container starts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classify, decide, nextTier, fixMessage, fixContext, loop, resume } from "../lib/loop.mjs";
+import { classify, decide, fixMessage, fixContext, recheckMessage, freshTask, loop, resume } from "../lib/loop.mjs";
 
-const CFG = { maxRounds: 6, stuck: 2, softRounds: 3, neighbours: 30, ladder: ["implement", "implement-hard", "escalate"] };
+const CFG = { maxRounds: 4, maxFixes: 3, stuck: 2, softRounds: 2, neighbours: 30, recheckSteps: 40, fresh: ["implement", "implement-hard"], selector: "advise-alt" };
 const REPRO = { file: "/tmp/r.test.ts", content: "boom()", cmd: "npx tsx --test /tmp/r.test.ts" };
-const F = (id, extra = {}) => ({ id, severity: "high", confidence: "CONFIRMED", category: "logic", issue: `issue ${id}`, file: "a.ts", line: 1, scenario: "s", repro: REPRO, ...extra });
+const F = (id, extra = {}) => ({ id, severity: "high", confidence: "CONFIRMED", category: "logic", issue: `issue ${id}`, file: "a.ts", line: 1, scenario: "s", basis: "task: it must", repro: REPRO, ...extra });
 
 // ─── the rules ────────────────────────────────────────────────────────────────────────────
 test("routing: the reproduction decides, not the reviewer's word", () => {
@@ -23,26 +23,43 @@ test("routing: the reproduction decides, not the reviewer's word", () => {
     F("1.std.1", { severity: "medium", category: "standard", repro: undefined, confidence: "PLAUSIBLE" }), // advice
     F("1.std.2", { severity: "medium", category: "logic", repro: undefined, confidence: "PLAUSIBLE" }),    // unproven behaviour: note
     F("1.std.3", { severity: "low", category: "standard", repro: undefined }),                            // note
-  ], { "1.spec.1": 1, "1.spec.2": 1, "1.spec.3": 0 });
+    F("1.spec.6", { basis: undefined }),                            // fails, but defends nothing it can quote: advice
+  ], { "1.spec.1": 1, "1.spec.2": 1, "1.spec.3": 0, "1.spec.6": 1 });
   const ids = (a) => a.map((f) => f.id);
   assert.deepEqual(ids(c.blocking), ["1.spec.1"]);
   assert.deepEqual(ids(c.dropped), ["1.spec.3"]);
   assert.deepEqual(ids(c.questions), ["1.spec.4"]);
   assert.deepEqual(ids(c.queue), ["1.spec.5"]);
-  assert.deepEqual(ids(c.advice), ["1.std.1"]);
+  assert.deepEqual(ids(c.advice), ["1.std.1", "1.spec.6"]);
   assert.deepEqual(ids(c.notes), ["1.spec.2", "1.std.2", "1.std.3"]);
 });
 
-const X = (o = {}) => ({ round: 1, kind: "first", open: [], questions: 0, queue: 0, disputes: 0, advice: 0, adviceUsed: false, fixesTotal: 0, fixesByTier: 0, ...o });
-const open = (id, survived = 0, extra = {}) => ({ id, severity: "high", survived, ...extra });
-
-test("a first review that passes is the last: no final review", () => {
-  assert.deepEqual(decide(X(), CFG).action, "approve");
+test("routing: a regression must fail on the branch and pass on the base", () => {
+  const c = classify([F("2.spec.1", { category: "regression", basis: undefined }), F("2.spec.2", { category: "regression" })],
+    { "2.spec.1": 1, "2.spec.2": 1 }, { reproBase: { "2.spec.1": 0, "2.spec.2": 1 } });
+  assert.deepEqual(c.blocking.map((f) => f.id), ["2.spec.1"]);
+  assert.deepEqual(c.notes.map((f) => f.id), ["2.spec.2"], "failing on the base too: it was there before");
 });
 
-test("after a fix: a clean fix review leads to one final full review, and a clean final review approves", () => {
-  assert.equal(decide(X({ round: 2, kind: "fix", fixesTotal: 1 }), CFG).action, "final");
-  assert.equal(decide(X({ round: 3, kind: "final", fixesTotal: 1 }), CFG).action, "approve");
+test("routing after a fix: code the fix did not touch counts only with a failing reproduction", () => {
+  const c = classify([
+    F("3.spec.1", { file: "old.ts" }),                                                  // fails: still blocks
+    F("3.spec.2", { file: "old.ts", repro: undefined }),                                // would be triage: a note now
+    F("3.spec.3", { file: "/work/repo/fix.ts", repro: undefined }),                     // in the fix: triage
+    F("3.spec.4", { file: "old.ts", category: "spec_question", repro: undefined }),     // not the fix's question
+  ], { "3.spec.1": 1 }, { touched: ["fix.ts"] });
+  assert.deepEqual(c.blocking.map((f) => f.id), ["3.spec.1"]);
+  assert.deepEqual(c.queue.map((f) => f.id), ["3.spec.3"]);
+  assert.deepEqual(c.outside.map((f) => f.id), ["3.spec.2", "3.spec.4"]);
+  assert.equal(c.questions.length, 0);
+});
+
+const X = (o = {}) => ({ round: 1, open: [], questions: 0, queue: 0, disputes: 0, advice: 0, adviceUsed: false, fixesTotal: 0, fixesByTier: 0, freshUsed: false, ...o });
+const open = (id, survived = 0, extra = {}) => ({ id, severity: "high", survived, ...extra });
+
+test("a clean review approves, the first or a recheck: there is no final full review", () => {
+  assert.equal(decide(X(), CFG).action, "approve");
+  assert.equal(decide(X({ round: 2, fixesTotal: 1 }), CFG).action, "approve");
 });
 
 test("questions and unproven serious findings stop for the orchestrator before anything else", () => {
@@ -56,46 +73,63 @@ test("advice alone gets one fix round, never a second", () => {
   assert.equal(decide(X({ advice: 2, adviceUsed: true }), CFG).action, "approve");
 });
 
-test("a reproduction still failing after two fixes escalates; a regression after one", () => {
-  assert.equal(decide(X({ round: 2, kind: "fix", fixesTotal: 1, fixesByTier: 1, open: [open("1.spec.1", 1)] }), CFG).action, "fix");
-  const d = decide(X({ round: 3, kind: "fix", fixesTotal: 2, fixesByTier: 2, open: [open("1.spec.1", 2)] }), CFG);
-  assert.equal(d.action, "escalate");
-  assert.equal(decide(X({ round: 2, kind: "fix", open: [open("regression", 1, { regression: true })] }), CFG).action, "escalate");
+test("a stall starts fresh attempts once: stuck after two fixes, a regression or a re-broken fix after one", () => {
+  assert.equal(decide(X({ round: 2, fixesTotal: 1, fixesByTier: 1, open: [open("1.spec.1", 1, { severity: "medium" })] }), CFG).action, "fix");
+  assert.equal(decide(X({ round: 3, fixesTotal: 2, fixesByTier: 2, open: [open("1.spec.1", 2)] }), CFG).action, "fresh");
+  assert.equal(decide(X({ round: 2, open: [open("regression", 1, { regression: true })] }), CFG).action, "fresh");
+  assert.equal(decide(X({ round: 2, open: [open("1.spec.1", 1, { broke: true, severity: "medium" })] }), CFG).action, "fresh");
+  assert.equal(decide(X({ round: 3, fixesTotal: 2, fixesByTier: 2, open: [open("1.spec.1", 2)], freshUsed: true }), CFG).next, "decide");
 });
 
-test("new serious findings every round: escalate after 3 fix rounds by one worker; medium ones keep going", () => {
-  assert.equal(decide(X({ round: 4, kind: "fix", fixesByTier: 3, open: [open("4.spec.1")] }), CFG).action, "escalate");
-  assert.equal(decide(X({ round: 4, kind: "fix", fixesByTier: 3, open: [open("4.spec.1", 0, { severity: "medium" })] }), CFG).action, "fix");
+test("new serious findings: fresh after 2 fix rounds by one worker; medium ones until the fix cap", () => {
+  assert.equal(decide(X({ round: 3, fixesTotal: 2, fixesByTier: 2, open: [open("3.spec.1")] }), CFG).action, "fresh");
+  assert.equal(decide(X({ round: 3, fixesTotal: 2, fixesByTier: 2, open: [open("3.spec.1", 0, { severity: "medium" })] }), CFG).action, "fix");
+  assert.equal(decide(X({ round: 3, fixesTotal: 3, fixesByTier: 1, open: [open("3.spec.1", 0, { severity: "medium" })] }), CFG).action, "fresh");
 });
 
-test("the round cap stops for the orchestrator, also before a final review", () => {
-  assert.equal(decide(X({ round: 6, kind: "fix", open: [open("6.spec.1", 0, { severity: "medium" })] }), CFG).next, "decide");
-  assert.equal(decide(X({ round: 6, kind: "fix", fixesTotal: 3 }), CFG).next, "decide");
+test("the round cap stops for the orchestrator", () => {
+  assert.equal(decide(X({ round: 4, open: [open("4.spec.1", 0, { severity: "medium" })] }), CFG).next, "decide");
 });
 
-test("the ladder", () => {
-  assert.equal(nextTier(CFG.ladder, "implement"), "implement-hard");
-  assert.equal(nextTier(CFG.ladder, "escalate"), null);
-  assert.equal(nextTier(CFG.ladder, "quick"), "implement");
-});
-
-test("the fix message carries each reproduction, the regression, the advice and how to dispute", () => {
+test("the fix message carries each reproduction, the regression, advice, lows, the proof suite and how to dispute", () => {
   const m = fixMessage(2, [{ id: "1.spec.1", severity: "high", survived: 1, finding: F("1.spec.1") },
-    { id: "regression", regression: true, cmd: "npx tsx --test a.test.ts", tail: "not ok 3" }],
-  [F("2.std.1", { severity: "medium", category: "standard", repro: undefined })], ["## The orchestrator's ruling\n\nKeep it in the container."]);
+    { id: "1.spec.2", severity: "high", survived: 0, broke: true, finding: F("1.spec.2") },
+    { id: "regression", regression: true, cmd: "npx tsx --test a.test.ts", tail: "not ok 3", newFails: ["trusted child"] }],
+  [F("2.std.1", { severity: "medium", category: "standard", repro: undefined })], ["## The orchestrator's ruling\n\nKeep it in the container."],
+  { lows: [F("2.spec.3", { severity: "low" })], proofs: [{ id: "1.spec.9", file: "/tmp/p.ts", content: "keep()", cmd: "npx tsx --test /tmp/p.ts" }],
+    neighbours: { cmd: "npx tsx --test a.test.ts", baseFails: ["linux path"] } });
   assert.match(m, /## 1\.spec\.1: issue 1\.spec\.1 \(high, logic\) - still failing after 1 fix/);
+  assert.match(m, /## 1\.spec\.2: .* - fixed earlier, broken again/);
   assert.match(m, /```\nboom\(\)\n```/);
-  assert.match(m, /`npx tsx --test a\.test\.ts` passes on the base and fails on your branch[\s\S]*not ok 3/);
+  assert.match(m, /`npx tsx --test a\.test\.ts` fails on your branch in tests that pass on the base: `trusted child`[\s\S]*not ok 3/);
   assert.match(m, /## Also fix[\s\S]*`2\.std\.1`/);
+  assert.match(m, /## Low [\s\S]*`2\.spec\.3`/);
   assert.match(m, /under `disputes`/);
   assert.match(m, /Keep it in the container\./);
+  assert.match(m, /## Before you end: prove it[\s\S]*`1\.spec\.9` \(fixed earlier, keep it passing\)[\s\S]*keep\(\)[\s\S]*ignore them: `linux path`/);
   assert.match(fixContext([F("1.spec.1")]), /do not report\s+them again just because they were listed/);
 });
 
+test("the recheck message names the fix's range, what it was for, the rulings and the scope rule", () => {
+  const m = recheckMessage(3, [F("2.spec.1")], "abc123", ["Keep it."]);
+  assert.match(m, /`git diff abc123\.\.HEAD`/);
+  assert.match(m, /Do not start a new full review/);
+  assert.match(m, /`2\.spec\.1` \(high\): issue 2\.spec\.1/);
+  assert.match(m, /1\. Keep it\./);
+  assert.match(m, /did not touch: report nothing unless it is critical/);
+});
+
+test("a fresh attempt gets the task, the rulings and every proof, never the earlier diff", () => {
+  const t = freshTask("Make it right.", "stuck", ["Keep it."], [{ id: "1.spec.1", file: "/tmp/r.ts", content: "boom()", cmd: "npx tsx --test /tmp/r.ts", finding: F("1.spec.1") }]);
+  assert.match(t, /^Make it right\.[\s\S]*## Earlier attempts[\s\S]*\(stuck\)[\s\S]*1\. Keep it\.[\s\S]*## Every one of these must pass[\s\S]*### 1\.spec\.1: issue 1\.spec\.1[\s\S]*boom\(\)/);
+  assert.doesNotMatch(t, /```diff/);
+});
+
 // ─── the loop against a stand-in harness ──────────────────────────────────────────────────
-// script: one entry per delegate call, [command, payload]. review: {role: findings}; check: {id: exit};
+// script: one entry per delegate call, [command, payload]. review: {role: findings}; a reviewer resumed
+// with continue --at: its findings; check: {id: exit, neighbours: exit}; ask: the answer text;
 // continue/run: verdict or {verdict, report}.
-function harness(script) {
+function harness(script, { sealed = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ab-loop-"));
   const runs = path.join(root, "runs");
   const P = { repo: root, name: "demo", runs, env: {}, map: {}, testGlobs: ["**/*.test.*"] };
@@ -103,24 +137,27 @@ function harness(script) {
     fs.mkdirSync(path.join(runs, run), { recursive: true });
     fs.writeFileSync(path.join(runs, run, "summary.json"), JSON.stringify({ verdict, model: role, base: "b0", report, blocked,
       next: verdict === "pass" ? "review_or_accept" : verdict === "blocked" ? "answer_question" : "continue_with_failure" }));
-    fs.writeFileSync(path.join(runs, run, "meta.sh"), `ROLE=${role}\nTEST_CMD=npm\\ test\n`);
+    fs.writeFileSync(path.join(runs, run, "meta.sh"), `ROLE=${role}\nTEST_CMD=npm\\ test\n${sealed && run === "impl" ? "SEALED=a.test.ts\n" : ""}`);
     fs.writeFileSync(path.join(runs, run, "task.md"), "---\nfiles: [a.ts]\n---\nMake it right.\n");
     if (findings) fs.writeFileSync(path.join(runs, run, "findings.json"), JSON.stringify(findings));
   };
   write("impl", { role: "implement" });
+  const roleOf = (run) => fs.readFileSync(path.join(runs, run, "meta.sh"), "utf8").match(/^ROLE=(.*)$/m)[1];
   const calls = [];
-  const delegate = async (args) => {
+  const delegate = async (args, log) => {
     calls.push(args);
     const [cmd] = args, name = args[args.indexOf("--name") + 1];
     const [want, step] = script.shift() ?? [];
     assert.equal(cmd, want, `call ${calls.length}: ${args.join(" ")}`);
-    if (cmd === "review") for (const [role, findings] of Object.entries(step)) write(`${name}-${role}`, { role, findings });
+    if (cmd === "review") for (const [role, findings] of Object.entries(step)) write(`${name}-${role}`, { role, findings, verdict: "review" });
+    else if (cmd === "continue" && args.includes("--at")) { if (step) write(name, { role: roleOf(args[2]), findings: step, verdict: "review" }); }
     else if (cmd === "check") {
       fs.mkdirSync(path.join(runs, name), { recursive: true });
       fs.writeFileSync(path.join(runs, name, "test.log"), Object.entries(step).map(([id, e]) => (id === "neighbours"
         ? `AGENT-BOX-NEIGHBOURS exit ${e}\n    not ok 1 - trusted child\n${e ? "AGENT-BOX-NEIGHBOURS-BASE exit 0\n" : ""}`
         : `AGENT-BOX-REPRO ${id} exit ${e}\n`)).join(""));
-    } else {
+    } else if (cmd === "ask") fs.writeFileSync(log, step);
+    else {
       const s = typeof step === "string" ? { verdict: step } : step;
       write(name, { role: cmd === "run" ? args[args.indexOf("--role") + 1] : "implement", ...s });
     }
@@ -129,9 +166,17 @@ function harness(script) {
   const left = () => assert.equal(script.length, 0, `unused script steps: ${JSON.stringify(script)}`);
   return { P, calls, deps, left, msg: (call) => fs.readFileSync(call[call.indexOf("-f") + 1], "utf8") };
 }
-const R = (issue, extra = {}) => ({ severity: "high", confidence: "CONFIRMED", category: "logic", file: "a.ts", line: 1, issue, scenario: "s", repro: REPRO, ...extra });
+const R = (issue, extra = {}) => ({ severity: "high", confidence: "CONFIRMED", category: "logic", file: "a.ts", line: 1, issue, scenario: "s", basis: "task: it must", repro: REPRO, ...extra });
 
-test("loop: a first review that passes approves at once, with no check and no final review", async () => {
+test("loop: no sealed acceptance test, no loop, unless the orchestrator says --no-spec", async () => {
+  const h = harness([["review", { "review-spec": [], "review-std": [] }]], { sealed: false });
+  await assert.rejects(loop(h.P, "impl", { name: "L" }, h.deps), /no sealed acceptance test/);
+  const st = await loop(h.P, "impl", { name: "L", noSpec: true }, h.deps);
+  assert.equal(st.next, "approve");
+  h.left();
+});
+
+test("loop: a first review that passes approves at once, with no check", async () => {
   const h = harness([["review", { "review-spec": [], "review-std": [] }]]);
   const st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "approve");
@@ -139,70 +184,105 @@ test("loop: a first review that passes approves at once, with no check and no fi
   h.left();
 });
 
-test("loop: proven, fixed, the fix reviewed on its own diff by the spec axis, then one final full review", async () => {
+test("loop: proven, fixed, rechecked by the same reviewer session on the fix; no final full review", async () => {
   const h = harness([
     ["review", { "review-spec": [R("gate runs")], "review-std": [] }],
     ["check", { "1.spec.1": 1 }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }],
-    ["check", { "1.spec.1": 0 }],                                   // the carried reproduction now passes
-    ["review", { "review-spec": [], "review-std": [] }],
+    ["continue", []],                                               // the spec reviewer, resumed on the fix
+    ["check", { "1.spec.1": 0 }],
   ]);
   const st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "approve");
+  assert.match(st.reason, /recheck/);
   assert.equal(st.last, "L-fix1");
-  assert.deepEqual(st.rounds.map((r) => r.kind), ["first", "fix", "final"]);
-  assert.match(h.msg(h.calls[2]), /## 1\.spec\.1: gate runs[\s\S]*boom\(\)/);
-  const fixReview = h.calls[3];
-  assert.deepEqual([fixReview[fixReview.indexOf("--roles") + 1], fixReview[fixReview.indexOf("--against") + 1]], ["review-spec", "agent/impl"]);
-  assert.match(fixReview[fixReview.indexOf("--prior") + 1], /^spec=.*fixctx-2\.md$/);
-  assert.ok(!h.calls[5].includes("--roles") && !h.calls[5].includes("--against"), "the final review is the whole change, both axes");
+  assert.deepEqual(st.rounds.map((r) => r.kind), ["first", "fix"]);
+  assert.match(h.msg(h.calls[2]), /## 1\.spec\.1: gate runs[\s\S]*boom\(\)[\s\S]*## Before you end: prove it/);
+  const re = h.calls[3];
+  assert.deepEqual([re[2], re[re.indexOf("--at") + 1], re[re.indexOf("--name") + 1], re[re.indexOf("--steps") + 1]],
+    ["L-rv1-review-spec", "agent/L-fix1", "L-rv2-review-spec", "40"]);
+  assert.match(h.msg(re), /git diff agent\/impl\.\.HEAD[\s\S]*`1\.spec\.1` \(high\): gate runs/);
+  assert.deepEqual(Object.keys(st.proofs), ["1.spec.1"]);
   assert.deepEqual(st.rounds[1].fixed, ["1.spec.1"]);
   h.left();
 });
 
-test("loop: a reproduction that passes on the branch is a false positive: approved with no fix", async () => {
-  const h = harness([["review", { "review-spec": [R("not real")], "review-std": [] }], ["check", { "1.spec.1": 0 }]]);
-  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
-  assert.equal(st.next, "approve");
-  assert.deepEqual(st.rounds[0].dropped, ["1.spec.1"]);
-  h.left();
-});
-
-test("loop: still failing after two fixes goes up a rung with the last attempt; the new worker's clean reviews approve", async () => {
+test("loop: a reviewer session that cannot be resumed falls back to a cold review of the fix", async () => {
   const h = harness([
-    ["review", { "review-spec": [R("stuck")], "review-std": [] }], ["check", { "1.spec.1": 1 }], ["continue", "pass"],
-    ["review", { "review-spec": [] }], ["check", { "1.spec.1": 1 }], ["continue", "pass"],
-    ["review", { "review-spec": [] }], ["check", { "1.spec.1": 1 }],
-    ["run", "pass"],                                                // implement-hard
+    ["review", { "review-spec": [R("gate runs")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
+    ["continue", "pass"],
+    ["continue", null],                                             // no run: the session could not be restored
     ["review", { "review-spec": [] }], ["check", { "1.spec.1": 0 }],
-    ["review", { "review-spec": [], "review-std": [] }],
   ]);
   const st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "approve");
-  assert.equal(st.last, "L-esc3-implement-hard");
-  const esc = h.calls[8];
-  assert.deepEqual([esc[esc.indexOf("--role") + 1], esc[esc.indexOf("--base") + 1]], ["implement-hard", "agent/L-fix2"]);
-  assert.ok(esc.includes("--no-red") && esc[esc.indexOf("--test") + 1] === "npm test");
-  const task = fs.readFileSync(esc[2], "utf8");
-  assert.match(task, /Make it right\.[\s\S]*1\.spec\.1 still failing after 2 fixes[\s\S]*## The last attempt \(L-fix2\)[\s\S]*## 1\.spec\.1: stuck/);
+  const cold = h.calls[4];
+  assert.deepEqual([cold[cold.indexOf("--roles") + 1], cold[cold.indexOf("--against") + 1], cold[cold.indexOf("--name") + 1]], ["review-spec", "agent/impl", "L-rv2"]);
   h.left();
 });
 
-test("loop: a spec question stops; the answer goes to the worker and to every later reviewer", async () => {
+test("loop: the proof suite reruns every round; a later fix that breaks an earlier one reopens it", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("a", { severity: "medium" }), R("b", { severity: "medium" })], "review-std": [] }], ["check", { "1.spec.1": 1, "1.spec.2": 1 }],
+    ["continue", "pass"], ["continue", []], ["check", { "1.spec.1": 0, "1.spec.2": 1 }],
+    ["continue", "pass"], ["continue", []], ["check", { "1.spec.1": 1, "1.spec.2": 0 }],
+    ["continue", "pass"], ["continue", []], ["check", { "1.spec.1": 0, "1.spec.2": 0 }],
+  ]);
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "approve");
+  assert.match(h.msg(h.calls[5]), /## Before you end: prove it[\s\S]*`1\.spec\.1` \(fixed earlier, keep it passing\)/);
+  assert.deepEqual(st.rounds[2].broke, ["1.spec.1"]);
+  assert.match(h.msg(h.calls[8]), /## 1\.spec\.1: a .* - fixed earlier, broken again/);
+  assert.equal(h.calls[6][2], "L-rv2-review-spec", "each recheck resumes the latest reviewer session");
+  h.left();
+});
+
+test("loop: a stall starts two fresh attempts from the base; equals go to the selector; the pick gets a full review", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("stuck")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
+    ["continue", "pass"], ["continue", []], ["check", { "1.spec.1": 1 }],
+    ["continue", "pass"], ["continue", []], ["check", { "1.spec.1": 1 }],
+    ["run", "pass"], ["run", "pass"],                              // implement and implement-hard, in parallel
+    ["check", { "1.spec.1": 0 }], ["check", { "1.spec.1": 0 }],    // each held to the proof suite
+    ["ask", "PICK: B\nsmaller and complete"],
+    ["review", { "review-spec": [], "review-std": [] }], ["check", { "1.spec.1": 0 }],
+  ]);
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "approve");
+  assert.equal(st.last, "L-fresh3-implement-hard");
+  assert.deepEqual(st.rounds.map((r) => r.kind), ["first", "fix", "fix", "first"]);
+  const [a, b] = [h.calls[8], h.calls[9]];
+  assert.deepEqual([a[a.indexOf("--role") + 1], b[b.indexOf("--role") + 1], a[a.indexOf("--base") + 1]], ["implement", "implement-hard", "b0"]);
+  assert.match(fs.readFileSync(a[2], "utf8"), /Make it right\.[\s\S]*## Every one of these must pass[\s\S]*1\.spec\.1: stuck/);
+  assert.deepEqual(h.calls[12].slice(0, 4), ["ask", h.P.repo, "--role", "advise-alt"]);
+  assert.deepEqual(st.escalations.map((e) => [e.to, e.chosen]), [["fresh", "L-fresh3-implement-hard"]]);
+  h.left();
+});
+
+test("loop: a fix that fails its own tests goes to fresh attempts; none passing stops for the orchestrator", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("bug")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
+    ["continue", "fail"], ["run", "fail"], ["run", "no_change"],
+  ]);
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "decide");
+  assert.match(st.reason, /no fresh attempt passed/);
+  assert.deepEqual(st.escalations[0].verdicts, ["fail", "no_change"]);
+  h.left();
+});
+
+test("loop: a spec question stops; the answer goes to the worker and to the resumed reviewer", async () => {
   const h = harness([
     ["review", { "review-spec": [R("block in a container too?", { category: "spec_question", repro: undefined })], "review-std": [] }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }],
-    ["review", { "review-spec": [], "review-std": [] }],
+    ["continue", []],
   ]);
   let st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "answer_spec");
   st = await resume(h.P, "L", { answer: "Keep the gate running inside a container." }, h.deps);
   assert.equal(st.next, "approve");
   assert.match(h.msg(h.calls[1]), /## The orchestrator's ruling\s+Keep the gate running inside a container\./);
-  const spec = h.calls[2][h.calls[2].lastIndexOf("--spec") + 1];
-  assert.match(fs.readFileSync(spec, "utf8"), /1\. Keep the gate running inside a container\./);
+  assert.match(h.msg(h.calls[2]), /rulings, binding:[\s\S]*1\. Keep the gate running inside a container\./);
   h.left();
 });
 
@@ -219,10 +299,9 @@ test("loop: the worker disputes a proven finding; still failing, it goes to the 
   const h = harness([
     ["review", { "review-spec": [R("wrong?")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
     ["continue", { verdict: "pass", report: { disputes: [{ finding: "1.spec.1", why: "the spec says so" }] } }],
-    ["review", { "review-spec": [] }], ["check", { "1.spec.1": 1 }],
+    ["continue", []], ["check", { "1.spec.1": 1 }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }], ["check", { "1.spec.1": 0 }],
-    ["review", { "review-spec": [], "review-std": [] }],
+    ["continue", []], ["check", { "1.spec.1": 0 }],
   ]);
   let st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "triage");
@@ -233,31 +312,17 @@ test("loop: the worker disputes a proven finding; still failing, it goes to the 
   h.left();
 });
 
-test("loop: advice alone gets one fix round, then the fix review and the final review", async () => {
+test("loop: advice alone gets one fix round; both reviewers recheck when the standards one sent something", async () => {
   const docs = R("no glossary entry", { severity: "medium", category: "standard", repro: undefined });
   const h = harness([
     ["review", { "review-spec": [], "review-std": [docs] }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }],
-    ["review", { "review-spec": [], "review-std": [docs] }],       // raised again: advice is spent, a note now
+    ["continue", []], ["continue", [docs]],                         // raised again: advice is spent, approve
   ]);
   const st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "approve");
   assert.match(h.msg(h.calls[1]), /## Also fix[\s\S]*no glossary entry/);
-  h.left();
-});
-
-test("loop: a fix that fails its tests escalates from the last good branch; no rung left stops", async () => {
-  const h = harness([
-    ["review", { "review-spec": [R("bug")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
-    ["continue", "fail"], ["run", "fail"], ["run", "no_change"],
-  ]);
-  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
-  assert.equal(st.next, "decide");
-  assert.match(st.reason, /no rung above escalate/);
-  assert.deepEqual(st.escalations.map((e) => [e.to, e.verdict]), [["implement-hard", "fail"], ["escalate", "no_change"]]);
-  assert.ok(h.calls.slice(3).every((a) => a[a.indexOf("--base") + 1] === "agent/impl"));
-  assert.match(fs.readFileSync(h.calls[3][2], "utf8"), /## The last attempt \(L-fix1, discarded: its tests failed\)/);
+  assert.deepEqual([h.calls[2][2], h.calls[3][2]], ["L-rv1-review-spec", "L-rv1-review-std"]);
   h.left();
 });
 
@@ -266,8 +331,7 @@ test("loop: a BLOCKED fix round stops; the answer resumes that same worker", asy
     ["review", { "review-spec": [R("bug")], "review-std": [] }], ["check", { "1.spec.1": 1 }],
     ["continue", { verdict: "blocked", blocked: "alias or drop?" }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }], ["check", { "1.spec.1": 0 }],
-    ["review", { "review-spec": [], "review-std": [] }],
+    ["continue", []], ["check", { "1.spec.1": 0 }],
   ]);
   let st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "answer_question");
@@ -278,32 +342,34 @@ test("loop: a BLOCKED fix round stops; the answer resumes that same worker", asy
   h.left();
 });
 
-test("loop: a regression in the tests next to the change goes back once, then up a rung; the new worker clears it", async () => {
+test("loop: a regression in the tests next to the change goes back with the neighbour command to run", async () => {
   const h = harness([
     ["review", { "review-spec": [], "review-std": [] }], ["check", { neighbours: 1 }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }], ["check", { neighbours: 1 }],
-    ["run", "pass"],
-    ["review", { "review-spec": [] }], ["check", { neighbours: 0 }],
-    ["review", { "review-spec": [], "review-std": [] }], ["check", { neighbours: 0 }],
+    ["continue", []], ["check", { neighbours: 0 }],
   ]);
   h.P.map = { test_file_command: "npx tsx --test {files}" };
   h.deps.neighbours = () => ["src/a.test.ts"];
   const st = await loop(h.P, "impl", { name: "L" }, h.deps);
   assert.equal(st.next, "approve");
-  assert.match(h.msg(h.calls[2]), /## Regression[\s\S]*`npx tsx --test src\/a\.test\.ts` passes on the base[\s\S]*trusted child/);
-  assert.deepEqual(st.escalations.map((e) => e.to), ["implement-hard"]);
-  assert.match(st.escalations[0].reason, /regression still failing/);
+  assert.match(h.msg(h.calls[2]), /## Regression[\s\S]*`npx tsx --test src\/a\.test\.ts` fails on your branch and passes on the base[\s\S]*trusted child[\s\S]*The tests next to your change: `npx tsx --test src\/a\.test\.ts`/);
+  assert.deepEqual(st.baseCache, { key: "src/a.test.ts", exit: 0, fails: [] });
   h.left();
 });
 
-test("loop: an unreadable review stops with read_final_message", async () => {
-  const h = harness([]);
+test("loop: an unreadable review stops; resuming runs the review again instead of deciding without it", async () => {
+  const h = harness([["review", { "review-spec": [], "review-std": [] }]]);
   fs.mkdirSync(path.join(h.P.runs, "rv-a"), { recursive: true });
   fs.writeFileSync(path.join(h.P.runs, "rv-a", "summary.json"), JSON.stringify({ verdict: "review", next: "read_final_message" }));
   fs.writeFileSync(path.join(h.P.runs, "rv-a", "findings.json"), JSON.stringify({ parse_error: "x" }));
-  const st = await loop(h.P, "impl", { name: "L", reviews: ["rv-a"] }, h.deps);
+  let st = await loop(h.P, "impl", { name: "L", reviews: ["rv-a"] }, h.deps);
   assert.equal(st.next, "read_final_message");
+  assert.equal(st.redo, "review");
+  st = await resume(h.P, "L", {}, h.deps);
+  assert.equal(st.next, "approve");
+  assert.equal(h.calls[0][0], "review");
+  assert.equal(st.redo, undefined);
+  h.left();
 });
 
 test("delegate.sh review --name and --prior: runs named by the prefix, each axis gets only its own", async () => {
@@ -341,9 +407,8 @@ test("loop: progress.jsonl tells the live view every step, finding and decision,
     ["review", { "review-spec": [R("gate runs"), R("not real")], "review-std": [] }],
     ["check", { "1.spec.1": 1, "1.spec.2": 0 }],
     ["continue", "pass"],
-    ["review", { "review-spec": [] }],
+    ["continue", []],
     ["check", { "1.spec.1": 0 }],
-    ["review", { "review-spec": [], "review-std": [] }],
   ]);
   const tabs = [];
   await loop(h.P, "impl", { name: "L" }, { ...h.deps, openTab: (P, name) => tabs.push(name) });
@@ -352,10 +417,9 @@ test("loop: progress.jsonl tells the live view every step, finding and decision,
   assert.deepEqual(ev.map((e) => e.ev + (e.what ? `:${e.what}` : "")), [
     "start", "round", "step:review", "done:review", "step:check", "done:check", "findings", "decide",
     "step:fix", "done:fix",
-    "round", "step:review", "done:review", "step:check", "done:check", "findings", "decide",
-    "round", "step:review", "done:review", "findings", "decide", "end"]);
+    "round", "step:review", "done:review", "step:check", "done:check", "findings", "decide", "end"]);
   assert.deepEqual(ev.find((e) => e.ev === "findings").items.map((f) => [f.id, f.route, f.exit]), [["1.spec.1", "proven", 1], ["1.spec.2", "dropped", 0]]);
-  assert.deepEqual(ev[11].runs, ["L-rv2-review-spec"], "the fix review is the spec axis only");
+  assert.deepEqual([ev[11].runs, ev[11].resumed], [["L-rv2-review-spec"], true], "the recheck resumes the spec reviewer");
   assert.deepEqual(ev.at(-1), { ...ev.at(-1), next: "approve", last: "L-fix1" });
   h.left();
 });

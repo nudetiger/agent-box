@@ -237,31 +237,41 @@ One worker per task; `fanout` stays available but no workflow uses it. `review` 
 same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
 
 **The review and fix loop** (`delegate.sh loop <repo> <run>`, `lib/loop.mjs`, `lib/verify.mjs`).
-Round 1 reviews the whole change on both axes. Every behaviour finding carries a reproduction (a file
-under `/tmp` and a command); one check container per round reruns all of them on the branch, with the
-existing tests next to the change (same stem, or importing a changed module; at most
-`LOOP_NEIGHBOURS`, rerun on the base when they fail). The harness's result decides, not the reviewer's
-CONFIRMED:
+The loop refuses a run with no sealed acceptance test (`--no-spec` overrides): without one, reviewers
+become the spec. Round 1 is the only full review, both axes. Every behaviour finding carries a
+reproduction (a file under `/tmp` and a command); one check container per round reruns all of them on
+the branch, with the existing tests next to the change (same stem, or importing a changed module; at
+most `LOOP_NEIGHBOURS`). The harness's result decides, not the reviewer's CONFIRMED:
 
 | finding | goes to |
 | --- | --- |
-| reproduction fails on the branch, critical/high/medium | the worker, with the reproduction; blocks |
-| reproduction fails, low | merge note |
+| reproduction fails on the branch, critical/high/medium, with a `basis` (the clause it defends) | the worker, with the reproduction; blocks |
+| the same without a `basis` | sent with the next fix as advice |
+| category `regression`: fails on the branch and passes on the base | blocks (failing on the base too: a note) |
+| reproduction fails, low | merge note; sent with the next fix as optional |
 | reproduction passes on the branch | dropped, labelled `review_false_positive` |
+| after round 1, in a file the fix did not touch, no failing reproduction | merge note |
 | `spec_question` | stop: `next: answer_spec` |
 | no reproduction, CONFIRMED critical/high logic, edge case, security or requirement | stop: `next: triage` |
 | no reproduction, other medium+ | sent with the next fix; one advice-only fix round at most |
-| the tests next to the change fail on the branch and pass on the base | a regression; blocks |
+| a test next to the change fails on the branch and not on the base (names compared) | a regression; blocks |
+| a proof fixed in an earlier round fails again | reopened; blocks |
 | the worker disputes a finding (`disputes` in its report) that still fails | stop: `next: triage` |
 
-After a fix only the spec axis reviews the fix's own diff (`review --against` the previous run). When
-that is clean, one final full review on both axes; a first review that passes is the last. The work
-goes up `LOOP_LADDER` (a fresh worker on the last passing branch, with the task, what is open, the
-history, and the last attempt's diff and test output) when a reproduction still fails after
-`LOOP_STUCK` (2) fixes by one worker, a regression after 1, serious items after `LOOP_SOFT_ROUNDS` (3)
-fix rounds by it, or a fix fails its own tests. `LOOP_MAX_ROUNDS` (6) reviews, or no rung left:
-`next: decide`. `loop resume <repo> <loop>` takes the orchestrator's `--answer` (also given to every
-later reviewer), `--drop`, `--add`, `-m` and `--max-rounds`, and goes on. State:
+Every proven reproduction joins the proof suite, rerun every round. A fix round sends everything open
+at once and tells the worker to run the proof suite and the neighbour tests green before it ends.
+After a fix, the round-1 reviewer sessions are resumed on it (`continue --at agent/<fix>`, at most
+`LOOP_RECHECK_STEPS` steps): the spec reviewer, and the standards reviewer when one of its findings was
+sent. There is no final full review. The base's neighbour results are kept per test set, so the base
+runs once. A stall (a reproduction still failing after `LOOP_STUCK` (2) fixes, a regression or a
+re-broken proof after 1, serious items after `LOOP_SOFT_ROUNDS` (2) fix rounds, `LOOP_MAX_FIXES` (3)
+fix rounds, or a fix that fails its own tests) starts `LOOP_FRESH` attempts once, in parallel from the
+base, with the task, the rulings and the proof suite (no earlier diff); each passing one is checked
+against the proofs and the neighbours, `LOOP_SELECTOR` picks between equals (the smaller diff when it
+cannot), and the pick gets a full review. A second stall, or `LOOP_MAX_ROUNDS` (4) reviews:
+`next: decide`. A round that stopped before its review or check finished runs again on `resume`.
+`loop resume <repo> <loop>` takes the orchestrator's `--answer` (also given to every later reviewer),
+`--drop`, `--add`, `-m` and `--max-rounds`, and goes on. State:
 `runs/<project>/_loops/<name>/state.json`. Review runs are capped at `REVIEW_STEPS` (90) steps.
 
 **A turn cut off at the output cap** (step reason `length`, Gemini thinking ~30,700 tokens of a ~32k

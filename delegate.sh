@@ -53,7 +53,7 @@ Usage: delegate.sh <command> ...
                                  review-std (Opus), both given the branch's task and every --spec.
                                  --name P names the runs P-<role>; --prior spec=FILE|std=FILE puts the
                                  previous round's findings first, to recheck
-  loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2]
+  loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2] [--no-spec]
                                  Review, rerun each finding's reproduction and the tests next to the
                                  change, fix what is proven, review the fix, until nothing blocks.
                                  Stuck findings, regressions, serious findings after 3 fix rounds or

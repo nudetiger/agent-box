@@ -267,6 +267,38 @@ gate itself, and the worker's word is never the verdict.
 
 ---
 
+## 8b. Keeping the review and fix loop short (2026-10-14)
+
+Why: Lykos T194 (the v2 e2e, no acceptance test, gate = typecheck) took 9 review rounds and about
+4 hours of worker time. Findings per round: 7, 5, 4, 2, 1, 0, then 11 in the final full review and 6
+in the next. Two regressions slipped through (hidden tests 95/7 to 98/7). The loop's shape since then
+(lib/loop.mjs) follows these sources; M = measured, V = vendor's own report, U = unmeasured.
+
+- **Spec first.** Tests in the prompt: GPT-4 Turbo 69.7 to 82.5% (MBPP) [M] (arXiv 2402.13521).
+  Sealed tests with a dispute option: test cheating 54 to 9% (GPT-5) [M] (ImpossibleBench, Lykos
+  `research/factories-and-sandboxes-2026.md:383`). The loop refuses a run with no sealed test.
+- **One full review, then only the fix.** One pass F1 0.376 against at most 0.303 for any multi-round
+  variant; later rounds added 62% more false positives [M] (arXiv 2603.16244). Reflexion-style review
+  iteration: recall 27 to 33%, signal-to-noise 5.11 to 1.95 [M] (CR-Bench, arXiv 2603.11078).
+  Anthropic's Code Review guidance: after the first review, important findings only [U].
+- **A failing test is not proof.** Diff-targeted generated tests: 8 of 41 reported catches were real
+  bugs [M] (Meta, arXiv 2601.22832). Hence `basis` and the base check for `regression` findings.
+- **Few repair rounds, then start fresh.** No problem fixed on a 5th attempt [M] (Mathews and
+  Nagappan); debugging effectiveness falls 60-80% within 2-3 attempts, restarting helps [M, preprint]
+  (arXiv 2506.18403); critical vulnerabilities +37.6% after 5 "improvement" rounds [M] (arXiv
+  2506.11022).
+- **Parallel attempts with test-based selection.** Trae Agent N=3: 61.3 to 66.4 [M]; OpenHands critic
+  with early stopping: +17.7 over random at 1.35 attempts on average [M]; CodeMonkeys: selection
+  closes about half the gap to the oracle [M]. A mixed-strength pool raised the oracle but not the
+  selected score (Trae) [M]: the fresh attempts use the two implementer roles, Opus only selects.
+- **Effort: high, not max.** Every timeout and empty patch came at high or xhigh, and xhigh cost about
+  2x high per solve on a hard 25-task slice [M, small n] (arXiv 2608.01347).
+- **Calibration.** Conclusion before reasoning: verifier precision 63.27 to 77.09% [M] (BitsAI-CR,
+  arXiv 2501.15134). Hence the accepted and rejected examples in every review prompt.
+- Whether this gets T194-sized changes to 1-3 rounds: **unmeasured** until T194 runs again.
+
+---
+
 ## 9. Open questions / unmeasured
 
 - Per-model accuracy of *this* pool on *your* tasks is **unmeasured**. One trial is not a ranking.
