@@ -33,7 +33,7 @@ Usage: delegate.sh <command> ...
                                  Run one task. Result lands as branch agent/<name> in <repo>.
                                  --role picks the model from agent-box.conf. --review (or a read-only
                                  role) discards every edit and skips tests; the output is the report.
-  continue <repo> <run-name> (-m TEXT | -f FILE) [--name N] [--timeout MIN]
+  continue <repo> <run-name> (-m TEXT | -f FILE) [--name N] [--timeout MIN] [--steps N] [--at BRANCH (review runs)]
                                  Resume that run's worker session with a follow-up (answer to its
                                  BLOCKED question, review findings, next step). Same model, sealed
                                  files and test; starts on its branch. Result: agent/<run>-r2, -r3...
@@ -355,7 +355,7 @@ cmd_run() {
 # findings, or asks for the next step. Any earlier round can be continued again, which forks it.
 cmd_continue() {
   local repo="$1" from="$2"; shift 2
-  local msg_file="" name="" timeout="" findings="" drop="" cause="worker_careless" text=""
+  local msg_file="" name="" timeout="" findings="" drop="" cause="worker_careless" text="" at="" steps=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -m|--message) text="$2"; shift 2 ;;
@@ -365,6 +365,9 @@ cmd_continue() {
       --cause) cause="$2"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
       --timeout) timeout="$2"; shift 2 ;;
+      # A reviewer resumed on a newer branch (the review loop): its session, the fix's code.
+      --at) at="$2"; shift 2 ;;
+      --steps) steps="$2"; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -388,10 +391,15 @@ cmd_continue() {
   # shellcheck disable=SC1091
   . "$prev/meta.sh"
   [ -n "$timeout" ] && TIMEOUT_MIN="$timeout"
+  [ -n "$steps" ] && STEPS="$steps"
   # Start where the previous round ended: its branch, or (no commits, e.g. a review or an early
   # BLOCKED) the commit it ran on, through a temporary ref so it can be bundled.
   local start="agent/$from"
-  if ! git -C "$REPO" show-ref --verify --quiet "refs/heads/$start"; then
+  if [ -n "$at" ]; then
+    [ "${REVIEW:-0}" = 1 ] || die "--at is for review runs: a worker continues on its own branch"
+    git -C "$REPO" show-ref --verify --quiet "refs/heads/$at" || die "no such branch $at"
+    start="refs/heads/$at"; export REVIEW_TARGET="$at"
+  elif ! git -C "$REPO" show-ref --verify --quiet "refs/heads/$start"; then
     [ "$commits" = 0 ] || die "branch $start is gone from $REPO; fetch it again from $prev/result.bundle"
     start="refs/heads/agent-box-tmp/start-$from"
     git -C "$REPO" update-ref "$start" "$head" || die "commit $head is not in $REPO"
