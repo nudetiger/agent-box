@@ -8,6 +8,96 @@ Evidence behind the design: [research/workflow.md](research/workflow.md) (which 
 off) and [research/opencode-customization.md](research/opencode-customization.md) (OpenCode skills,
 agents, effort, permissions; OmniRoute behaviour).
 
+## Requirements
+
+| | |
+| --- | --- |
+| bash | Git Bash on Windows; any bash on Linux or macOS |
+| Node.js 20.11+ | host-side scripts (`lib/`); tested on 24.11 |
+| git, jq, curl | on `PATH` |
+| Podman or Docker | the worker containers. Podman is the default (`AGENT_BOX_ENGINE` in `agent-box.conf`) |
+| OmniRoute | running on the host (default `http://localhost:20128/v1`), with an API key per project |
+| `gh` (optional) | only for `issue: N` in a task: issues are fetched on the host |
+| herdr (optional) | a live tab per run and per loop |
+
+## Install
+
+```bash
+git clone https://github.com/nudetiger/agent-box.git
+cd agent-box
+npm ci                          # host-side helpers (one dependency: yaml)
+podman machine start            # Podman on Windows or macOS; skip on Linux or with Docker
+./delegate.sh build             # the worker image: Node, JDK 17, OpenCode (pinned in image/Dockerfile)
+```
+
+Rebuild after changing anything under `image/`.
+
+## Set up a project
+
+A project is a git repo on your machine. Its settings live in `projects/<repo-folder-name-lowercase>.env`.
+
+```bash
+cp projects/example.env projects/myrepo.env    # fill OMNIROUTE_API_KEY; never commit it (git-ignored)
+./delegate.sh models   /path/to/myrepo         # model ids the key can use
+./delegate.sh roles    /path/to/myrepo         # which model each role uses here
+./delegate.sh baseline /path/to/myrepo         # setup + tests with no agent: the starting state
+```
+
+Recommended: `projects/myrepo.context.yaml`, the context map that decides which docs, traps and tests
+each worker is given (see [The task file and the context pack](#the-task-file-and-the-context-pack)).
+
+## Quick start
+
+1. Write a task file. Frontmatter drives the context pack; the body is the request.
+
+   ```markdown
+   ---
+   files: [src/parser.ts]
+   sealed: [src/parser.accept.test.ts]   # your acceptance test: the worker cannot edit it
+   test: "npx tsx --test src/parser.accept.test.ts"
+   ---
+   Make the parser accept trailing commas. Out of scope: the CLI.
+   ```
+
+2. Run a worker. The result comes back as branch `agent/<name>` in your repo.
+
+   ```bash
+   ./delegate.sh run /path/to/myrepo task.md --role implement --name parser-commas
+   ```
+
+3. Read the last line, not the worker's report: `verdict <v>  flags <F,...>  next <token>`. The same
+   is in `runs/<project>/<name>/summary.json`. `next` says what to do (see the table in
+   [Evidence per run](#evidence-per-run)).
+
+4. For a non-trivial change, run the review and fix loop. It reviews once, proves each finding with a
+   reproduction, sends the proven ones back to the same worker, and rechecks the fix:
+
+   ```bash
+   ./delegate.sh loop /path/to/myrepo parser-commas            # prints JSON with next: approve, decide, ...
+   ./delegate.sh loop resume /path/to/myrepo loop-parser-commas --answer "..."   # when it stops for you
+   ```
+
+5. Read `git diff <base>..agent/<last>`, rerun your tests, merge, and record the decision:
+   `./delegate.sh accept /path/to/myrepo <run> --why "..."`.
+
+Watching: with herdr running, every run and loop opens a tab. Without it:
+`./delegate.sh watch <repo> <run>`, `./delegate.sh loop-watch <repo> <loop>`, `./delegate.sh dash`.
+
+## Use from Claude Code
+
+agent-box is built to be driven by an orchestrating agent. Install the skill so Claude Code knows the
+procedure (task file, verdicts, the loop, accepting):
+
+```bash
+mkdir -p ~/.claude/skills/agent-box
+sed "s#<agent-box>#$PWD#g" claude-skill/agent-box/SKILL.md > ~/.claude/skills/agent-box/SKILL.md
+```
+
+Run it from the clone: it writes the clone's path into the skill.
+
+Then ask Claude Code to "delegate this to agent-box". Keep `claude-skill/` and your installed copy in
+step when either changes.
+
 ## Trust boundary
 
 - **In:** a `git bundle` of one committed revision, the task, a generated context pack, and the
@@ -343,6 +433,7 @@ Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 | `projects/*.context.yaml` | Per-project context map |
 | `research/` | The research this design rests on |
 | `runs/` | Run outputs. Git-ignored |
+| `claude-skill/agent-box/SKILL.md` | The Claude Code skill: the orchestrator's procedure |
 
 After changing anything under `image/`, run `./delegate.sh build`. To update OpenCode, change
 `OPENCODE_VERSION` in `image/Dockerfile` and rebuild.
