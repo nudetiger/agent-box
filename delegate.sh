@@ -328,7 +328,7 @@ cmd_check() {
   [ -n "$name" ] || name="check-$(date +%Y%m%d-%H%M%S)"
   export TEST_CMD
   MODEL="" LEDGER_SKIP=1 launch "$name" "" "$ref" 1 >/dev/null
-  jq -r '"check (.test_exit)"' "$BOX/runs/$PROJECT/$name/summary.json" 2>/dev/null || echo "check -1"
+  jq -r '"check \(.test_exit)"' "$BOX/runs/$PROJECT/$name/summary.json" 2>/dev/null || echo "check -1"
 }
 
 # Ticket mode (lib/ticket.mjs): to-tickets tickets, tests first, locked, implemented, reviewed, landed.
