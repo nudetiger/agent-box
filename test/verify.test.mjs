@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { validRepro, neighbourTests, verifyFiles, parseVerify } from "../lib/verify.mjs";
+import { validRepro, neighbourTests, verifyFiles, parseVerify, suiteFiles, parseSuite, checkTimes } from "../lib/verify.mjs";
 
 const GLOBS = ["**/*.test.*"];
 
@@ -113,4 +113,20 @@ test("the script, run for real: failing test names on both sides, base reproduct
   const log = run(true, 2);
   assert.doesNotMatch(log, /AGENT-BOX-NEIGHBOURS-BASE/);
   assert.equal(parseVerify(log, { exit: 1, fails: ["always broken"] }).neighbours.regression, true);
+});
+
+test("the base suite, run for real: exit, failing names and seconds; a crash or a timeout is no base result", () => {
+  const r = repo();
+  r.put("a.txt", "a\n");
+  r.commit("base");
+  const files = suiteFiles({ cmd: "printf 'not ok 1 - linux path\\nok 2 - fine\\n'; exit 1", root: r.dir.replace(/\\/g, "/") });
+  for (const [f, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(r.dir, f)), { recursive: true }); fs.writeFileSync(path.join(r.dir, f), text); }
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const log = execFileSync("bash", [path.join(r.dir, ".agent-box-verify", "run.sh")], { encoding: "utf8", env });
+  assert.deepEqual(parseSuite(log), { exit: 1, fails: ["linux path"] });
+  assert.equal(typeof checkTimes(log).suite, "number");
+  assert.equal(parseSuite("AGENT-BOX-SUITE exit 1\n"), null, "failed with no names: a crash");
+  assert.equal(parseSuite("AGENT-BOX-SUITE exit 124\nAGENT-BOX-SFAIL x\n"), null, "timed out");
+  assert.deepEqual(parseSuite("AGENT-BOX-SUITE exit 0\n"), { exit: 0, fails: [] });
+  assert.deepEqual(checkTimes("AGENT-BOX-TIME repro:1.spec.1 4\nAGENT-BOX-TIME neighbours 51\n"), { "repro:1.spec.1": 4, neighbours: 51 });
 });

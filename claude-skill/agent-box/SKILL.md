@@ -35,6 +35,9 @@ test: "npx tsx --test path/to/x.test.ts"   # optional; default is the sibling te
 Objective. Required behaviour as a list. What is out of scope. Pattern file to imitate, if any.
 ```
 
+A type check as `test:` is incremental: `npx --no-install tsc --noEmit --incremental --tsBuildInfoFile
+/tmp/tsbuildinfo` (Lykos: 16.3 s plain; incremental 15.4 s first, 5.3-6.8 s after).
+
 Optional frontmatter: `scope: [globs]` (more files the worker may change; the rest is flagged
 OUT-OF-SCOPE), `red: false` (skip the check that sealed tests fail on the base; for refactors),
 `steps: N` (step budget; use ~25 for trivial work), `issue: N` (the harness fetches the GitHub issue,

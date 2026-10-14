@@ -162,7 +162,8 @@ function harness(script, { sealed = true } = {}) {
       write(name, { role: cmd === "run" ? args[args.indexOf("--role") + 1] : "implement", ...s });
     }
   };
-  const deps = { delegate, record: () => {}, readAll: () => [] };
+  // No base suite unless a test gives one: the script lists every call in order.
+  const deps = { delegate, record: () => {}, readAll: () => [], baseSuite: async () => null };
   const left = () => assert.equal(script.length, 0, `unused script steps: ${JSON.stringify(script)}`);
   return { P, calls, deps, left, msg: (call) => fs.readFileSync(call[call.indexOf("-f") + 1], "utf8") };
 }
@@ -421,5 +422,33 @@ test("loop: progress.jsonl tells the live view every step, finding and decision,
   assert.deepEqual(ev.find((e) => e.ev === "findings").items.map((f) => [f.id, f.route, f.exit]), [["1.spec.1", "proven", 1], ["1.spec.2", "dropped", 0]]);
   assert.deepEqual([ev[11].runs, ev[11].resumed], [["L-rv2-review-spec"], true], "the recheck resumes the spec reviewer");
   assert.deepEqual(ev.at(-1), { ...ev.at(-1), next: "approve", last: "L-fix1" });
+  h.left();
+});
+
+test("loop: with the base suite known, a check runs its neighbours on the branch only and compares names", async () => {
+  const h = harness([
+    ["review", { "review-spec": [], "review-std": [] }], ["check", { neighbours: 1 }],
+    ["continue", "pass"],
+    ["continue", []], ["check", { neighbours: 0 }],
+  ]);
+  h.P.map = { test_file_command: "npx tsx --test {files}" };
+  h.deps.neighbours = () => ["src/a.test.ts"];
+  h.deps.baseSuite = async () => ({ exit: 1, fails: ["linux path", "elsewhere"] });
+  // The script would run no base: drop the fake's base line and name the branch's failures.
+  const inner = h.deps.delegate;
+  h.deps.delegate = async (args, log) => {
+    await inner(args, log);
+    if (args[0] !== "check") return;
+    const f = path.join(h.P.runs, args[args.indexOf("--name") + 1], "test.log");
+    const t = fs.readFileSync(f, "utf8").replace(/^AGENT-BOX-NEIGHBOURS-BASE.*\n/m, "");
+    fs.writeFileSync(f, /NEIGHBOURS exit 1/.test(t) ? `${t}AGENT-BOX-NFAIL trusted child\nAGENT-BOX-NFAIL linux path\n` : t);
+  };
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.doesNotMatch(fs.readFileSync(path.join(h.P.runs, "_loops", "L", "check1", ".agent-box-verify", "run.sh"), "utf8"), /NEIGHBOURS-BASE/);
+  const m = h.msg(h.calls[2]);
+  assert.match(m, /## Regression[\s\S]*trusted child/);
+  assert.match(m, /These already fail on the base; ignore them: `linux path`\./, "only the base failures this run hit");
+  assert.equal(st.baseCache, null);
+  assert.equal(st.next, "approve");
   h.left();
 });

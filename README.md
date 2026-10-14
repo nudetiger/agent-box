@@ -67,6 +67,7 @@ made for other stacks (examples in `projects/example.env`):
 | `FAIL_REGEX` | Failing test names in the test output. Default knows node:test, TAP, Go, cargo, GoogleTest, pytest, Gradle |
 | `NEIGHBOUR_SOURCES` | Changed files whose neighbouring tests rerun each review round. Default: JS/TS, Java, Kotlin, Python, Go, Rust, C/C++ |
 | `SENSITIVE_EXTRA` | More paths flagged `SENSITIVE` when a worker edits them |
+| `BASE_SUITE_CMD` | The base's whole suite, run once per base commit for the loop (default `TEST_CMD`) |
 | `ROLE_*`, `REVIEW_ROLES`, `LOOP_*` | Models and loop limits for this project only |
 
 `test_file_command` in the context map takes `{files}`, `{tests}` (Gradle `--tests` filters) and
@@ -378,8 +379,12 @@ Every proven reproduction joins the proof suite, rerun every round. A fix round 
 at once and tells the worker to run the proof suite and the neighbour tests green before it ends.
 After a fix, the round-1 reviewer sessions are resumed on it (`continue --at agent/<fix>`, at most
 `LOOP_RECHECK_STEPS` steps): the spec reviewer, and the standards reviewer when one of its findings was
-sent. There is no final full review. The base's neighbour results are kept per test set, so the base
-runs once. A stall (a reproduction still failing after `LOOP_STUCK` (2) fixes, a regression or a
+sent. There is no final full review. Beside the first review, the base's whole suite runs once per
+base commit (`BASE_SUITE_CMD`, default the project's `TEST_CMD`; `LOOP_BASE_SUITE=0` turns it off) and
+its failing test names are kept in `runs/<project>/.basecache/<sha>.json`: checks then run the neighbour
+tests on the branch only and compare names. Without a usable suite result (a crash, a timeout, no
+names) a check runs the base itself, once per test set. Each check logs its seconds per step
+(`AGENT-BOX-TIME`), shown by `loop-watch`. A stall (a reproduction still failing after `LOOP_STUCK` (2) fixes, a regression or a
 re-broken proof after 1, serious items after `LOOP_SOFT_ROUNDS` (2) fix rounds, `LOOP_MAX_FIXES` (3)
 fix rounds, or a fix that fails its own tests) starts `LOOP_FRESH` attempts once, in parallel from the
 base, with the task, the rulings and the proof suite (no earlier diff); each passing one is checked

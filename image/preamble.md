@@ -41,6 +41,11 @@ them in your final message. A decision you cannot make well without the orchestr
 - Speed: every tool call costs a full model round trip. Files the context pack pastes are already
   current; do not read them again. Run `{{TEST_CMD}}` when your change is complete, and again only
   after you fix something; the harness reruns it after you finish.
+- Tests are slow here (one file can take a minute). While you work, run only the test you are
+  changing: node:test `--test-name-pattern "<name>"`, Go `-run '<Name>'`, cargo `test <name>`, pytest
+  `-k <name>`, Gradle `--tests <Class>`. Run whole files once, when the change is done. Never rerun a
+  file that passed when nothing it covers changed since. Type check with `tsc --incremental
+  --tsBuildInfoFile /tmp/tsbuildinfo` (same errors, about a third of the time on a rerun).
 - Skills: the `ponytail` and `box-verify` rules are below, so do not load those two. Load any other
   listed skill that fits, such as test-driven development or bug diagnosis.
 
