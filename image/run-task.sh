@@ -217,8 +217,11 @@ first_test_exit=$test_exit
 # 5b. Auto-fix: the harness's test run failed after a worker that finished normally. Resume the same
 #     session once with the failing tail; no orchestrator tokens are spent. A BLOCKED worker is left
 #     alone: its question is the result. first_test_exit keeps the unrescued result for the ledger.
+#     After a provider error (a {"type":"error"} event; OpenCode still exits 0) a resume would only
+#     meet the same error: the host records it (lib/ledger.mjs providerError).
 while [ "$test_exit" -gt 0 ] && [ "$autofix" -lt "${AUTOFIX:-1}" ] && [ "${REVIEW:-0}" != 1 ] \
-   && [ "$agent_exit" = 0 ] && [ -z "$blocked" ] && [ -n "$session_id" ] && [ "${HIDDEN:-0}" != 1 ]; do
+   && [ "$agent_exit" = 0 ] && [ -z "$blocked" ] && [ -n "$session_id" ] && [ "${HIDDEN:-0}" != 1 ] \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; do
   autofix=$((autofix + 1))
   phase autofix
   msg="$(printf '# Harness check failed (automatic follow-up %s)\n\nAfter you finished, the harness ran `%s` on your commits and it exited %s. Last lines:\n\n```\n%s\n```\n\nFind the cause. If your change caused it, fix the code (never a sealed file, and never weaken or skip a test), commit, and rerun the command. If the same failure happens on the base commit without your change, prove that and say so instead of fixing it. End with the report block again.\n' \
