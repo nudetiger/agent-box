@@ -49,8 +49,10 @@ question: answer it with `continue` (below), never by rerunning from scratch.
 
 ## Read the verdict, not the report
 
-Every run ends with one line, `verdict <v>  flags <F,...>  next <token>`, and the same in
-`summary.json` (`verdict`, `flags`, `next`). Act on `next`:
+A run prints a few lines (model, tests, diff, flags, BLOCKED question, the worker's decisions and
+disputes, or a review's findings by severity) and ends with one line, `verdict <v>  flags <F,...>  next
+<token>`, the same as in `summary.json`. `show <repo> <run> --full` prints the whole report and the
+final message. Act on `next`:
 
 | next | do |
 | --- | --- |
@@ -144,7 +146,9 @@ report becomes `defect <repo> <dir> "<title>" "<report>"`.
    (`continue --at`); no final full review. A stall (stuck 2 fixes, a regression or re-broken proof
    after 1, serious after 2 fix rounds, 3 fix rounds, a fix failing its tests) starts fresh attempts
    once, implement and implement-hard in parallel from the base with the proof suite; Opus picks
-   between equals. Target 1-3 rounds; 4 reviews at most. Its `next`:
+   between equals. Target 1-3 rounds; 4 reviews at most. It prints a short summary (open items, spec
+   questions and triage items with their text) ending in `next <token>: <reason>` (`--json`: the whole
+   result). Its `next`:
    - `approve` → do your own final check as you see fit, then merge `last`; `notes` are for the
      merge message.
    - `answer_spec` (a reviewer's `spec_question`) → decide it: `loop resume <repo> <loop> --answer

@@ -59,8 +59,9 @@ Usage: delegate.sh <command> ...
                                  change, fix what is proven, review the fix, until nothing blocks.
                                  Stuck findings, regressions, serious findings after 3 fix rounds or
                                  a failing fix move the work up implement -> implement-hard -> escalate.
-                                 Prints JSON with next: approve, answer_spec, triage, answer_question,
-                                 decide, or the run's own
+                                 Prints a short summary (open items, spec questions, triage items with
+                                 their text), ending in next: approve, answer_spec, triage,
+                                 answer_question, decide, or the run's own. --json: the whole result
   loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--add FILE] [-m TEXT|@FILE] [--max-rounds N]
                                  Your decisions on a stopped loop, then it goes on with a fix round
   loop-watch <repo> <loop>       Live view of a loop: rounds, the running step and its time, each
@@ -68,7 +69,7 @@ Usage: delegate.sh <command> ...
                                  With herdr running, the loop opens it in a tab of its own
   ask     <repo> [--role advise|advise-alt | --model M] [--prompt FILE] [--file CTX ...]
                                  One-pass advisor (debate/critique), no tools; prompt from FILE or stdin
-  show     <repo> <name>         Print a finished run's report again
+  show     <repo> <name> [--full] A finished run in a few lines again; --full: summary, test tail, final message
   hunt     <repo> <bug.md> [--base REF] [--name N]
                                  A reported bug with no known location: bughunt (Gemini Flash high)
                                  reproduces it, locates it and commits a failing test, checked red
@@ -144,9 +145,13 @@ cmd_clean() {
   dk rm -f $ids
 }
 
-# Prints the final agent message and token totals from OpenCode's JSON event stream.
+# A finished run in a few lines (lib/brief.mjs). --full, or AGENT_BOX_FULL=1: the whole report, with the
+# final agent message and token totals from OpenCode's JSON event stream.
 report() {
   local dir="$1"
+  if [ "${2:-}" != --full ] && [ "${AGENT_BOX_FULL:-0}" != 1 ]; then
+    (cd "$BOX" && node lib/brief.mjs "$(winpath "$dir")"); return 0
+  fi
   [ -f "$dir/verdict.txt" ] && { echo "== verdict"; cat "$dir/verdict.txt"; }
   echo "== summary"; cat "$dir/summary.json" 2>/dev/null || echo "(no summary.json, see harness.log)"
   [ -f "$dir/commits.txt" ] && { echo "== commits"; cat "$dir/commits.txt"; }
@@ -177,7 +182,7 @@ EOF
 
 cmd_show() {
   load_project "$1"
-  report "$BOX/runs/$PROJECT/$2"
+  report "$BOX/runs/$PROJECT/$2" "${3:-}"
 }
 
 # Shared by run and baseline.

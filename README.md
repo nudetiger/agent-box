@@ -100,7 +100,7 @@ made for other stacks (examples in `projects/example.env`):
    reproduction, sends the proven ones back to the same worker, and rechecks the fix:
 
    ```bash
-   ./delegate.sh loop /path/to/myrepo parser-commas            # prints JSON with next: approve, decide, ...
+   ./delegate.sh loop /path/to/myrepo parser-commas            # prints a summary ending in next: approve, decide, ...
    ./delegate.sh loop resume /path/to/myrepo loop-parser-commas --answer "..."   # when it stops for you
    ```
 
