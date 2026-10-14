@@ -674,6 +674,9 @@ cmd_review() {
       echo "agent-box: $impl wrote this branch and review-spec is the same family: the spec review goes to review-spec-alt (${ROLE_review_spec_alt%% *})" >&2
     fi
   fi
+  # Findings this project already accepted and rejected, as calibration (lib/examples.mjs). Read once,
+  # so every reviewer of this round gets the same text; a ledger error never stops the review.
+  local examples; examples="$(node "$(winpath "$BOX/lib/examples.mjs")" "$PROJECT" 2>/dev/null || true)"
   local names=() r prompt prior
   for r in ${roles//,/ }; do
     case "$r" in
@@ -684,6 +687,7 @@ cmd_review() {
     {
       echo "---"; echo "files:"; git -C "$REPO" diff --name-only "$base" "$branch" | head -n 40 | sed 's/^/  - /'; echo "---"
       [ -n "$prompt" ] && cat "$prompt"
+      [ -n "$examples" ] && { echo; printf '%s\n' "$examples"; }
       [ -n "$prior" ] && { echo; cat "$prior"; }
       cat "$body"
     } >"$tdir/task-$r.md"
