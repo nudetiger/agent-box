@@ -69,7 +69,48 @@ test("the script, run for real: a failing reproduction proves, a passing one doe
 });
 
 test("parseVerify: no neighbour run is null, and the tail is the indented block", () => {
-  assert.deepEqual(parseVerify("AGENT-BOX-REPRO 2.spec.1 exit 1\n    boom\n"), { repro: { "2.spec.1": 1 }, neighbours: null });
+  assert.deepEqual(parseVerify("AGENT-BOX-REPRO 2.spec.1 exit 1\n    boom\n"), { repro: { "2.spec.1": 1 }, reproBase: {}, neighbours: null });
   const p = parseVerify("AGENT-BOX-NEIGHBOURS exit 0\n    ok 1\n");
-  assert.deepEqual(p.neighbours, { exit: 0, base_exit: null, tail: "ok 1", regression: false });
+  assert.deepEqual(p.neighbours, { exit: 0, base_exit: null, tail: "ok 1", fails: [], base_fails: null, new_fails: [], regression: false });
+});
+
+test("parseVerify: a base that already fails hides nothing; names decide, and a known base result stands in", () => {
+  const log = (b) => `AGENT-BOX-NEIGHBOURS exit 1\n    x\nAGENT-BOX-NFAIL linux path\nAGENT-BOX-NFAIL ${b}\n`;
+  const withBase = parseVerify(`${log("trusted child")}AGENT-BOX-NEIGHBOURS-BASE exit 1\nAGENT-BOX-NFAIL-BASE linux path\n`);
+  assert.equal(withBase.neighbours.regression, true);
+  assert.deepEqual(withBase.neighbours.new_fails, ["trusted child"]);
+  const same = parseVerify("AGENT-BOX-NEIGHBOURS exit 1\nAGENT-BOX-NFAIL linux path\nAGENT-BOX-NEIGHBOURS-BASE exit 1\nAGENT-BOX-NFAIL-BASE linux path\n");
+  assert.equal(same.neighbours.regression, false, "the same failure on the base is not this change's");
+  const cached = parseVerify(log("trusted child"), { exit: 1, fails: ["linux path"] });
+  assert.equal(cached.neighbours.regression, true);
+  assert.equal(cached.neighbours.base_exit, 1);
+  assert.deepEqual(parseVerify("AGENT-BOX-REPRO 3.spec.1 exit 1\nAGENT-BOX-REPRO-BASE 3.spec.1 exit 0\n").reproBase, { "3.spec.1": 0 });
+});
+
+test("the script, run for real: failing test names on both sides, base reproductions, and no base run when it is known", () => {
+  const r = repo();
+  r.put("a.js", "module.exports = 1;\n");
+  r.put("n.test.js", "const { test } = require('node:test');\nconst a = require('./a.js');\ntest('always broken', () => { throw new Error('x'); });\ntest('a is one', () => { if (a !== 1) throw new Error('a'); });\n");
+  const base = r.commit("base");
+  r.put("a.js", "module.exports = 2;\n");
+  r.commit("break a");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-names-")).replace(/\\/g, "/");
+  const scratch = `/tmp/ab-verify-${process.pid}-base.sh`;
+  const run = (baseKnown, n) => {
+    const files = verifyFiles({ base, neighboursCmd: "node --test n.test.js", baseKnown, root: r.dir.replace(/\\/g, "/"), baseDir: `${tmp}/base-${n}`,
+      baseRepros: ["1.spec.1"],
+      repros: [{ id: "1.spec.1", file: scratch, content: "node -e \"process.exit(require('./a.js') === 1 ? 0 : 1)\"\n", cmd: `bash ${scratch}` }] });
+    for (const [rel, text] of Object.entries(files)) r.put(rel, text);
+    // A node --test inside this test run would report to it (NODE_TEST_CONTEXT) and exit 0.
+    const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+    return execFileSync("bash", [path.join(r.dir, ".agent-box-verify", "run.sh")], { encoding: "utf8", env });
+  };
+  const first = run(false, 1), v = parseVerify(first);
+  assert.deepEqual([v.repro["1.spec.1"], v.reproBase["1.spec.1"]], [1, 0], "fails on the branch, passes on the base");
+  assert.deepEqual(v.neighbours.base_fails, ["always broken"], first);
+  assert.deepEqual(v.neighbours.new_fails, ["a is one"]);
+  assert.equal(v.neighbours.regression, true);
+  const log = run(true, 2);
+  assert.doesNotMatch(log, /AGENT-BOX-NEIGHBOURS-BASE/);
+  assert.equal(parseVerify(log, { exit: 1, fails: ["always broken"] }).neighbours.regression, true);
 });
