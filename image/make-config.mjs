@@ -56,7 +56,7 @@ if (scout) {
   agent.scout = {
     mode: "subagent",
     description:
-      "Fast, cheap, read-only code search. Give it a precise question (where is X defined, who calls Y, which tests cover Z, what does doc D say about W); it returns file:line evidence. Use it instead of reading many files yourself.",
+      "Fast, cheap, read-only code search. Give it a precise question (where is X defined, who calls Y, which tests cover Z, what does doc D say about W); it returns file:line evidence. Use it instead of reading many files yourself. Independent questions: start several scout tasks in the same turn; they run in parallel.",
     model: `omniroute/${scout}`,
     steps: 30,
     permission: { edit: "deny", webfetch: "deny", task: "deny", skill: { "*": "deny" } },
@@ -68,6 +68,9 @@ const cfg = {
   $schema: "https://opencode.ai/config.json",
   autoupdate: false,
   share: "disabled",
+  // No per-step shadow-git snapshot (git add --all + write-tree on every step): workers never revert
+  // through OpenCode, and the harness reads the result from the worker's own commits.
+  snapshot: false,
   model: `omniroute/${model}`,
   default_agent: review ? "reviewer" : "worker",
   provider: {
