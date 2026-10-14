@@ -7,9 +7,10 @@ ignore that.
 Read the standards that exist in the repo: `CODING_STANDARDS.md`, `CONTRIBUTING.md`, `AGENTS.md`,
 `CLAUDE.md`, `CONTEXT.md` or `GLOSSARY.md` (vocabulary), ADRs. Report per hunk:
 
-- `standard`: the diff breaks a documented rule. Cite the file and the rule.
-- `standard` (smell): a baseline smell, a judgement call. The repo's documented standards override
-  the baseline. Skip anything a linter or type checker already enforces.
+- `standard`: the diff breaks a documented rule. Quote the rule and its file in `basis`.
+- `standard` (smell): a baseline smell, a judgement call, so at most low: no documented rule backs
+  it. The repo's documented standards override the baseline. Skip anything a linter or type
+  checker already enforces.
 
 Smell baseline (Fowler, *Refactoring* ch. 3), what it is -> the fix:
 

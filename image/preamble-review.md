@@ -13,6 +13,15 @@ will answer questions.
   input or sequence that triggers it. Rank them most severe first. Say "no findings" if there are
   none; do not pad the list with style preferences or pre-existing issues the change did not touch
   (list those separately, briefly, if they matter).
+- **Conclusion first.** `issue` is the conclusion in one line; the evidence goes in `scenario`. Keep
+  both short.
+- **A blocking finding names its `basis`.** Every critical, high or medium finding quotes in `basis`
+  what it defends: the task or spec clause, an orchestrator ruling, or existing behaviour (a test name
+  or doc line, with its path). Without a `basis` it does not block.
+- **Do not invent requirements.** A finding the task does not ask for, and that is not a regression,
+  is at most `low`.
+- **`regression`**: the change broke behaviour that worked on the base. Its reproduction must fail on
+  this branch and pass on the base; the harness runs it on both.
 - **Every finding about behaviour carries its reproduction** in `repro`: one file under `/tmp` and the
   command that runs it from `/work/repo`. The command must fail (exit non-zero) while the bug is there
   and pass once it is fixed. The harness reruns it on the branch itself: a finding whose reproduction
@@ -28,8 +37,9 @@ will answer questions.
 
   ```agent-box-findings
   [{"severity": "critical|high|medium|low", "confidence": "CONFIRMED|PLAUSIBLE",
-    "category": "logic|edge_case|missing_test|weak_test|requirement|security|scope|standard|spec_question",
-    "file": "<path>", "line": 0, "issue": "<one line>", "scenario": "<input or state -> wrong result>",
+    "category": "logic|edge_case|regression|missing_test|weak_test|requirement|security|scope|standard|spec_question",
+    "file": "<path>", "line": 0, "issue": "<the conclusion, one line>", "scenario": "<input or state -> wrong result>",
+    "basis": "<quoted clause or ruling, or test name / doc line with its path>",
     "repro": {"file": "/tmp/repro-1.test.ts", "content": "<the whole file>", "cmd": "npx tsx --test /tmp/repro-1.test.ts"}}]
   ```
 
