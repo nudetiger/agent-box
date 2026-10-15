@@ -7,7 +7,8 @@ description: Delegate coding, writing, review, research or bug-hunt work to sand
 
 Tool: `<agent-box>/delegate.sh` (Bash). Evidence behind this procedure:
 `research/workflow.md`; model and config facts: `research/opencode-customization.md`; roles: `agent-box.conf`,
-overridden per project by `ROLE_*` lines in `projects/<repo>.env` (`delegate.sh roles <repo>` shows what is in effect).
+overridden per project by `ROLE_*`, `REVIEW_MODE` and other lines in `projects/<repo>.env` (`delegate.sh roles <repo>`
+shows what is in effect).
 
 **You are the orchestrator.** You plan, write the acceptance test, run the gate and merge. Workers
 implement and review. A worker's report is a claim; `summary.json`, the diff and your own test run are
@@ -84,10 +85,24 @@ to do when it stops. Never set `AGENT_BOX_HERDR=0` on a run the user may want to
 `delegate.sh watch <repo> <run-name>`, `delegate.sh tui <repo> <run-name>`, `delegate.sh stats live`. Record new
 measurements (time, steps, tokens, scope, honesty) in `research/findings.md`; never estimate.
 
+## Waiting: never poll
+
+Start runs and loops in the background, then start one `wait` in the background too. You are woken
+once, when they end, with each one's short report. No `sleep`, `tail` or `until` loops.
+
+```bash
+delegate.sh wait <repo> <run-or-loop> [<run-or-loop> ...] [--any] [--questions] [--timeout MIN]
+```
+
+`--any` returns at the first that ends (start the next queued task, then `wait` on the rest);
+`--questions` also returns when a worker asks with `ask_orchestrator`. A name with no folder yet (a
+run queued for a slot) is waited for.
+
 ## Answering a running worker
 
 Workers have an `ask_orchestrator` tool. For any run longer than a few minutes, start it in the
-background, then also start this in the background so you are woken when a question arrives:
+background, then also start this in the background so you are woken when a question arrives (or use
+`wait --questions`, above):
 
 ```bash
 delegate.sh questions <repo> <run-name> --wait   # exit 0: prints the question; exit 1: the run ended
@@ -123,16 +138,21 @@ the findings, `continue <last_run> --findings ...`, then `ticket-review <repo> <
 is ready: `feature <repo> <dir> report` and hand the manual-test checklist to the user; each bug they
 report becomes `defect <repo> <dir> "<title>" "<report>"`.
 
-**Different tasks at once**: `batch <repo> a.md b.md ...` (capped by `AGENT_BOX_SLOTS`, default 4).
+**Different tasks at once**: independent tasks run in parallel, at most `AGENT_BOX_SLOTS` containers
+(default 4; ask the user for their machine's limit). Each slot mounts its own copy of the project's
+`CACHES` volumes, so parallel Gradle or cargo builds never share a lock. Start each `run` or `loop` in
+the background, about 100 s apart (the Podman VM dropped 3 starts within seconds once), then one
+`wait --any`. `batch <repo> a.md b.md ...` runs several tasks and waits for all; `feature ... run
+--parallel N` does it for tickets.
 
-**Every coding task: one path.** One worker at a time; no fan-out.
+**Every coding task: one path.** One worker per task; never the same task on several workers.
 1. Write the task with its spec (a feature also gets a failing acceptance test, sealed and confirmed
    red; commit it on a side branch with `git hash-object`/`commit-tree`).
 2. `run --role implement` (Gemini 3.8 Flash high). Trivial edits whose place is known: `--role quick`
    (DeepSeek, 6-8 steps).
-3. Act on `next`. A gate failure: `continue` with the failure once; still failing, rerun with
-   `--role implement-hard` (DeepSeek, a different family); after two failed rounds `--role escalate`
-   (Opus) with the failure history. `no_change`: go straight to `--role implement-hard`; the harness
+3. Act on `next`. A gate failure: `continue` with the failure once; the same failure twice: rerun
+   with `--role implement-hard` (DeepSeek V4.1 Flash max, a different family) with the failure
+   history (`escalate` is the same model). `no_change`: go straight to `--role implement-hard`; the harness
    has already resumed a turn cut off at the output cap twice (`cut_resumes` in the summary), which is
    how Gemini's "no change" happened on T174b.
 4. Non-trivial change, or anything touching the gate, ledger, containment or credentials:
@@ -140,7 +160,9 @@ report becomes `defect <repo> <dir> "<title>" "<report>"`.
    test: write one in step 1 (`--no-spec` only for a pure refactor or docs). Before implementing a
    non-trivial task, ask for spec questions once and rule on all of them up front:
    `explore <repo> "<task text> -- list only what this task leaves undecided" --role review-spec`.
-   Round 1, the only full review: review-spec (DeepSeek) and review-std (Opus), both given the spec.
+   Round 1, the only full review, by the project's review mode: `split`, review-spec (Opus) and
+   review-std (DeepSeek); `both`, one review-both (DeepSeek) covering both axes. Every reviewer gets
+   the spec, and a reviewer of the implementer's family is swapped for its `-alt`.
    Each finding carries a reproduction and a `basis`; the harness reruns them on the branch, with the
    existing tests next to the change (failing test names compared with the base). Proven ones join a
    proof suite rerun every round; the fixer gets everything open at once and must run the proofs and
@@ -148,7 +170,7 @@ report becomes `defect <repo> <dir> "<title>" "<report>"`.
    (`continue --at`); no final full review. A stall (stuck 2 fixes, a regression or re-broken proof
    after 1, serious after 2 fix rounds, 3 fix rounds, a fix failing its tests) starts fresh attempts
    once, implement and implement-hard in parallel from the base with the proof suite; Opus picks
-   between equals. Target 1-3 rounds; 4 reviews at most. It prints a short summary (open items, spec
+   between equals. Target 1-3 rounds; 5 reviews at most. It prints a short summary (open items, spec
    questions and triage items with their text) ending in `next <token>: <reason>` (`--json`: the whole
    result). Its `next`:
    - `approve` → do your own final check as you see fit, then merge `last`; `notes` are for the
@@ -158,12 +180,22 @@ report becomes `defect <repo> <dir> "<title>" "<report>"`.
    - `triage` (a serious finding with no reproduction, or a finding the worker disputes) → check it
      yourself; `--drop ID` what is wrong, resume with nothing to keep the rest.
    - `answer_question` (the worker is BLOCKED) → `loop resume ... -m "answer"`.
-   - `decide` (4 rounds, or a second stall) → read `state.json` and choose: merge with notes, make
+   - `decide` (5 rounds, or a second stall) → read `state.json` and choose: merge with notes, make
      the last small fix yourself, `resume --max-rounds N`, or stop.
    - `fix_environment` / `read_final_message` mid-round (a provider error, an unreadable review) →
      fix the cause, then plain `resume`: the round's review and check run again.
    `resume` also takes `--add FILE` (your own findings) and `-m` (anything else for the worker).
    One review only: `review <repo> agent/<run>`, then `continue <run> --findings <rv-run>`.
+
+   **You shape the loop.** The same options at the start and on `loop resume`:
+   - `--review-mode split|both`: two reviewers or one, over the project's `REVIEW_MODE`.
+   - `--roles review-spec` (any list): exactly these reviewers; one axis is fine for a small change.
+   - `--fresh none`: no fresh attempts, a stall stops for you; `--fresh implement-hard`: one fresh
+     attempt, a single implementer, instead of two in parallel.
+   - `--max-rounds N`, `--max-fixes N`: the caps; raise them on a resume to let it go on.
+   A new review mode or roles on a resume makes the next review cold, by the new reviewers.
+   `review` takes `--review-mode` and `--roles` too, and so does ticket mode (`ticket`, `feature ...
+   run`, `ticket-review`).
 
 **Your own room.** The harness is deterministic so you are not the bottleneck, not so you stay out.
 Use your judgement wherever it pays: read any diff, probe the code, run tests, start your own Claude
@@ -185,8 +217,8 @@ runs a one-pass advisor with no tools. `advise` is Kimi K3: its $20 ends 2026-10
 it on every plan and contested call. `advise-alt` is Opus 4.6, the advisor after that date.
 
 **Budget and pools**: Opus+Sonnet share a pool, all Gemini models share one, DeepSeek and Kimi have
-their own. Gemini does the bulk; DeepSeek retries, quick edits and spec reviews; Opus standards
-reviews, escalation and prose; Opus is never the first coder. Unused: Sonnet (spends Opus's pool),
+their own. Gemini does the bulk; DeepSeek escalations, quick edits, standards reviews and review-both;
+Opus spec reviews and prose; Opus is never a coder by default. Unused: Sonnet (spends Opus's pool),
 Composer (misreported tool results, research/findings.md §6). Every worker has a `scout` subagent
 (Gemini 3.8 Flash) for searching. Ponytail is loaded by every worker before it writes code.
 

@@ -140,7 +140,8 @@ final_message() {
     const m = last.match(/^\s*BLOCKED:\s*(.+)$/m);
     fs.writeFileSync("/out/blocked.txt", m ? m[1].trim() : "");
     const block = (name) => {
-      const b = last.match(new RegExp("```" + name + "[^\\n]*\\n([\\s\\S]*?)\\n\\s*```"));
+      // The name may stand on the line after the fence (lib/ledger.mjs blockRegex, the same pattern).
+      const b = last.match(new RegExp("```[^\\n`]*?(?:\\r?\\n[ \\t]*)?" + name + "[^\\n]*\\n([\\s\\S]*?)\\n\\s*```"));
       if (!b) return null;
       try { return JSON.parse(b[1]); } catch { return { parse_error: b[1].slice(0, 500) }; }
     };

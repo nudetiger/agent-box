@@ -44,17 +44,24 @@ Usage: delegate.sh <command> ...
   questions <repo> <run-name> [--wait]
                                  Open ask_orchestrator questions of a running worker. --wait blocks
                                  until one appears (exit 0) or the run ends (exit 1)
+  wait     <repo> <name>... [--any] [--questions] [--timeout MIN]
+                                 Block until these runs or loops end, then print each one's short report.
+                                 Run it in the background: one notice instead of polling. --any: return at
+                                 the first; --questions: also return when a worker asks
   answer   <repo> <run-name> <id> (-m TEXT | -f FILE)
                                  Answer a running worker's question; it continues where it stopped
                                  (run --no-ask: the worker gets no ask_orchestrator tool)
   fanout   <repo> <task.md> --roles a,b[,c] [--name N] [run options]
                                  Same task on several roles in parallel; prints a comparison table
-  review   <repo> <branch> [--spec FILE ...] [--roles a,b] [--against REF] [--focus TEXT]
-                                 Read-only review on two axes in parallel: review-spec (DeepSeek) and
-                                 review-std (Opus), both given the branch's task and every --spec.
-                                 --name P names the runs P-<role>; --prior spec=FILE|std=FILE puts the
-                                 previous round's findings first, to recheck
+  review   <repo> <branch> [--spec FILE ...] [--review-mode split|both | --roles a,b] [--against REF] [--focus TEXT]
+                                 Read-only review, every reviewer given the branch's task and every --spec.
+                                 Review mode (REVIEW_MODE, per project): split = two reviewers in parallel,
+                                 review-spec and review-std; both = one review-both covering both axes.
+                                 --roles names the reviewers outright (one axis: --roles review-spec).
+                                 --name P names the runs P-<role>; --prior spec=FILE|std=FILE|both=FILE
+                                 puts the previous round's findings first, to recheck
   loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2] [--no-spec]
+                        [--review-mode split|both] [--roles a,b] [--fresh ROLES|none] [--max-fixes N]
                                  Review, rerun each finding's reproduction and the tests next to the
                                  change, fix what is proven, review the fix, until nothing blocks.
                                  Stuck findings, regressions, serious findings after 3 fix rounds or
@@ -63,7 +70,12 @@ Usage: delegate.sh <command> ...
                                  their text), ending in next: approve, answer_spec, triage,
                                  answer_question, decide, or the run's own. --json: the whole result
   loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--add FILE] [-m TEXT|@FILE] [--max-rounds N]
-                                 Your decisions on a stopped loop, then it goes on with a fix round
+                        [--review-mode split|both] [--roles a,b] [--fresh ROLES|none] [--max-fixes N]
+                                 Your decisions on a stopped loop, then it goes on with a fix round.
+                                 --max-rounds raises the cap of a loop stopped at it; a new review mode
+                                 or roles start the next review cold with those reviewers. --fresh: the
+                                 roles of the fresh attempts on a stall (one role: a single implementer;
+                                 none: a stall stops for you)
   loop-watch <repo> <loop>       Live view of a loop: rounds, the running step and its time, each
                                  finding and where it went, decisions, what to do when it stops.
                                  With herdr running, the loop opens it in a tab of its own
@@ -76,8 +88,8 @@ Usage: delegate.sh <command> ...
                                  by the harness. Prints JSON with fix_task: run it with --role implement
                                  --base agent/<hunt run>
   roles    <repo>                The roles in effect for the project: agent-box.conf, overridden by
-                                 any ROLE_*, REVIEW_ROLES, SCOUT_MODEL or TICKET_ESCALATE_* line in
-                                 its projects/<repo>.env
+                                 any ROLE_*, REVIEW_MODE, REVIEW_ROLES, SCOUT_MODEL, LOOP_MAX_ROUNDS or
+                                 TICKET_ESCALATE_* line in its projects/<repo>.env
   config   <repo>                The project's image, caches and every setting its .env sets
   setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
                                  repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
@@ -85,6 +97,7 @@ Usage: delegate.sh <command> ...
   clean                        Remove leftover agent-box containers
 
 Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
+Parallel: at most AGENT_BOX_SLOTS containers at once (default 4); each slot has its own CACHES volumes.
 
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
 EOF
@@ -125,15 +138,32 @@ cmd_build() {
   rm -rf "$ctx"; return $e
 }
 
-# -v flags for CACHES="name:/container/path ..." in the project's .env: named volumes agent-box-<name>-cache,
-# kept across runs (Go modules, cargo registry, Gradle). The npm cache is always mounted.
+# -v flags for CACHES="name:/container/path ..." in the project's .env: named volumes kept across runs
+# (Go modules, cargo registry, Gradle). Each concurrency slot gets its own copy, agent-box-<name><slot>-cache:
+# two containers on one Gradle cache deadlock on its journal lock ("Timeout waiting to lock journal
+# cache", RakunMiniItems 2026-10-15). A slot's volume missing is seeded once from agent-box-<name>-cache,
+# so it starts warm. AGENT_BOX_SLOT_CACHES=0: every run shares agent-box-<name>-cache, as before.
+# The npm cache is always mounted and shared (npm's cache is safe to share).
 cache_volumes() {
-  local c
+  local c vol base n="${SLOT##*/}"
   CACHE_ARGS=(-v agent-box-npm-cache:/home/node/.npm)
   for c in ${CACHES:-}; do
     [[ "$c" == ?*:/?* ]] || die "CACHES entry '$c' is not name:/path"
-    CACHE_ARGS+=(-v "agent-box-${c%%:*}-cache:${c#*:}")
+    base="agent-box-${c%%:*}-cache"; vol="$base"
+    if [ -n "$n" ] && [ "${AGENT_BOX_SLOT_CACHES:-1}" != 0 ]; then vol="agent-box-${c%%:*}$n-cache"; seed_volume "$base" "$vol"; fi
+    CACHE_ARGS+=(-v "$vol:${c#*:}")
   done
+}
+# A new slot volume, copied from the shared one when that exists. Gradle's daemon state and journal
+# locks are left behind: they belong to processes of the container that wrote them.
+seed_volume() {
+  dk volume inspect "$2" >/dev/null 2>&1 && return 0
+  dk volume create "$2" >/dev/null || die "could not create volume $2"
+  dk volume inspect "$1" >/dev/null 2>&1 || return 0
+  echo "agent-box: seeding cache volume $2 from $1 (once per slot)" >&2
+  dk run --rm --entrypoint sh -v "$1:/from:ro" -v "$2:/to" "$IMAGE" \
+    -c 'cp -a /from/. /to/ && rm -rf /to/daemon /to/caches/journal-1/*.lock' >/dev/null 2>&1 \
+    || echo "agent-box: could not seed $2; it starts empty" >&2
 }
 
 cmd_models() {
@@ -240,10 +270,10 @@ launch() {
   # Into the container as well: the project's SYNTAX_<ext> checks and the names in CONTAINER_ENV.
   local v extra_env=()
   for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
-  cache_volumes
   local cname; cname="$(cname_of "$name")"
   slot_acquire "$name"
   trap "dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
+  cache_volumes
   # The real OpenCode TUI attaches to the worker when herdr shows the run (AGENT_BOX_TUI=0: feed only).
   TUI=0
   if [ "$skip_agent" != 1 ] && [ "${AGENT_BOX_TUI:-1}" != 0 ] && herdr_ok; then TUI=1; fi
@@ -598,6 +628,62 @@ cmd_questions() {
   done
 }
 
+# Blocks until the named runs and loops end, then prints each one's short report: one background
+# command for the orchestrator instead of sleep-and-tail polling. A name is a run (runs/<project>/<name>)
+# or a loop (runs/<project>/_loops/<name>); a name with no folder yet is waited for (a run still
+# queued for a slot). --any: return when the first one ends. --questions: also return when a running
+# worker asks with ask_orchestrator. Exit 0, or 3 when --timeout MIN ran out first.
+cmd_wait() {
+  local repo="$1"; shift
+  local any=0 asks=0 timeout="" names=() n
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --any) any=1; shift ;;
+      --questions) asks=1; shift ;;
+      --timeout) timeout="$2"; shift 2 ;;
+      -*) die "unknown option $1" ;;
+      *) names+=("$1"); shift ;;
+    esac
+  done
+  [ "${#names[@]}" -gt 0 ] || die "wait needs one or more run or loop names"
+  load_project "$repo"
+  local runs="$BOX/runs/$PROJECT" start; start=$(date +%s)
+  local -A shown=()
+  ended() {
+    local d="$runs/_loops/$1"
+    if [ -f "$d/progress.jsonl" ]; then tail -n 1 "$d/progress.jsonl" | grep -q '"ev":"end"'; return; fi
+    d="$runs/$1"
+    [ -f "$d/verdict.txt" ] && return 0
+    [ -f "$d/summary.json" ] && [ "$(dk inspect -f '{{.State.Running}}' "$(cname_of "$1")" 2>/dev/null)" != true ]
+  }
+  show_one() {
+    if [ -d "$runs/_loops/$1" ]; then
+      echo "== loop $1"
+      (cd "$BOX" && node --input-type=module -e 'import { loopBrief } from "./lib/loop.mjs"; import fs from "node:fs";
+        const f = process.argv[1]; console.log(loopBrief(JSON.parse(fs.readFileSync(f, "utf8")), f));' "$(winpath "$runs/_loops/$1/state.json")")
+    else
+      report "$runs/$1"
+    fi
+  }
+  while :; do
+    local left=0
+    for n in "${names[@]}"; do
+      [ -n "${shown[$n]:-}" ] && continue
+      if ended "$n"; then shown[$n]=1; show_one "$n"; echo
+      else
+        left=$((left + 1))
+        if [ "$asks" = 1 ] && [ -d "$runs/$n" ] && cmd_questions "$repo" "$n" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
+          echo "== $n asks:"; cat "$runs/.wait-q"; echo "answer: delegate.sh answer $REPO $n <id> -m TEXT"; return 0
+        fi
+      fi
+    done
+    [ "$left" = 0 ] && return 0
+    [ "$any" = 1 ] && [ "${#shown[@]}" -gt 0 ] && { echo "still running: $left"; return 0; }
+    if [ -n "$timeout" ] && [ $(( $(date +%s) - start )) -ge $(( timeout * 60 )) ]; then echo "wait: ${timeout} min passed, $left still running"; return 3; fi
+    sleep 10
+  done
+}
+
 # Answers question <id> of a running worker. Written atomically: the worker never reads half a file.
 cmd_answer() {
   local repo="$1" name="$2" id="$3"; shift 3
@@ -660,28 +746,30 @@ cmd_fanout() {
 # changed files feed the context pack, and when the branch came from an agent-box run its original
 # task is quoted so reviewers can check the change against what was asked.
 # Two axes, the same prompts as ticket mode: review-spec (does it do what the spec asks, edge cases,
-# tests) and review-std (the repo's standards). Both get the spec: the branch's own task when agent-box
-# made it, plus every --spec file.
+# tests) and review-std (the repo's standards); or, in review mode `both`, one review-both covering
+# both (lib/reviewmode.mjs). Every reviewer gets the spec: the branch's own task when agent-box made
+# it, plus every --spec file.
 cmd_review() {
   local repo="$1" branch="$2"; shift 2
-  local roles="" against="" focus="" prefix="" prior_spec="" prior_std="" specs=()
+  local roles="" mode="" against="" focus="" prefix="" prior_spec="" prior_std="" prior_both="" specs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --roles) roles="$2"; shift 2 ;;
+      --review-mode) mode="$2"; shift 2 ;;
       --against) against="$2"; shift 2 ;;
       --focus) focus="$2"; shift 2 ;;
       --spec) [ -f "$2" ] || die "no such spec file $2"; specs+=("$2"); shift 2 ;;
       --name) prefix="$2"; shift 2 ;;        # review runs are named PREFIX-<role>
       # The previous round's findings for one axis, rechecked first (the review loop, lib/loop.mjs).
       --prior) [ -f "${2#*=}" ] || die "no such prior findings file ${2#*=}"
-        case "$2" in spec=*) prior_spec="${2#*=}" ;; std=*) prior_std="${2#*=}" ;; *) die "--prior takes spec=FILE or std=FILE" ;; esac
+        case "$2" in spec=*) prior_spec="${2#*=}" ;; std=*) prior_std="${2#*=}" ;; both=*) prior_both="${2#*=}" ;; *) die "--prior takes spec=FILE, std=FILE or both=FILE" ;; esac
         shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
   load_project "$repo"
-  # After load_project: the project file may set its own REVIEW_ROLES.
-  roles="${roles:-${REVIEW_ROLES:-review-spec,review-std}}"
+  # After load_project: the project file may set its own REVIEW_MODE or REVIEW_ROLES.
+  [ -n "$roles" ] || roles="$(node "$(winpath "$BOX/lib/reviewmode.mjs")" roles "$mode" "${REVIEW_ROLES:-}" "${REVIEW_MODE:-}")" || exit 1
   herdr_ok && herdr_ws >/dev/null
   git -C "$REPO" rev-parse --verify --quiet "$branch^{commit}" >/dev/null || die "no such branch $branch"
   [ -n "$against" ] || against="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo HEAD)"
@@ -703,25 +791,27 @@ cmd_review() {
     done
     [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
   } >"$body"
-  # The spec reviewer is never the implementer's family: code DeepSeek wrote gets review-spec-alt.
-  local impl="" picked
+  # The spec reviewer (and review-both) is never the implementer's family: it gets its -alt role.
+  local impl="" r var alt
   [ -f "$BOX/runs/$PROJECT/${branch#agent/}/summary.json" ] \
     && impl="$(sed -n 's/.*"model": *"\([^"]*\)".*/\1/p' "$BOX/runs/$PROJECT/${branch#agent/}/summary.json" | head -n 1)"
-  if [ -n "$impl" ] && [[ ",$roles," == *,review-spec,* ]]; then
-    picked="$(node "$(winpath "$BOX/lib/family.mjs")" spec-role "$impl" "${ROLE_review_spec%% *}" "${ROLE_review_spec_alt:-}")"
-    if [ "$picked" = review-spec-alt ]; then
-      roles="$(echo ",$roles," | sed 's/,review-spec,/,review-spec-alt,/; s/^,//; s/,$//')"
-      echo "agent-box: $impl wrote this branch and review-spec is the same family: the spec review goes to review-spec-alt (${ROLE_review_spec_alt%% *})" >&2
+  for r in review-spec review-both; do
+    [ -n "$impl" ] && [[ ",$roles," == *,$r,* ]] || continue
+    var="ROLE_${r//-/_}"; alt="${var}_alt"
+    if [ "$(node "$(winpath "$BOX/lib/family.mjs")" use-alt "$impl" "${!var%% *}" "${!alt:-}")" = alt ]; then
+      roles="$(echo ",$roles," | sed "s/,$r,/,$r-alt,/; s/^,//; s/,\$//")"
+      echo "agent-box: $impl wrote this branch and $r is the same family: that review goes to $r-alt (${!alt%% *})" >&2
     fi
-  fi
+  done
   # Findings this project already accepted and rejected, as calibration (lib/examples.mjs). Read once,
   # so every reviewer of this round gets the same text; a ledger error never stops the review.
   local examples; examples="$(node "$(winpath "$BOX/lib/examples.mjs")" "$PROJECT" 2>/dev/null || true)"
-  local names=() r prompt prior
+  local names=() prompt prior
   for r in ${roles//,/ }; do
     case "$r" in
       review-spec|review-spec-alt) prompt="$BOX/lib/ticket/review-spec.md"; prior="$prior_spec" ;;
       review-std) prompt="$BOX/lib/ticket/review-standards.md"; prior="$prior_std" ;;
+      review-both|review-both-alt) prompt="$BOX/lib/ticket/review-both.md"; prior="$prior_both" ;;
       *) prompt=""; prior="" ;;
     esac
     {
@@ -764,7 +854,7 @@ cmd_refs() {
 cmd_roles() {
   load_project "$1"
   local v src name
-  for v in $(compgen -v | grep -E '^(ROLE_[A-Za-z0-9_]+|REVIEW_ROLES|READ_ONLY_ROLES|SCOUT_MODEL|TICKET_ESCALATE_ROLE|TICKET_ESCALATE_AFTER)$'); do
+  for v in $(compgen -v | grep -E '^(ROLE_[A-Za-z0-9_]+|REVIEW_MODE|REVIEW_ROLES|READ_ONLY_ROLES|SCOUT_MODEL|TICKET_ESCALATE_ROLE|TICKET_ESCALATE_AFTER|LOOP_MAX_ROUNDS)$'); do
     src=conf; grep -qE "^(export[[:space:]]+)?$v=" "$PROJECT_ENV" && src=project
     name="$v"; [[ "$v" == ROLE_* ]] && { name="${v#ROLE_}"; name="${name//_/-}"; }
     printf '%-22s %-8s %s\n' "$name" "$src" "${!v}"
@@ -877,6 +967,7 @@ case "${1:-}" in
   loop-watch) shift; cmd_loop_watch "$@" ;;
   loop-tab) shift; cmd_loop_tab "$@" ;;
   answer) shift; cmd_answer "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
   show) shift; cmd_show "$@" ;;
   tui) shift; cmd_tui "$@" ;;
   note) shift; cmd_note "$@" ;;

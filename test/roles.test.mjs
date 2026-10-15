@@ -81,7 +81,8 @@ test("spec reviewer: never the implementer's family", async () => {
   assert.equal(specRole(ds, ds, "deepseek/deepseek-pro"), "review-spec", "an alt of the same family is no better");
 });
 
-test("review: a branch DeepSeek wrote gets review-spec-alt", () => {
+// The default stack: review-spec is Opus, review-both is DeepSeek. Code their family wrote gets the -alt.
+test("review: a branch Claude wrote gets review-spec-alt; in mode both, a DeepSeek branch gets review-both-alt", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-alt-"));
   const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
@@ -93,15 +94,23 @@ test("review: a branch DeepSeek wrote gets review-spec-alt", () => {
   fs.writeFileSync(env, "OMNIROUTE_API_KEY=\n");
   const runs = path.join(BOX, "runs", path.basename(dir).toLowerCase());
   fs.mkdirSync(path.join(runs, "ds-run"), { recursive: true });
-  fs.writeFileSync(path.join(runs, "ds-run", "summary.json"), JSON.stringify({ model: "deepseek/deepseek-flash-max" }, null, 2));
-  try {
-    const r = spawnSync("bash", ["delegate.sh", "review", dir, "agent/ds-run"],
+  const review = (model, ...a) => {
+    fs.writeFileSync(path.join(runs, "ds-run", "summary.json"), JSON.stringify({ model }, null, 2));
+    return spawnSync("bash", ["delegate.sh", "review", dir, "agent/ds-run", ...a],
       { cwd: BOX, encoding: "utf8", env: { ...process.env, AGENT_BOX_PROJECT_ENV: env, AGENT_BOX_HERDR: "0" } });
-    assert.match(r.stderr, /spec review goes to review-spec-alt/);
-    const logs = fs.readdirSync(runs).filter((f) => f.endsWith(".log"));
-    assert.ok(logs.some((f) => /-review-spec-alt\.log$/.test(f)), logs.join(", "));
-    assert.ok(logs.some((f) => /-review-std\.log$/.test(f)), "the standards axis is unchanged");
-    assert.ok(!logs.some((f) => /-review-spec\.log$/.test(f)), "no same-family spec review");
+  };
+  try {
+    const r = review("antigravity/claude-opus-4-6-thinking-high", "--name", "A");
+    assert.match(r.stderr, /review-spec is the same family: that review goes to review-spec-alt/);
+    const logs = fs.readdirSync(runs).filter((f) => f.startsWith(".A-"));
+    assert.ok(logs.includes(".A-review-spec-alt.log"), logs.join(", "));
+    assert.ok(logs.includes(".A-review-std.log"), "the standards axis is unchanged");
+    assert.ok(!logs.includes(".A-review-spec.log"), "no same-family spec review");
+    const b = review("deepseek/deepseek-flash-max", "--name", "B", "--review-mode", "both");
+    assert.match(b.stderr, /review-both is the same family: that review goes to review-both-alt/);
+    assert.deepEqual(fs.readdirSync(runs).filter((f) => f.startsWith(".B-")), [".B-review-both-alt.log"]);
+    const c = review("deepseek/deepseek-flash-max", "--name", "C");
+    assert.doesNotMatch(c.stderr, /same family/, "DeepSeek code: the Opus spec reviewer stays");
   } finally {
     fs.rmSync(runs, { recursive: true, force: true });
   }

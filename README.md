@@ -74,7 +74,7 @@ made for other stacks (examples in `projects/example.env`):
 | `NEIGHBOUR_SOURCES` | Changed files whose neighbouring tests rerun each review round. Default: JS/TS, Java, Kotlin, Python, Go, Rust, C/C++ |
 | `SENSITIVE_EXTRA` | More paths flagged `SENSITIVE` when a worker edits them |
 | `BASE_SUITE_CMD` | The base's whole suite, run once per base commit for the loop (default `TEST_CMD`) |
-| `ROLE_*`, `REVIEW_ROLES`, `LOOP_*` | Models and loop limits for this project only |
+| `ROLE_*`, `REVIEW_MODE`, `REVIEW_ROLES`, `LOOP_*` | Models, reviewers and loop limits for this project only |
 
 `test_file_command` in the context map takes `{files}`, `{tests}` (Gradle `--tests` filters) and
 `{dirs}` (the files' directories as `./dir`, for `go test {dirs}`).
@@ -143,7 +143,10 @@ step when either changes.
   source and the OmniRoute key, nothing more. Shared kernel (`runc`), not a VM.
 - The npm cache is a shared named volume (`agent-box-npm-cache`); npm checks lockfile integrity hashes.
   Other caches are the project's `CACHES` volumes, shared by every project that names the same one
-  (RakunMiniItems: `gradle`, holding the wrapper, dependencies and toolchain JDKs).
+  (RakunMiniItems: `gradle`, holding the wrapper, dependencies and toolchain JDKs). Each concurrency
+  slot mounts its own copy, `agent-box-<name><slot>-cache`, seeded once from `agent-box-<name>-cache`:
+  two containers on one Gradle cache deadlock on its journal lock (RakunMiniItems, 2026-10-15).
+  `AGENT_BOX_SLOT_CACHES=0` shares one volume again.
   Java projects: `{tests}` in `test_file_command` expands to `--tests <class>` for each sibling `*Test.java`.
 
 ## Setup per project
@@ -165,9 +168,10 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh questions <repo> <run-name> [--wait]                              # open questions of a running worker
 ./delegate.sh answer <repo> <run-name> <id> (-m TEXT | -f FILE)                 # answer one; it keeps working
 ./delegate.sh fanout <repo> <task.md> --roles implement,feature [--base REF] ...   # parallel, comparison table
-./delegate.sh review <repo> <branch> [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
-./delegate.sh loop   <repo> <run> [--spec FILE] [--max-rounds N]  # review, verify, fix until nothing blocks
-./delegate.sh loop resume <repo> <loop> [--answer T] [--drop IDs] [--add F] [-m T]  # the orchestrator's decisions
+./delegate.sh review <repo> <branch> [--review-mode split|both] [--roles a,b] [--against REF] [--focus TEXT]  # generated read-only review
+./delegate.sh loop   <repo> <run> [--spec FILE] [--max-rounds N] [--review-mode M] [--roles a,b] [--fresh R|none]  # review, verify, fix until nothing blocks
+./delegate.sh loop resume <repo> <loop> [--answer T] [--drop IDs] [--add F] [-m T] [--max-rounds N] [--review-mode M]  # the orchestrator's decisions
+./delegate.sh wait   <repo> <run-or-loop>... [--any] [--questions]  # block until they end; their short reports
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
@@ -242,7 +246,7 @@ Ported from AgentOrchestratingSkill. Tickets are Matt Pocock `to-tickets` files
 tests first; the harness accepts them only if nothing but test files changed, nothing is skipped, and
 they fail on the current code (one fix round otherwise); they are sealed for the implementer, which
 works on top of them; a failing implementation escalates once to `TICKET_ESCALATE_ROLE` with its
-changes kept; `review-spec` and `review-std` review in parallel. `land` squashes tests and code into
+changes kept; the review mode's reviewers review in parallel (`--review-mode`, `--roles` override it). `land` squashes tests and code into
 one commit on the local integration branch `box/<feature>` (never pushed, never checked out; if the
 branch moved, the merge is tested in a container first), stamps the ticket done, and appends the
 feature's decisions ledger, which later tickets get in their task. The project's context map needs
@@ -307,7 +311,9 @@ what the orchestrator does next with the command. The check that reruns the repr
 of its own; it shows only here.
 
 **Concurrency**: at most `AGENT_BOX_SLOTS` containers run at once (default 4), whatever starts them;
-the rest wait for a slot.
+the rest wait for a slot. `delegate.sh wait <repo> <name>... [--any] [--questions]` blocks until runs
+or loops end and prints each one's short report, so an orchestrator waits on one background command
+instead of polling.
 
 **Measurements** live in [research/findings.md](research/findings.md), with the method to compare
 another harness (Lykos) against this one on the same task files.
@@ -343,25 +349,34 @@ and recalled what it read in round 1 (cache read 155k tokens).
 | role | model | use |
 | --- | --- | --- |
 | implement | `gemini-3.8-flash-tiered` high | **every coding task starts here** |
-| implement-hard | `deepseek/deepseek-flash-max` | retry after a gate failure (a different family) |
-| quick | `deepseek/deepseek-flash-max` | trivial edits whose place is known |
-| escalate (= last-resort) | `antigravity/claude-opus-4-6-thinking` | after two failed rounds, with the failure history |
+| implement-hard | `deepseek/deepseek-flash-max` | the same bug failing twice (a different family, max effort) |
+| quick | `deepseek/deepseek-flash-high` | trivial edits whose place is known |
+| escalate (= last-resort) | `deepseek/deepseek-flash-max` | after two failed rounds, with the failure history |
 | write / draft | Opus 4.6 / Gemini 3.8 Flash high | prose that ships / drafts |
 | explore | Gemini 3.8 Flash high | `delegate.sh explore`: read-only research digest |
 | bughunt | Gemini 3.8 Flash high | `delegate.sh hunt`: reproduces, locates and pins a reported bug. Out of the workflow (2026-10-13): it added 23-30 min on Lykos T194/T174b and changed neither; the orchestrator hunts with an Opus 5.5 subagent instead |
 | tests | Gemini 3.8 Flash high | ticket mode: writes the failing tests first |
-| review-spec | `deepseek/deepseek-flash-max` | requirements, edge cases, test strength, against the spec |
-| review-spec-alt | Opus 4.6 | the spec review instead when the implementer is review-spec's family (DeepSeek); `review` and ticket mode swap it in by themselves |
-| review-std | Opus 4.6 | the repo's documented standards, design, smells |
-| adjudicate | Kimi K3 (`cursor/kimi-k3-high`), Opus after 2026-10-24 | settles a disputed finding (read-only) |
+| review-spec | Opus 4.6 high | requirements, edge cases, test strength, against the spec |
+| review-spec-alt | `deepseek/deepseek-flash high` | the spec review instead when the implementer is review-spec's family (Claude); `review`, the loop and ticket mode swap it in by themselves |
+| review-std | `deepseek/deepseek-flash high` | the repo's documented standards, design, smells |
+| review-both | `deepseek/deepseek-flash high` | review mode `both`: one reviewer for both axes (`lib/ticket/review-both.md`) |
+| review-both-alt | Opus 4.6 high | review-both when DeepSeek wrote the code |
+| adjudicate | Kimi K3 (`cursor/kimi-k3-high`) | settles a disputed finding (read-only) |
 | advise / advise-alt | Kimi K3 / Opus 4.6 | `delegate.sh ask`: one-pass advisor, never a coder |
 
-One worker per task; `fanout` stays available but no workflow uses it. `review` and ticket mode run the
-same two review axes with the same prompts (`lib/ticket/review-*.md`), and both reviewers get the spec.
+One worker per task; `fanout` stays available but no workflow uses it. Independent tasks run in
+parallel, up to `AGENT_BOX_SLOTS`.
+
+**Review mode** (`REVIEW_MODE` in `agent-box.conf`, per project in `projects/<repo>.env`;
+`lib/reviewmode.mjs`): `split` (the default) is two reviewers in parallel, review-spec and review-std;
+`both` is one review-both covering both axes. `review`, `loop`, `loop resume`, `ticket`, `feature ...
+run` and `ticket-review` take `--review-mode split|both` or `--roles a,b` (one axis: `--roles
+review-spec`). Precedence: `--roles`, `--review-mode`, a project's `REVIEW_ROLES`, `REVIEW_MODE`. Every
+reviewer gets the spec, with the same prompts everywhere (`lib/ticket/review-*.md`).
 
 **The review and fix loop** (`delegate.sh loop <repo> <run>`, `lib/loop.mjs`, `lib/verify.mjs`).
 The loop refuses a run with no sealed acceptance test (`--no-spec` overrides): without one, reviewers
-become the spec. Round 1 is the only full review, both axes. Every behaviour finding carries a
+become the spec. Round 1 is the only full review, by the review mode's reviewers. Every behaviour finding carries a
 reproduction (a file under `/tmp` and a command); one check container per round reruns all of them on
 the branch, with the existing tests next to the change (same stem, or importing a changed module; at
 most `LOOP_NEIGHBOURS`). The harness's result decides, not the reviewer's CONFIRMED:
@@ -385,7 +400,7 @@ Every proven reproduction joins the proof suite, rerun every round. A fix round 
 at once and tells the worker to run the proof suite and the neighbour tests green before it ends.
 After a fix, the round-1 reviewer sessions are resumed on it (`continue --at agent/<fix>`, at most
 `LOOP_RECHECK_STEPS` steps): the spec reviewer, and the standards reviewer when one of its findings was
-sent. Each gets every sent finding, so a session on a model matching `LOOP_RECHECK_AVOID` (default
+sent; in mode `both`, the one review-both session. Each gets every sent finding, so a session on a model matching `LOOP_RECHECK_AVOID` (default
 `opus`, the scarce quota) is left out while another can recheck. There is no final full review. Beside the first review, the base's whole suite runs once per
 base commit (`BASE_SUITE_CMD`, default the project's `TEST_CMD`; `LOOP_BASE_SUITE=0` turns it off) and
 its failing test names are kept in `runs/<project>/.basecache/<sha>.json`: checks then run the neighbour
@@ -396,24 +411,26 @@ re-broken proof after 1, serious items after `LOOP_SOFT_ROUNDS` (2) fix rounds, 
 fix rounds, or a fix that fails its own tests) starts `LOOP_FRESH` attempts once, in parallel from the
 base, with the task, the rulings and the proof suite (no earlier diff); each passing one is checked
 against the proofs and the neighbours, `LOOP_SELECTOR` picks between equals (the smaller diff when it
-cannot), and the pick gets a full review. A second stall, or `LOOP_MAX_ROUNDS` (4) reviews:
+cannot), and the pick gets a full review. A second stall, or `LOOP_MAX_ROUNDS` (5) reviews:
 `next: decide`. A round that stopped before its review or check finished runs again on `resume`.
 `loop resume <repo> <loop>` takes the orchestrator's `--answer` (also given to every later reviewer),
-`--drop`, `--add`, `-m` and `--max-rounds`, and goes on. State:
+`--drop`, `--add`, `-m` and `--max-rounds`, and goes on. At the start and on a resume the orchestrator
+also picks `--review-mode`, `--roles`, `--fresh ROLES|none` (one role: a single fresh implementer;
+`none`: a stall stops for it) and `--max-fixes`; new reviewers on a resume make the next review cold. State:
 `runs/<project>/_loops/<name>/state.json`. Review runs are capped at `REVIEW_STEPS` (90) steps.
 
 **A turn cut off at the output cap** (step reason `length`, Gemini thinking ~30,700 tokens of a ~32k
 cap, Lykos T174b) is resumed in the same session up to twice (`CUT_RESUMES`) before the run ends;
 `cut_resumes` in the summary counts them.
 
-**Per project**: any `ROLE_*`, `REVIEW_ROLES`, `SCOUT_MODEL`, `TICKET_ESCALATE_*` or `LOOP_*` line in
+**Per project**: any `ROLE_*`, `REVIEW_MODE`, `REVIEW_ROLES`, `SCOUT_MODEL`, `TICKET_ESCALATE_*` or `LOOP_*` line in
 `projects/<repo>.env` overrides `agent-box.conf` for that project, in `delegate.sh` and in ticket mode
 alike. `delegate.sh roles <repo>` prints what is in effect and marks the project's own lines.
 
 Budget (user, 2026-10-12/13). Quota pools: Opus and Sonnet share one, all Gemini models share one;
-DeepSeek and Kimi each have their own. Gemini does the bulk; DeepSeek takes retries, the quick lane and
-the spec review; Opus (~$30-40 per 5 hours) the standards review, escalation and prose; Kimi K3 ($20,
-ends 2026-10-24) advice and disputed findings. Unused: Sonnet (spends Opus's pool) and Composer
+DeepSeek and Kimi each have their own. Gemini does the bulk; DeepSeek takes escalation, the quick
+lane, the standards review and review-both; Opus (~$30-40 per 5 hours) the spec review and prose;
+Kimi K3 ($20, ends 2026-10-24) advice and disputed findings (default stack: user, 2026-10-15). Unused: Sonnet (spends Opus's pool) and Composer
 (misreported tool results and passed an impossible task without BLOCKED, research/findings.md §6).
 
 For Antigravity Gemini, `high`, `xhigh` and `max` map to the same 32768-token thinking budget, so `high`
@@ -462,6 +479,7 @@ Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 | `lib/ticket.mjs`, `lib/ticket/` | Ticket mode and its worker prompts (adapted from Matt Pocock's skills, MIT) |
 | `lib/bench.mjs`, `bench/` | Benchmark runner and the frozen suites |
 | `lib/watch.mjs`, `lib/forward.mjs` | Live feed; review findings into a fix round |
+| `lib/reviewmode.mjs`, `lib/family.mjs` | Who reviews (review mode, roles, axes); the implementer's family never reviews its own code |
 | `image/progress.mjs`, `image/plugin.js`, `image/syntax-check.mjs` | Live progress file; syntax check after every edit |
 | `image/run-task.sh` | Container side: clone, setup, config, OpenCode, sealed check, tests, bundle |
 | `image/make-config.mjs` | Per-run OpenCode config: agents, scout, permissions, skills, effort |
