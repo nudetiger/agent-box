@@ -117,7 +117,18 @@ fi
 
 # The worker's last message: BLOCKED line, report block, review findings block. The report is a claim;
 # delegate.sh compares it with the harness's own test run (MISREPORT).
+# With --attach, `run` can exit before the last step reaches events.jsonl; recover-final.mjs appends it
+# from the session store first, marked "recovered" (summary.json final_recovered).
+recover_final() {
+  local sid n
+  sid="$(jq -r 'select(.sessionID) | .sessionID' "$OUT/events.jsonl" 2>/dev/null | tail -n 1)"
+  [ -n "$sid" ] && [ -f ~/.local/share/opencode/opencode.db ] || return 0
+  n="$(node --no-warnings /opt/agent-box/recover-final.mjs "$OUT/events.jsonl" ~/.local/share/opencode/opencode.db "$sid" 2>>"$OUT/harness.log")"
+  [ "${n:-0}" -gt 0 ] 2>/dev/null && log "events.jsonl lost the last step: recovered $n event(s) from the session store"
+  return 0
+}
 final_message() {
+  recover_final
   node -e '
     const fs = require("fs");
     const texts = [];
@@ -253,6 +264,7 @@ if [ "$commits" -gt 0 ]; then
   git log --format='%h %s' "$BASE_SHA..HEAD" >"$OUT/commits.txt"
 fi
 [ -s "$OUT/report.json" ] || echo null >"$OUT/report.json"
+recovered="$(grep -c '"recovered":true' "$OUT/events.jsonl" 2>/dev/null)"; recovered="${recovered:-0}"
 jq -n \
   --arg branch "$BRANCH" --arg base "$BASE_SHA" --arg head "$(git rev-parse HEAD)" --arg model "${MODEL:-}" \
   --argjson commits "$commits" --argjson leftovers "$leftovers" \
@@ -263,6 +275,7 @@ jq -n \
   --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" --argjson cut "$cut_resumes" \
+  --argjson recovered "$recovered" \
   --slurpfile report "$OUT/report.json" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | sort -u | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
@@ -270,6 +283,7 @@ jq -n \
     phase_seconds:{setup:$setup_s, agent:$agent_s, test:$test_s},
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix, cut_resumes:$cut,
+    final_recovered:($recovered > 0),
     report:($report[0]), session:(if $session == "" then null else $session end), round:$round, start:$start,
     questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"

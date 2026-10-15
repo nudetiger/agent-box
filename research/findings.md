@@ -314,6 +314,35 @@ Harness defects found: Gemini 3.1 Pro gone upstream (bughunt and tests now Gemin
 the red check's `(?:` patterns broke `grep -E` (9a6e8bd); a review's findings block written as one
 escaped string was dropped and the run said done (3ef0223).
 
+## 12. The attached run drops its last step (2026-10-15, 157 runs)
+
+Symptom: DeepSeek `review-spec` runs on rakunminiitems ended with an empty `final.md`, no findings,
+and `next done`. The findings existed.
+
+Cause: with `TUI=1` the worker runs as `opencode run --attach` against an in-container
+`opencode serve`. `run` can exit 0 before the final step's events reach stdout. `events.jsonl` ends on a
+`step_start` with no `step_finish`, so `final.md` is empty or an earlier narration line.
+
+Evidence, rv-20261015-050357-review-spec:
+- last event: `{"type": "step_start", ... "messageID": "msg_13c78386f001HeaqU2BCKauoDW"}`.
+- the same message in the session store (`opencode-data.tgz`): `"finish":"stop"`, 1839 output tokens,
+  a text part holding the full `agent-box-findings` block, then its `step-finish`.
+- no `error` event, no `length` finish, largest step 6917 output tokens: not the cap, not the provider,
+  not `cut_resumes`, not the parser.
+
+| runs | ended on step_start |
+| --- | --- |
+| attached (TUI=1) | 24 of 61 |
+| not attached | 0 of 96 |
+
+Not model-specific: deepseek-flash-max (8), deepseek-flash-high (3), gemini-3.8-flash-tiered (13).
+Worker runs lose their report block the same way. Whether a run survives is a race.
+
+Fix: `image/recover-final.mjs`, called before `final_message`, appends the missing parts from
+`~/.local/share/opencode/opencode.db`, marked `"recovered": true`; `summary.json` gets
+`final_recovered`. Replayed on all 24 truncated runs: 24 recovered, every block parses (10 findings
+blocks, 14 report blocks).
+
 ## Unmeasured
 
 Token budget per 5 hours; review precision and recall beyond the cases above; misreport rate; any
