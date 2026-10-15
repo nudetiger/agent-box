@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-box: run an OpenCode worker on a git repo inside a disposable Docker container.
+# agent-box: run an OpenCode worker on a git repo inside a disposable container (Podman by default).
 # The repo goes in as a git bundle and comes back as a git bundle. The container never sees the
 # host .git, your home directory, or any credential except the project's OmniRoute key.
 set -euo pipefail
@@ -10,9 +10,9 @@ BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF=(bash "$BOX/delegate.sh")
 IMAGE="agent-box:latest"
 LABEL="agent-box=1"
-# Container engine: docker or podman. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
+# Container engine: podman (default) or docker. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
 [ -f "$BOX/agent-box.conf" ] && . "$BOX/agent-box.conf"
-ENGINE="${AGENT_BOX_ENGINE:-docker}"
+ENGINE="${AGENT_BOX_ENGINE:-podman}"
 case "$ENGINE" in docker|podman) ;; *) echo "agent-box: unknown engine $ENGINE" >&2; exit 1 ;; esac
 
 die() { echo "agent-box: $*" >&2; exit 1; }
@@ -84,7 +84,7 @@ Usage: delegate.sh <command> ...
                                  overwrites a file
   clean                        Remove leftover agent-box containers
 
-Engine: docker (default) or podman, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
+Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
 EOF

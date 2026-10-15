@@ -16,7 +16,9 @@ the evidence.
 ## Preconditions
 
 1. `projects/<repo>.env` holds `OMNIROUTE_API_KEY` (the user fills it; never print it).
-2. OmniRoute is running; the engine in `agent-box.conf` is up (`podman machine start`).
+2. OmniRoute is running; the engine in `agent-box.conf` is up (`podman machine start`). The engine is
+   Podman, not Docker: use `podman` for images and containers, and rebuild with `delegate.sh build
+   <repo>`. Never start Docker Desktop for agent-box; its images are separate and stale.
 3. A recent `delegate.sh baseline <repo>` exists, so pre-existing failures are known.
 4. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
 
