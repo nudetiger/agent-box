@@ -94,7 +94,12 @@ Usage: delegate.sh <command> ...
   setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
                                  repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
                                  overwrites a file
-  clean                        Remove leftover agent-box containers
+  clean                        Remove leftover agent-box containers (and parked ones)
+  unpark   <repo> <run>...|--all Remove parked containers of these runs (and <run>-*); the loop does it itself
+  spec-check <repo> <task.md> [--role R] [--name N] [--base REF]
+                                 Read-only pass (review-spec-alt, DeepSeek) listing what the task leaves
+                                 undecided or where it contradicts its docs, before anyone implements it.
+                                 `run` does it itself for a task with `issue:` (SPEC_CHECK=0 or --no-spec-check: off)
 
 Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 Parallel: at most AGENT_BOX_SLOTS containers at once (default 4); each slot has its own CACHES volumes.
@@ -173,9 +178,25 @@ cmd_models() {
 }
 
 cmd_clean() {
+  rm -f "$BOX"/runs/*/*/parked
   local ids; ids="$(dk ps -aq --filter "label=$LABEL")"
   [ -z "$ids" ] && { echo "nothing to clean"; return; }
   dk rm -f $ids
+}
+
+# Removes parked containers (see launch): those of the named runs and of runs named <name>-*, or every
+# one of the project with --all. The review loop unparks its own when it ends.
+cmd_unpark() {
+  load_project "$1"; shift
+  local f d n c p hit
+  for f in "$BOX/runs/$PROJECT"/*/parked; do
+    [ -f "$f" ] || continue
+    d="${f%/parked}"; n="${d##*/}"; hit=0
+    for p in "$@"; do [ "$p" = --all ] || [ "$n" = "$p" ] || [[ "$n" == "$p"-* ]] && hit=1; done
+    [ "$hit" = 1 ] || continue
+    read -r c _ <"$f"; dk rm -f "$c" >/dev/null 2>&1 || true; rm -f "$f"
+    echo "agent-box: unparked $n"
+  done
 }
 
 # A finished run in a few lines (lib/brief.mjs). --full, or AGENT_BOX_FULL=1: the whole report, with the
@@ -272,7 +293,22 @@ launch() {
   for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
   local cname; cname="$(cname_of "$name")"
   slot_acquire "$name"
-  trap "dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
+  # Parking (AGENT_BOX_PARK=1, set by the review loop): a finished worker's container stays up, marked
+  # by <run>/parked, so `continue` on its session runs the next round in it: no new container, clone,
+  # setup or session restore (40-90 s a round on RakunMiniItems). A parked container holds no slot;
+  # `unpark` or `clean` removes it, and a continue that cannot use it starts fresh as before.
+  trap "[ -f '$run_dir/parked' ] || dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
+  local reuse=0 pc pimg
+  if [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ]; then
+    read -r pc pimg <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
+    if [ "$pimg" = "$IMAGE" ] && [ "$(dk inspect -f '{{.State.Running}}' "$pc" 2>/dev/null)" = true ] \
+       && dk rename "$pc" "$cname" >/dev/null 2>&1 \
+       && dk exec "$cname" sh -c 'rm -rf /out/* /out/.[!.]* /in/* 2>/dev/null; mkdir -p /in/answers'; then
+      reuse=1
+    else
+      dk rm -f "$pc" >/dev/null 2>&1 || true
+    fi
+  fi
   cache_volumes
   # The real OpenCode TUI attaches to the worker when herdr shows the run (AGENT_BOX_TUI=0: feed only).
   TUI=0
@@ -288,30 +324,42 @@ launch() {
     [ -n "$host_ip" ] || host_ip="192.168.127.254"
   fi
   export BRANCH="$branch" BASE_SHA="$base_sha" START_SHA="$start_sha" SKIP_AGENT="$skip_agent"
-  dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
-    --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
-    --add-host "host.docker.internal:$host_ip" \
-    "${CACHE_ARGS[@]}" "${extra_env[@]}" \
-    -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL -e MODEL -e VARIANT -e ALLOW_WEB -e REVIEW \
-    -e BRANCH -e BASE_SHA -e SKIP_AGENT -e TEST_CMD -e SETUP_CMD -e TIMEOUT_MIN -e SEALED -e EFFORT -e SCOUT_MODEL -e SKILLS_ALLOW \
-    -e START_SHA -e CONTINUE_SESSION -e ROUND -e ASK -e ASK_WAIT_S -e ASK_TIMEOUT_MIN \
-    -e RED_CMD -e STEPS -e AUTOFIX -e AUTOFIX_MIN -e TUI -e ROLE -e HIDDEN -e PREAMBLE \
-    "$IMAGE" >/dev/null
+  # The run's settings. A new container takes them by name; a reused one keeps its creation-time env,
+  # so the round's values go to `exec` explicitly (the OmniRoute key is already in it, never on a command line).
+  local envnames=(MODEL VARIANT ALLOW_WEB REVIEW REVIEW_ASK BRANCH BASE_SHA SKIP_AGENT TEST_CMD SETUP_CMD TIMEOUT_MIN SEALED
+    EFFORT SCOUT_MODEL SKILLS_ALLOW START_SHA CONTINUE_SESSION ROUND ASK ASK_WAIT_S ASK_TIMEOUT_MIN RED_CMD STEPS AUTOFIX
+    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE)
+  local runenv=() execenv=(-e REUSE=1)
+  for v in "${envnames[@]}"; do runenv+=(-e "$v"); execenv+=(-e "$v=${!v:-}"); done
+  if [ "$reuse" = 1 ]; then
+    for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do execenv+=(-e "$v=${!v:-}"); done
+  else
+    dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
+      --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
+      --add-host "host.docker.internal:$host_ip" \
+      "${CACHE_ARGS[@]}" "${extra_env[@]}" -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL "${runenv[@]}" \
+      "$IMAGE" >/dev/null
+  fi
   dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
   [ -n "${HIDDEN_DIR:-}" ] && dk cp "$(winpath "$HIDDEN_DIR")/." "$cname:/in/hidden"
   if [ -n "${CONTINUE_SESSION:-}" ]; then
     dk cp "$(winpath "$run_dir/message.md")" "$cname:/in/task.md"
-    dk cp "$(winpath "$CONTINUE_FROM/opencode-data.tgz")" "$cname:/in/opencode-data.tgz"
+    [ "$reuse" = 1 ] || dk cp "$(winpath "$CONTINUE_FROM/opencode-data.tgz")" "$cname:/in/opencode-data.tgz"
   elif [ -n "$task" ]; then
     dk cp "$(winpath "$run_dir/task-body.md")" "$cname:/in/task.md"
     dk cp "$(winpath "$run_dir/context.md")" "$cname:/in/context.md"
   fi
 
   [ "$skip_agent" = 1 ] || herdr_open "$name"
-  echo "agent-box: $name started ($ENGINE container $cname, base ${base_sha:0:10}, model ${MODEL:-none})" >&2
-  dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
+  echo "agent-box: $name started ($ENGINE container $cname$([ "$reuse" = 1 ] && echo ", reused from ${CONTINUE_FROM##*/}"), base ${base_sha:0:10}, model ${MODEL:-none})" >&2
+  if [ "$reuse" = 1 ]; then dk exec "${execenv[@]}" "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2
+  else dk exec "$cname" /usr/local/bin/run-task.sh || echo "agent-box: run-task exited $?" >&2; fi
   dk cp "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
   rm -f "$run_dir/in.bundle"
+  if [ "${AGENT_BOX_PARK:-0}" = 1 ] && [ "$skip_agent" != 1 ] && [ -f "$run_dir/summary.json" ] && [ -n "$(jq -r '.session // empty' "$run_dir/summary.json" 2>/dev/null)" ]; then
+    printf '%s %s\n' "$cname" "$IMAGE" >"$run_dir/parked"
+    echo "agent-box: $name parked (container $cname kept for the next round; delegate.sh unpark)" >&2
+  fi
 
   if [ -f "$run_dir/result.bundle" ]; then
     git -C "$REPO" fetch -q "$(winpath "$run_dir/result.bundle")" "refs/heads/$branch:refs/heads/$branch" \
@@ -383,7 +431,7 @@ cmd_run() {
   local repo="$1" task="$2"; shift 2
   [ -f "$task" ] || die "task file not found: $task"
   load_project "$repo"; need_key
-  local name="" base="HEAD" role=""
+  local name="" base="HEAD" role="" rulings=""
   MODEL="${DEFAULT_MODEL:-}" EFFORT="" VARIANT="" ALLOW_WEB=0 REVIEW=0 ASK="${ASK:-1}"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -410,11 +458,31 @@ cmd_run() {
       --bench) LEDGER_BENCH="$2"; shift 2 ;;          # benchmark attempt: suite/task in the ledger
       --mode) LEDGER_MODE="$2"; shift 2 ;;
       --preamble) PREAMBLE="$2"; shift 2 ;;
+      --no-spec-check) SPEC_CHECK=0; shift ;;
+      --rulings) rulings="$2"; shift 2 ;;            # TEXT or @FILE: the orchestrator's answers to the spec check
       *) die "unknown option $1" ;;
     esac
   done
   [ -n "$MODEL" ] || die "no model: pass --role, --model or set DEFAULT_MODEL"
   ROLE="$role"
+  # Rulings join the task itself, so the worker and every later reviewer read them as binding.
+  if [ -n "$rulings" ]; then
+    [[ "$rulings" == @* ]] && { [ -f "${rulings#@}" ] || die "rulings file not found: ${rulings#@}"; rulings="$(cat "${rulings#@}")"; }
+    local ruled; ruled="$(mktemp --suffix=.md)"
+    { cat "$task"; printf '\n\n## The orchestrator'"'"'s rulings (binding)\n\n%s\n' "$rulings"; } >"$ruled"
+    task="$ruled"
+  # A ticket (frontmatter `issue:`) gets a spec check first, once: questions stop here, before any code.
+  elif [ "${SPEC_CHECK:-1}" != 0 ] && [ "$REVIEW" != 1 ] && [ -z "${LEDGER_BENCH:-}" ] \
+     && awk 'NR==1 && $0 != "---" {exit 1} NR>1 && $0 == "---" {exit} /^issue:/ {f=1} END {exit !f}' "$task"; then
+    local sc="${name:-$(date +%Y%m%d-%H%M%S)}-spec" rc=0
+    # A subshell: the check loads the project again, which would reset what this run already parsed.
+    (cmd_spec_check "$repo" "$task" --name "$sc" --base "$base") || rc=$?
+    if [ "$rc" = 4 ]; then
+      echo
+      echo "verdict spec_questions  next answer_spec  (rerun with --rulings \"1: ...; 2: ...\" or --rulings @FILE; --no-spec-check to skip)"
+      exit 4
+    fi
+  fi
   export MODEL EFFORT VARIANT ALLOW_WEB REVIEW ASK ROLE SCOUT_MODEL="${SCOUT_MODEL:-}" STEPS="${STEPS:-}" AUTOFIX="${AUTOFIX:-1}" NO_RED="${NO_RED:-0}"
   [ -n "$name" ] || name="$(date +%Y%m%d-%H%M%S)-${role:-$(echo "$MODEL" | tr -c 'a-zA-Z0-9.\n' '-' | cut -c1-30)}"
   launch "$name" "$task" "$base" 0
@@ -672,8 +740,18 @@ cmd_wait() {
       if ended "$n"; then shown[$n]=1; show_one "$n"; echo
       else
         left=$((left + 1))
-        if [ "$asks" = 1 ] && [ -d "$runs/$n" ] && cmd_questions "$repo" "$n" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
-          echo "== $n asks:"; cat "$runs/.wait-q"; echo "answer: delegate.sh answer $REPO $n <id> -m TEXT"; return 0
+        if [ "$asks" = 1 ]; then
+          # A loop asks through the runs of its current round (<loop>-fix*, <loop>-rv*): its live containers.
+          local live=() r
+          if [ -d "$runs/_loops/$n" ]; then
+            mapfile -t live < <(dk ps --filter "label=agent-box.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | tr -d '\r' \
+              | sed -n "s/^agent-box-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
+          elif [ -d "$runs/$n" ]; then live=("$n"); fi
+          for r in "${live[@]}"; do
+            if cmd_questions "$repo" "$r" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
+              echo "== $r asks:"; cat "$runs/.wait-q"; echo "answer: delegate.sh answer $REPO $r <id> -m TEXT"; return 0
+            fi
+          done
         fi
       fi
     done
@@ -904,6 +982,43 @@ cmd_explore() {
   cat "$out/final.md" 2>/dev/null || echo "(no answer; see $out)"
 }
 
+# What a task leaves undecided or gets wrong against its docs, before anyone implements it: a read-only
+# run on the task itself (so it gets the same context pack and issue text a worker would), DeepSeek by
+# default (Opus quota stays for prose and spec reviews). RakunMiniItems #49: the task asked for a
+# listener ADR 0003 gives to MythicLib; the review loop found it only after the implementation.
+# Exit 0: nothing to decide; 4: questions, printed and in <run>/spec-questions.json.
+cmd_spec_check() {
+  local repo="$1" task="$2"; shift 2
+  local role="review-spec-alt" name="" base="HEAD"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      --base) base="$2"; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [ -f "$task" ] || die "task file not found: $task"
+  load_project "$repo"
+  [ -n "$name" ] || name="spec-$(date +%Y%m%d-%H%M%S)"
+  local out="$BOX/runs/$PROJECT/$name" log="$BOX/runs/$PROJECT/.$name.log"
+  SPEC_CHECK=0 AGENT_BOX_PARK=0 "${SELF[@]}" run "$repo" "$task" --role "$role" --review --no-red --no-ask --steps 30 \
+    --preamble speccheck --mode speccheck --name "$name" --base "$base" >"$log" 2>&1 \
+    || { tail -n 20 "$log"; die "spec check run failed"; }
+  node -e '
+    const fs = require("fs"), [dir] = process.argv.slice(1);
+    let t = ""; try { t = fs.readFileSync(dir + "/final.md", "utf8"); } catch {}
+    const b = t.match(/```[^\n`]*?(?:\r?\n[ \t]*)?agent-box-spec-questions[^\n]*\n([\s\S]*?)\n\s*```/);
+    let q = null; try { q = b ? JSON.parse(b[1]) : null; } catch {}
+    if (!Array.isArray(q)) { console.log("spec check: no readable agent-box-spec-questions block; see " + dir + "/final.md"); process.exit(5); }
+    fs.writeFileSync(dir + "/spec-questions.json", JSON.stringify(q, null, 2));
+    if (!q.length) { console.log("spec check: nothing to decide"); process.exit(0); }
+    console.log(`spec check: ${q.length} point(s) to rule on before implementing`);
+    for (const x of q) console.log(`\n${x.id}. [${x.kind ?? "open"}] ${x.question}\n   ${(x.options ?? []).join("\n   ")}\n   recommend: ${x.recommend ?? "-"}\n   basis: ${x.basis ?? "-"}`);
+    process.exit(4);
+  ' "$(winpath "$out")"
+}
+
 # Different tasks in parallel, each its own worker and branch (concurrency capped by the slots).
 cmd_batch() {
   local repo="$1"; shift
@@ -995,5 +1110,7 @@ case "${1:-}" in
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
+  unpark) shift; cmd_unpark "$@" ;;
+  spec-check) shift; cmd_spec_check "$@" ;;
   *) usage; [ -n "${1:-}" ] && exit 1 ;;
 esac

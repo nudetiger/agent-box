@@ -95,8 +95,10 @@ delegate.sh wait <repo> <run-or-loop> [<run-or-loop> ...] [--any] [--questions] 
 ```
 
 `--any` returns at the first that ends (start the next queued task, then `wait` on the rest);
-`--questions` also returns when a worker asks with `ask_orchestrator`. A name with no folder yet (a
-run queued for a slot) is waited for.
+`--questions` also returns when a worker asks with `ask_orchestrator`; for a loop, when any run of its
+current round asks (the fixer, or a reviewer: loops give reviewers the tool too). A name with no
+folder yet (a run queued for a slot) is waited for. **Always wait on a loop with `--questions`**: a
+question nobody answers within `ASK_TIMEOUT_MIN` (10) becomes a `spec_question` stop instead.
 
 ## Answering a running worker
 
@@ -110,13 +112,18 @@ delegate.sh answer <repo> <run-name> <id> -m "<answer, with the reason>"
 ```
 
 After answering, start `questions --wait` again. Answer within about 10 minutes, or the worker is
-told to decide alone. Ask the user when the answer is theirs to give, not yours.
+told to decide alone. Ask the user when the answer is theirs to give, not yours. In a loop, the
+answer reaches the asking run in its own session and the loop records it as a ruling: the fixer
+and every later reviewer get it, with no stop and no `loop resume`.
 
 ## Talking to a worker again
 
 `delegate.sh continue <repo> <run-name> -m "<answer or next request>"` (or `-f msg.md`) resumes that
-worker's own OpenCode session in a fresh container, on its branch, with the same model, sealed files
-and test. It keeps everything it read and tried. Result: `agent/<run>-r2`, then `-r3`.
+worker's own OpenCode session, on its branch, with the same model, sealed files and test. It keeps
+everything it read and tried. Result: `agent/<run>-r2`, then `-r3`. A run started with
+`AGENT_BOX_PARK=1` (every loop round is) keeps its container; `continue` then runs the next round in
+it, without a new clone, setup or session restore, else in a fresh container. The loop removes its
+parked containers when it ends; `unpark <repo> <run>|--all` or `clean` does it by hand.
 
 - **BLOCKED question**: answer it in one or two sentences, with the reason.
 - **Fix round**: `continue <run> --findings <review-run>[:n,m] --drop <review-run>:k [-m "your own gate failures"]`: the findings go in verbatim and the ledger records forwarded and dropped ones. Prefer this over a cold
@@ -157,9 +164,14 @@ the background, about 100 s apart (the Podman VM dropped 3 starts within seconds
    how Gemini's "no change" happened on T174b.
 4. Non-trivial change, or anything touching the gate, ledger, containment or credentials:
    `loop <repo> <run> [--spec FILE]` (in the background). It refuses a run with no sealed acceptance
-   test: write one in step 1 (`--no-spec` only for a pure refactor or docs). Before implementing a
-   non-trivial task, ask for spec questions once and rule on all of them up front:
-   `explore <repo> "<task text> -- list only what this task leaves undecided" --role review-spec`.
+   test: write one in step 1 (`--no-spec` only for a pure refactor or docs). Before implementing, the
+   spec check lists what the task leaves undecided or where it contradicts its docs, issue, sealed
+   tests or code (DeepSeek, read-only, a few minutes). `run` does it by itself for a task with
+   `issue:`; for any other non-trivial task run `spec-check <repo> <task.md> [--base REF]` yourself.
+   Points found → `run` stops with `next answer_spec` before any code: rule on every point at once
+   and rerun with `--rulings "1: ...; 2: ..."` (or `@FILE`); the rulings join the task, binding for
+   the worker and every reviewer. `--no-spec-check` skips it. (RakunMiniItems #49: the task asked for
+   a listener ADR 0003 gives to MythicLib; the check flags it, the review loop found it after the code.)
    Round 1, the only full review, by the project's review mode: `split`, review-spec (Opus) and
    review-std (DeepSeek); `both`, one review-both (DeepSeek) covering both axes. Every reviewer gets
    the spec, and a reviewer of the implementer's family is swapped for its `-alt`.
@@ -175,8 +187,8 @@ the background, about 100 s apart (the Podman VM dropped 3 starts within seconds
    result). Its `next`:
    - `approve` → do your own final check as you see fit, then merge `last`; `notes` are for the
      merge message.
-   - `answer_spec` (a reviewer's `spec_question`) → decide it: `loop resume <repo> <loop> --answer
-     "..."`. The ruling goes to the worker and to every later reviewer.
+   - `answer_spec` (a reviewer's `spec_question` nobody answered live) → decide it: `loop resume
+     <repo> <loop> --answer "..."`. The ruling goes to the worker and to every later reviewer.
    - `triage` (a serious finding with no reproduction, or a finding the worker disputes) → check it
      yourself; `--drop ID` what is wrong, resume with nothing to keep the rest.
    - `answer_question` (the worker is BLOCKED) → `loop resume ... -m "answer"`.

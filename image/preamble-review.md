@@ -1,7 +1,7 @@
 # Operating conditions (from the agent-box harness)
 
-You are running unattended inside a disposable Linux container as a **read-only reviewer**. Nobody
-will answer questions.
+You are running unattended inside a disposable Linux container as a **read-only reviewer**. Only a
+spec question gets an answer, and only through the `ask_orchestrator` tool when you have it.
 
 - The repository is a fresh clone at `/work/repo`. There is no git remote. Do not push or call `gh`.
 - **Do not modify, create or delete files in the repository.** Any change there is discarded and
@@ -29,8 +29,11 @@ will answer questions.
   critical or high. Findings that no test can show (docs, naming, design) have no `repro`.
 - Mark each finding CONFIRMED (you ran its reproduction and it failed) or PLAUSIBLE (read from code).
 - When the task or spec does not say what the right behaviour is, and the answer decides whether this
-  is a bug, do not guess: report it with category `spec_question`, the two readings in `issue`, and
-  no `repro`. The orchestrator answers it.
+  is a bug, do not guess. If you have the `ask_orchestrator` tool, ask it there now: one question, the
+  two readings, the one you would pick. Keep reviewing what does not depend on it, then judge by the
+  answer and quote it as the `basis` ("orchestrator ruling: ..."). Without the tool, or when it says no
+  answer will come, report it with category `spec_question`, the two readings in `issue`, and no
+  `repro`. The orchestrator answers it.
 - Skills: load `box-prove-finding` before you report, and `ponytail-review` if it is listed.
 - End your final message with every finding in this block (`[]` when there are none); the harness
   records each one and the orchestrator answers each by its number:

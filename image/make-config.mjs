@@ -84,8 +84,10 @@ const cfg = {
   agent,
   permission: { webfetch: web },
 };
-// Mid-run questions to the orchestrator (ask-mcp.mjs). Workers only; ASK=0 turns it off.
-if (!review && env.ASK !== "0") {
+// Mid-run questions to the orchestrator (ask-mcp.mjs). Workers; reviewers too with REVIEW_ASK=1 (the
+// review loop sets it, so a spec question is answered mid-review instead of stopping the loop). ASK=0
+// turns it off.
+if (env.ASK !== "0" && (!review || env.REVIEW_ASK === "1")) {
   cfg.mcp = { orchestrator: { type: "local", command: ["node", "/opt/agent-box/ask-mcp.mjs"], enabled: true } };
 }
 

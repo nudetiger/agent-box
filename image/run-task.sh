@@ -20,12 +20,26 @@ serve_pid=""
 trap 'phase done; [ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null' EXIT
 
 # 1. Clone. The container owns this .git; nothing here is ever executed on the host.
-git -c advice.detachedHead=false clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
-cd /work/repo
 # START_SHA: where the worker starts (a continued run starts on its previous round's head). BASE_SHA
 # stays the original base, so the sealed check, review guard and bundle cover every round.
 START_SHA="${START_SHA:-$BASE_SHA}"
-git checkout -q -b "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
+# REUSE=1: a parked container from this session's previous round (delegate.sh, AGENT_BOX_PARK). The
+# clone, the installed dependencies and the session store are still here: fetch the new start and
+# switch to it; ignored files (build output, node_modules) stay.
+reuse_changed=all
+if [ "${REUSE:-0}" = 1 ] && [ -d /work/repo/.git ]; then
+  cd /work/repo
+  prev_head="$(git rev-parse HEAD)"
+  git fetch -q /in/repo.bundle '+refs/heads/*:refs/bundle/*' 2>/dev/null || { log "fetch into the reused clone failed"; exit 10; }
+  git reset -q --hard && git clean -qfd
+  git checkout -q -B "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
+  reuse_changed="$(git diff --name-only "$prev_head" "$START_SHA" 2>/dev/null)"
+  log "reused container: $prev_head -> $START_SHA"
+else
+  git -c advice.detachedHead=false clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
+  cd /work/repo
+  git checkout -q -b "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
+fi
 # Build wrappers committed without the executable bit (common from Windows) would cost the worker a
 # failed call. Mode changes stay out of the diff.
 git config core.fileMode false
@@ -37,6 +51,12 @@ git remote remove origin 2>/dev/null || true
 # 2. Dependencies.
 if [ -z "$SETUP_CMD" ] && [ -f package-lock.json ]; then SETUP_CMD="npm ci --no-audit --no-fund"; fi
 setup_exit=0 t0=$(date +%s)
+# A reused clone already has its dependencies, unless a manifest or lockfile changed since its last round.
+MANIFESTS='(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|(build|settings)\.gradle(\.kts)?|gradle\.properties|gradle/libs\.versions\.toml|pom\.xml|go\.(mod|sum)|Cargo\.(toml|lock)|requirements[^/]*\.txt|pyproject\.toml|CMakeLists\.txt)$'
+if [ "$reuse_changed" != all ] && ! grep -qE "$MANIFESTS" <<<"$reuse_changed"; then
+  [ -n "$SETUP_CMD" ] && log "setup skipped: reused container, no manifest changed"
+  SETUP_CMD=""
+fi
 if [ -n "$SETUP_CMD" ]; then
   log "setup: $SETUP_CMD"
   bash -lc "$SETUP_CMD" >"$OUT/setup.log" 2>&1; setup_exit=$?
@@ -83,7 +103,8 @@ elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" 
     # Follow-up round: the previous round's session store comes back, and the worker resumes with
     # everything it read and tried. The message is the orchestrator's answer or next request.
     mkdir -p ~/.local/share
-    tar xzf /in/opencode-data.tgz -C ~/.local/share || { log "session restore failed"; exit 13; }
+    if [ "${REUSE:-0}" = 1 ] && [ -d ~/.local/share/opencode ]; then log "session store kept from the parked container"
+    else tar xzf /in/opencode-data.tgz -C ~/.local/share || { log "session restore failed"; exit 13; }; fi
     session_args=(--session "$CONTINUE_SESSION")
     prompt="$(printf '# Follow-up from the orchestrator (round %s)\n\nYour earlier work is committed on this branch. The operating conditions from your first message still apply, including the final report block and BLOCKED.\n\n' "${ROUND:-2}"; cat /in/task.md)"
   else

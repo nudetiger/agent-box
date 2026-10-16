@@ -143,11 +143,17 @@ function harness(script, { sealed = true } = {}) {
   };
   write("impl", { role: "implement" });
   const roleOf = (run) => fs.readFileSync(path.join(runs, run, "meta.sh"), "utf8").match(/^ROLE=(.*)$/m)[1];
-  const calls = [];
-  const delegate = async (args, log) => {
-    calls.push(args);
+  const calls = [], envs = [];
+  const delegate = async (args, log, env) => {
+    calls.push(args); envs.push(env);
     const [cmd] = args, name = args[args.indexOf("--name") + 1];
-    const [want, step] = script.shift() ?? [];
+    const [want, step, asked] = script.shift() ?? [];
+    // asked: {run: [[question, answer], ...]}, written as ask-mcp.mjs leaves them in <run>/questions.
+    const ask = () => { for (const [run, qa] of Object.entries(asked ?? {})) qa.forEach(([q, a], i) => {
+      fs.mkdirSync(path.join(runs, run, "questions"), { recursive: true });
+      fs.writeFileSync(path.join(runs, run, "questions", `${i + 1}.md`), `${q}\n`);
+      if (a) fs.writeFileSync(path.join(runs, run, "questions", `${i + 1}.answer.md`), `${a}\n`);
+    }); };
     assert.equal(cmd, want, `call ${calls.length}: ${args.join(" ")}`);
     if (cmd === "review") for (const [role, findings] of Object.entries(step)) write(`${name}-${role}`, { role, findings, verdict: "review" });
     else if (cmd === "continue" && args.includes("--at")) { if (step) write(name, { role: roleOf(args[2]), findings: step, verdict: "review" }); }
@@ -161,11 +167,13 @@ function harness(script, { sealed = true } = {}) {
       const s = typeof step === "string" ? { verdict: step } : step;
       write(name, { role: cmd === "run" ? args[args.indexOf("--role") + 1] : "implement", ...s });
     }
+    ask();
   };
   // No base suite unless a test gives one: the script lists every call in order.
-  const deps = { delegate, record: () => {}, readAll: () => [], baseSuite: async () => null };
+  const unparked = [];
+  const deps = { delegate, record: () => {}, readAll: () => [], baseSuite: async () => null, unpark: (_, names) => unparked.push(names) };
   const left = () => assert.equal(script.length, 0, `unused script steps: ${JSON.stringify(script)}`);
-  return { P, calls, deps, left, msg: (call) => fs.readFileSync(call[call.indexOf("-f") + 1], "utf8") };
+  return { P, calls, envs, unparked, deps, left, msg: (call) => fs.readFileSync(call[call.indexOf("-f") + 1], "utf8") };
 }
 const R = (issue, extra = {}) => ({ severity: "high", confidence: "CONFIRMED", category: "logic", file: "a.ts", line: 1, issue, scenario: "s", basis: "task: it must", repro: REPRO, ...extra });
 
@@ -477,5 +485,46 @@ test("loop: with LOOP_RECHECK_AVOID matching the standards reviewer, the spec se
   assert.equal(st.next, "approve");
   assert.equal(h.calls[2][2], "L-rv1-review-spec");
   assert.match(fs.readFileSync(h.calls[2][h.calls[2].indexOf("-f") + 1], "utf8"), /no glossary entry/);
+  h.left();
+});
+
+test("loop: a reviewer's live question becomes a ruling for the fixer and the recheck; rounds park; the end unparks", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("gate runs")], "review-std": [] },
+      { "L-rv1-review-spec": [["Does the gate run in a container too?", "Yes, everywhere."]] }],
+    ["check", { "1.spec.1": 1 }],
+    ["continue", "pass"],
+    ["continue", []],
+    ["check", { "1.spec.1": 0 }],
+  ]);
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "approve");
+  assert.deepEqual(st.rulings, ["Asked by L-rv1-review-spec: Does the gate run in a container too? Answer: Yes, everywhere."]);
+  assert.match(h.msg(h.calls[2]), /answers to questions asked this round \(binding\)[\s\S]*Yes, everywhere\./);
+  assert.match(h.msg(h.calls[3]), /rulings, binding:[\s\S]*1\. Asked by L-rv1-review-spec: .*Yes, everywhere\./);
+  assert.ok(h.envs.every((e) => e.REVIEW_ASK === "1" && e.AGENT_BOX_PARK === "1"));
+  assert.deepEqual(h.unparked, [["L", "impl"]]);
+  h.left();
+});
+
+test("loop: an unanswered live question is no ruling; a spec-question stop keeps the parked containers", async () => {
+  const h = harness([
+    ["review", { "review-spec": [R("block in a container too?", { category: "spec_question", repro: undefined })], "review-std": [] },
+      { "L-rv1-review-spec": [["Block in a container too?", null]] }],
+  ]);
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "answer_spec");
+  assert.deepEqual(st.rulings, []);
+  assert.deepEqual(h.unparked, []);
+  h.left();
+});
+
+test("loop: LOOP_LIVE_ASK=0 and LOOP_PARK=0 run the loop as before", async () => {
+  const h = harness([["review", { "review-spec": [], "review-std": [] }]]);
+  h.P.env = { LOOP_LIVE_ASK: "0", LOOP_PARK: "0" };
+  const st = await loop(h.P, "impl", { name: "L" }, h.deps);
+  assert.equal(st.next, "approve");
+  assert.deepEqual(h.envs, [{ REVIEW_ASK: "0", AGENT_BOX_PARK: "0" }]);
+  assert.deepEqual(h.unparked, []);
   h.left();
 });
