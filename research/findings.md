@@ -343,6 +343,39 @@ Fix: `image/recover-final.mjs`, called before `final_message`, appends the missi
 `final_recovered`. Replayed on all 24 truncated runs: 24 recovered, every block parses (10 findings
 blocks, 14 report blocks).
 
+## 13. Live questions, parked rounds and the spec check, end to end (2026-10-17, 6 pipelines)
+
+Three past tickets, each twice at the same time: **before** (`LOOP_LIVE_ASK=0 LOOP_PARK=0`, no spec
+check) and **after** (all on; the spec check's points ruled by the orchestrator, then `run --rulings`).
+Implement Gemini 3.8 Flash high, loop `review-both` (DeepSeek) on both sides; no Opus call anywhere.
+RakunMiniItems #49 and #50 from their sealed-test commits; Lykos D18 peak-wrap (`lykos-peak-wrap`,
+its own landed test sealed on a local base). Run time is container time (no slot waits); wall time
+includes slot waits and, after, the orchestrator's minutes ruling on the spec check.
+
+| ticket | side | wall | run time | runs | rounds | blocking findings | Gemini input uncached | DeepSeek input uncached |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| peak-wrap | before | 75 m | 24 m | 7 | 2 | 1 | 406k | 30k |
+| peak-wrap | after | 50 m | 15 m | 5 | 1 | 0 | 89k | 53k |
+| #49 | before | 79 m | 73 m | 7 | 2 | 2 | 2.16M | 76k |
+| #49 | after | 88 m | 79 m | 8 | 2 | 1 | 3.28M | 250k |
+| #50 | before | 77 m | 68 m | 7 | 2 | 2 | 2.12M | 91k |
+| #50 | after | 103 m | 80 m | 8 | 2 | 1 | 2.32M | 140k |
+
+- The spec check (109-169 s, DeepSeek) found 5-6 points per ticket; on #49 it flagged the very
+  listener/ADR 0003 conflict the 2026-10-15 loop found only after the code. Ruled up front, the first
+  review found fewer blocking findings on all three (1→0, 2→1, 2→1), but the RakunMiniItems loops
+  still took 2 rounds: no round saved there, and run time rose 8% and 18%. Peak-wrap: one round
+  saved, 38% less run time. One run per side: model variance can account for all of it.
+- No reviewer asked a live question and no loop stopped for `answer_spec` on either side, so live
+  questions were not exercised here; the smoke test (2026-10-17, shopcart) proved the path: asked,
+  surfaced by `wait --questions`, answered, used, same session.
+- Parking: each after-side RakunMiniItems loop reused one container (the reviewer's recheck: no
+  setup, session kept). The fix rounds started fresh because the implement runs were not started
+  parked; start loop-bound runs with `AGENT_BOX_PARK=1`.
+
+Reading: the spec check is worth its ~3 minutes on tickets whose task text can contradict the docs
+(it catches what reviews otherwise catch a round later); it does not make loops faster by itself.
+
 ## Unmeasured
 
 Token budget per 5 hours; review precision and recall beyond the cases above; misreport rate; any

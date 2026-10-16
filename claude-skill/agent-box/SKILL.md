@@ -156,7 +156,8 @@ the background, about 100 s apart (the Podman VM dropped 3 starts within seconds
 1. Write the task with its spec (a feature also gets a failing acceptance test, sealed and confirmed
    red; commit it on a side branch with `git hash-object`/`commit-tree`).
 2. `run --role implement` (Gemini 3.8 Flash high). Trivial edits whose place is known: `--role quick`
-   (DeepSeek, 6-8 steps).
+   (DeepSeek, 6-8 steps). A run that will go through `loop`: start it with `AGENT_BOX_PARK=1`, so the
+   first fix round runs in its container (the loop parks its own rounds itself).
 3. Act on `next`. A gate failure: `continue` with the failure once; the same failure twice: rerun
    with `--role implement-hard` (DeepSeek V4.1 Flash max, a different family) with the failure
    history (`escalate` is the same model). `no_change`: go straight to `--role implement-hard`; the harness
