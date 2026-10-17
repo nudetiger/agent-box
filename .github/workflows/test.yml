@@ -1,0 +1,28 @@
+# Unit tests on the three host platforms agent-box supports. No container engine and no models: the
+# tests stand in for delegate.sh's containers (test/loop.test.mjs) or run its host-side parts only.
+name: test
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # macOS ships bash 3.2; delegate.sh needs 4+ (associative arrays, mapfile).
+      - if: runner.os == 'macOS'
+        run: brew install bash jq && echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: bash -n delegate.sh && bash -n image/run-task.sh && bash -n image/changed-tests.sh
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
+      - run: node --test test/*.test.mjs
