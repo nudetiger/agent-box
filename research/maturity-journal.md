@@ -76,3 +76,14 @@ no co-author trailer in commits.
   dev runs (capped ~114k) 3.1-3.8 s. t51's 42 s at 120-180k was reasoning-heavy steps, not context.
 - Tuned: COMPACT_AT 150000, COMPACT_KEEP (preserve_recent_tokens) 40000 (01c3e19). Variance runs next:
   base t50 implement r2; dev t50 implement x2 at the new settings.
+- Fixes found along the way (user, 2026-10-17: fix without asking, report at the end):
+  - 55e1e52 review with no readable findings block: asked for the block alone.
+  - 0f44fa0 a turn that ends announcing a next step ("Let me generate the findings JSON ...:") is told
+    to continue (4 past reviews ended so).
+  - 32cc464 doc-duty paths and the pack's docs are in scope (OUT-OF-SCOPE on ADRs, GLOSSARY, mcp.md).
+  - 7f2c73c REVIEW-EDIT: rechecks were always flagged (compared with the first review's base). 10/10 false.
+  - 63679aa loop resume reuses a stopped round's reviews when they read now.
+  - 9109a15 review prompt: with a 57 KB diff before the implementer's task, DeepSeek review rv1b of #50
+    implemented the task. Diff now after task and spec, then a reviewer reminder; cap 30000 chars.
+- Dev t50 loop: rv1 unreadable (bare JSON), resume rv1b implemented instead of reviewing; resumed
+  again on 9109a15. Its time is not comparable to base t50 (two extra reviews, ~21 min).

@@ -319,7 +319,11 @@ launch() {
   local v extra_env=()
   for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
   local cname; cname="$(cname_of "$name")"
-  slot_acquire "$name"
+  # A parked container still mounts its slot's cache volumes: its next round waits for that same slot,
+  # so no other container uses those volumes at the same time.
+  local want_slot=""
+  [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ] && read -r _ _ want_slot <"$CONTINUE_FROM/parked"
+  slot_acquire "$name" "$want_slot"
   # Parking (AGENT_BOX_PARK=1, set by the review loop): a finished worker's container stays up, marked
   # by <run>/parked, so `continue` on its session runs the next round in it: no new container, clone,
   # setup or session restore (40-90 s a round on RakunMiniItems). A parked container holds no slot;
@@ -327,7 +331,7 @@ launch() {
   trap "[ -f '$run_dir/parked' ] || dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
   local reuse=0 pc pimg
   if [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ]; then
-    read -r pc pimg <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
+    read -r pc pimg _ <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
     if [ "$pimg" = "$IMAGE" ] && [ "$(dk inspect -f '{{.State.Running}}' "$pc" 2>/dev/null)" = true ] \
        && dk rename "$pc" "$cname" >/dev/null 2>&1 \
        && dk exec "$cname" sh -c 'rm -rf /out/* /out/.[!.]* /in/* 2>/dev/null; mkdir -p /in/answers'; then
@@ -379,7 +383,10 @@ launch() {
   dk cp "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
   rm -f "$run_dir/in.bundle"
   if [ "${AGENT_BOX_PARK:-0}" = 1 ] && [ "$skip_agent" != 1 ] && [ -f "$run_dir/summary.json" ] && [ -n "$(jq -r '.session // empty' "$run_dir/summary.json" 2>/dev/null)" ]; then
-    printf '%s %s\n' "$cname" "$IMAGE" >"$run_dir/parked"
+    # Build daemons hold the cache volume's locks while idle: a parked Gradle daemon made the next run on
+    # the slot fail with "Timeout waiting to lock journal cache" (RakunMiniItems #50 check, 2026-10-17).
+    dk exec "$cname" sh -c 'pkill -f GradleDaemon; pkill -f KotlinCompileDaemon; pkill -f "gradle.*Daemon"; true' >/dev/null 2>&1 || true
+    printf '%s %s %s\n' "$cname" "$IMAGE" "${SLOT##*/}" >"$run_dir/parked"
     echo "agent-box: $name parked (container $cname kept for the next round; delegate.sh unpark)" >&2
   fi
 
@@ -428,11 +435,13 @@ host_address() {
 # Concurrency slots: at most AGENT_BOX_SLOTS containers at once (default 4), whatever starts them
 # (fanout, bench, ticket mode, several orchestrators). A slot whose owner process died is reclaimed.
 SLOT=""
+# slot_acquire <name> [slot]: with a slot number, wait for that one (a parked container's next round).
 slot_acquire() {
-  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0
+  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0 only="${2:-}"
   mkdir -p "$d"
+  [[ "$only" =~ ^[0-9]+$ ]] && [ "$only" -le "$n" ] || only=""
   while :; do
-    for i in $(seq 1 "$n"); do
+    for i in ${only:-$(seq 1 "$n")}; do
       if mkdir "$d/$i" 2>/dev/null; then echo "$$ $1" >"$d/$i/owner"; SLOT="$d/$i"; return 0; fi
       read -r pid _ <"$d/$i/owner" 2>/dev/null || pid=""
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$d/$i"; fi
