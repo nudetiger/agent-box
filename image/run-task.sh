@@ -86,9 +86,10 @@ if [ "$weak_spec" = true ]; then
 elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
   mkdir -p ~/.config/opencode
+  # The model list (1 MB) stays in the container: make-config reads limits from it, nothing else does.
   if ! curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" \
-    >"$OUT/models.json" 2>"$OUT/models.err"; then
-    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat "$OUT/models.err")"
+    >/tmp/models.json 2>/tmp/models.err; then
+    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat /tmp/models.err)"
     SKIP_AGENT=unreachable
   fi
 fi
@@ -110,7 +111,18 @@ elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" 
   else
     # Quoted replacements: a test command may hold |, & or backslashes (bash 5.2 patsub_replacement).
     pre="$(cat "$preamble")"; pre="${pre//\{\{BRANCH\}\}/"$BRANCH"}"; pre="${pre//\{\{TEST_CMD\}\}/"$TEST_CMD"}"
+    # JVM dependencies in the build caches: the `api` tool (image/api.mjs) answers signature questions.
+    api_note=""
+    if [ -d ~/.gradle/caches/modules-2/files-2.1 ] || [ -d ~/.m2/repository ]; then
+      api_note='## Dependency APIs
+
+Library classes (the jars under ~/.gradle or ~/.m2) are one command away: `api find <regex>` lists
+matching classes, `api show <Class>` prints a class'"'"'s signatures, `api grep <regex> --jar <name>`
+searches members. Use these instead of unzip, javap or find on the caches: the answers are short and
+cached. Use javap -c only when you need a method'"'"'s bytecode, on that one class.'
+    fi
     prompt="$(printf '%s\n' "$pre"
+              [ -n "$api_note" ] && printf '\n%s\n' "$api_note"
               [ -f /in/context.md ] && { echo; cat /in/context.md; }
               printf '\n# Task\n\n'; cat /in/task.md)"
   fi
@@ -196,6 +208,48 @@ resume_cut() {
 }
 resume_cut
 blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
+
+# 3c. Self-check (SELF_CHECK=1): one more turn in the same session before the harness tests, on a first
+#     round that changed something. The worker audits its diff against the task the way the reviewers
+#     will, and fixes what it finds. A review round costs a fix and a recheck (30-40 min on
+#     RakunMiniItems); round 1 had a medium or worse finding in 8 of 10 loops (2026-10-14..17).
+self_checked=0
+if [ "${SELF_CHECK:-0}" = 1 ] && [ "${REVIEW:-0}" != 1 ] && [ -z "${CONTINUE_SESSION:-}" ] && [ "$agent_exit" = 0 ] \
+   && [ -z "$blocked" ] && [ -n "$session_id" ] && { [ -z "${STEPS:-}" ] || [ "${STEPS:-0}" -gt 30 ]; } \
+   && [ "$(git rev-list --count "$BASE_SHA..HEAD" 2>/dev/null || echo 0)" -gt 0 -o -n "$(git status --porcelain)" ] \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
+  self_checked=1
+  phase selfcheck
+  log "self-check: resuming $session_id"
+  msg="$(cat <<'EOF'
+# Self-check before the harness tests your work
+
+A reviewer will now read `git diff` of your branch against the task. Do their job first, briefly:
+
+1. Go through the task's required behaviour line by line. For each line, name the file:line that does it
+   and the test that would fail without it. A line with no code or no test is not done: do it now.
+2. For every code path you added or changed, check the cases reviewers find most often: empty, missing
+   or invalid input; a value at a boundary; the error path (what the user sees); reload or a second call;
+   two callers at once, or re-entry while it runs; cleanup when something throws.
+3. Check what the task said must stay the same still does, and that every doc the task or the context
+   pack names as a duty is updated.
+4. Do not refactor or widen the scope. Do not weaken or delete a test.
+
+Fix and commit what you find, rerun the tests, then end with the report block again. If nothing is
+missing, say so in one line and end with the report block.
+EOF
+)"
+  t0=$(date +%s)
+  timeout --kill-after=30 "${AUTOFIX_MIN:-15}m" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" "$msg" \
+    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_exit=$?
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  log "self-check: agent exit $agent_exit"
+  final_message
+  resume_cut
+  blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
+fi
 
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
 #    becomes one labelled commit, so nothing is lost. Sealed files are reverted.
@@ -297,7 +351,7 @@ jq -n \
   --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" --argjson cut "$cut_resumes" \
-  --argjson recovered "$recovered" \
+  --argjson recovered "$recovered" --argjson selfcheck "$self_checked" \
   --slurpfile report "$OUT/report.json" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | sort -u | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
@@ -305,7 +359,7 @@ jq -n \
     phase_seconds:{setup:$setup_s, agent:$agent_s, test:$test_s},
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix, cut_resumes:$cut,
-    final_recovered:($recovered > 0),
+    self_check:($selfcheck == 1), final_recovered:($recovered > 0),
     report:($report[0]), session:(if $session == "" then null else $session end), round:$round, start:$start,
     questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"
