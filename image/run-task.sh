@@ -271,6 +271,7 @@ fi
 report_asked=0
 if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -z "$blocked" ] \
    && ! jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
+   && ! grep -q 'agent-box-tests' "$OUT/final.md" 2>/dev/null \
    && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
   report_asked=1
   log "no report block: asking for it"
@@ -286,6 +287,33 @@ if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [
   jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
     && { log "report block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
     || log "still no report block"
+fi
+
+# 3e. A review with no readable findings block: the same, for the block alone. An unreadable review
+#     stops the loop for the orchestrator (RakunMiniItems #50, 2026-10-17: a bare JSON object). Read
+#     as lib/ledger.mjs finalBlock does: the fenced block, else the message or its last json fence.
+findings_readable() {
+  node -e '
+    const t = require("fs").readFileSync("/out/final.md", "utf8");
+    const fence = t.match(/```[^\n`]*?(?:\r?\n[ \t]*)?agent-box-findings[^\n]*\n([\s\S]*?)\n\s*```/);
+    const tries = fence ? [fence[1]] : [t.trim(), ...[...t.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]).reverse()];
+    for (const s of tries) { try { const v = JSON.parse(s); if (Array.isArray(v) || Array.isArray(v?.findings)) process.exit(0); } catch {} }
+    process.exit(1);' 2>/dev/null
+}
+if [ "${REVIEW:-0}" = 1 ] && [ -z "${PREAMBLE:-}" ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -s "$OUT/final.md" ] \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null && ! findings_readable; then
+  report_asked=1
+  log "no readable findings block: asking for it"
+  t0=$(date +%s)
+  timeout --kill-after=30 5m \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
+    'Your last message has no readable `agent-box-findings` block. Do not review again. Reply with only that fenced block (```agent-box-findings, a JSON array of your findings in the format the task gives, `[]` when nothing blocks).' \
+    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
+  final_message
+  findings_readable && { log "findings block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
+    || log "still no readable findings block"
 fi
 
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted

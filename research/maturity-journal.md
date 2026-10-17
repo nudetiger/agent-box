@@ -68,3 +68,11 @@ no co-author trailer in commits.
   (api src, report request). The edit checkout now uses NS=edit, so this cannot recur.
 - The self-check's final message had no report block (nor had the first): 27 of 191 implement runs
   lacked one. Added a short report request (b9e8ef5).
+- Bench C t50: base 44.7 min (implement 25.2 + loop 19.5), round 1: 1 blocking, approve. dev implement
+  38.2 min (316 steps vs 154; 5 compactions, 89 file re-reads vs 18), loop stopped after its review
+  (13 min): DeepSeek wrote bare {"findings": [...]} with no fence -> read_final_message. Parser fixed
+  (d8aff9e), runner moved to it, loop resumed.
+- Step latency vs context (median): base t50 2.2 s <60k, 3.0 s 60-120k, 5.1 s 120-200k, 8.0 s 200-320k;
+  dev runs (capped ~114k) 3.1-3.8 s. t51's 42 s at 120-180k was reasoning-heavy steps, not context.
+- Tuned: COMPACT_AT 150000, COMPACT_KEEP (preserve_recent_tokens) 40000 (01c3e19). Variance runs next:
+  base t50 implement r2; dev t50 implement x2 at the new settings.
