@@ -59,3 +59,12 @@ no co-author trailer in commits.
   base 2/2 pass (467 s / 51 steps, 542 s / 31 steps); dev 2/2 pass (473 s / 50 steps, 879 s / 66
   steps, 92k reasoning tokens vs 5k: model variance). Self-check 38 s and 57 s, found nothing. Neither
   task touched dependency jars or passed 110k context: api and compaction not exercised.
+- Bench C t49 (same base bbdfbdd, same rulings, Gemini implement, review-both DeepSeek):
+  base 61.2 min (implement 39.4 + loop 21.7), round 1: 2 blocking; dev (36e3ef1) 44.5 min (30.5 +
+  14.0), round 1: 1 blocking (medium standard). Both 2 rounds, approve. Cache reads 68.0M -> 22.6M,
+  max context 329k -> 112k, output 166k -> 93k, uncached input 1.74M -> 1.56M. api used 47 times;
+  javap/unzip 118 -> 82, nearly all `javap -c -p` (bytecode): added `api src` (27b52f1).
+- Dev t50 pipeline: its loop's later containers use an image rebuilt mid-run from the edit checkout
+  (api src, report request). The edit checkout now uses NS=edit, so this cannot recur.
+- The self-check's final message had no report block (nor had the first): 27 of 191 implement runs
+  lacked one. Added a short report request (b9e8ef5).

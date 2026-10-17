@@ -34,3 +34,15 @@ test("an unreadable findings block sends the orchestrator to the final message, 
   assert.equal(nextOf({ findings: 0 }, "review", []), "done");
   assert.equal(nextOf({ findings: 2 }, "review", []), "triage_findings");
 });
+
+// A message with no fenced block (DeepSeek, RakunMiniItems #50, 2026-10-17): the message as JSON, or
+// its last json fence, holding the array or an object with it under the block's key.
+import { bareBlock } from "../lib/ledger.mjs";
+test("bareBlock: bare object, bare array, json fence; a report needs status; prose is null", () => {
+  assert.deepEqual(bareBlock('{"findings":[{"n":1}]}', "agent-box-findings"), [{ n: 1 }]);
+  assert.deepEqual(bareBlock("[]", "agent-box-findings"), []);
+  assert.deepEqual(bareBlock("Done.\n```json\n[{\"n\":2}]\n```", "agent-box-findings"), [{ n: 2 }]);
+  assert.deepEqual(bareBlock('{"status":"done","tests":"pass"}', "agent-box-report"), { status: "done", tests: "pass" });
+  assert.equal(bareBlock('{"tests":"pass"}', "agent-box-report"), null);
+  assert.equal(bareBlock("No findings.", "agent-box-findings"), null);
+});
