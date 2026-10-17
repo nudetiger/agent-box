@@ -269,17 +269,30 @@ fi
 # 3d. No report block: one short turn asks for it alone. 27 of 191 implement runs (2026-10-12..17)
 #     ended without one, so their claims could not be checked against the harness's tests (MISREPORT).
 report_asked=0
+# The last message announces a next step and stops ("Let me generate the findings JSON ...:"): 4 reviews
+# ended that way (2026-10-14..15). Those get "continue", not "reply with the block only".
+stopped_midway() {
+  tail -c 300 "$OUT/final.md" 2>/dev/null | tr '\n' ' ' \
+    | grep -qiE "(let me|now i'?ll|now i will|i will now|next,? i'?ll|i'?ll now)[^.!?]{0,160}[:.]?[[:space:]]*$|:[[:space:]]*$"
+}
 if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -z "$blocked" ] \
    && ! jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
    && ! grep -q 'agent-box-tests' "$OUT/final.md" 2>/dev/null \
    && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
   report_asked=1
-  log "no report block: asking for it"
+  if stopped_midway; then
+    log "stopped mid-task (no report block): resuming"
+    rmsg='Your turn ended right after announcing a next step, with no tool call and no `agent-box-report` block. Continue the task from there, finish it, and end with the report block.'
+    rmin="${AUTOFIX_MIN:-15}"
+  else
+    log "no report block: asking for it"
+    rmsg='Your last message has no `agent-box-report` block. Do not change anything. Reply with only that fenced block, in the format the operating conditions give, filled in from the work you did (status, tests, decisions, context_gaps, test_dispute, disputes).'
+    rmin=5
+  fi
   t0=$(date +%s)
-  timeout --kill-after=30 5m \
+  timeout --kill-after=30 "${rmin}m" \
     opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
-    'Your last message has no `agent-box-report` block. Do not change anything. Reply with only that fenced block, in the format the operating conditions give, filled in from the work you did (status, tests, decisions, context_gaps, test_dispute, disputes).' \
-    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+    "$rmsg" >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
   agent_s=$(( agent_s + $(date +%s) - t0 ))
   # The block is read from this reply; the message before it stays the final message.
   cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
@@ -303,12 +316,19 @@ findings_readable() {
 if [ "${REVIEW:-0}" = 1 ] && [ -z "${PREAMBLE:-}" ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -s "$OUT/final.md" ] \
    && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null && ! findings_readable; then
   report_asked=1
-  log "no readable findings block: asking for it"
+  if stopped_midway; then
+    log "review stopped mid-task (no findings block): resuming"
+    rmsg='Your turn ended right after announcing a next step, with no tool call and no `agent-box-findings` block. Continue from there (finish any reproduction you were writing), then end with that fenced block: a JSON array of your findings, `[]` when nothing blocks.'
+    rmin=15
+  else
+    log "no readable findings block: asking for it"
+    rmsg='Your last message has no readable `agent-box-findings` block. Do not review again. Reply with only that fenced block (```agent-box-findings, a JSON array of your findings in the format the task gives, `[]` when nothing blocks).'
+    rmin=5
+  fi
   t0=$(date +%s)
-  timeout --kill-after=30 5m \
+  timeout --kill-after=30 "${rmin}m" \
     opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
-    'Your last message has no readable `agent-box-findings` block. Do not review again. Reply with only that fenced block (```agent-box-findings, a JSON array of your findings in the format the task gives, `[]` when nothing blocks).' \
-    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+    "$rmsg" >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
   agent_s=$(( agent_s + $(date +%s) - t0 ))
   cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
   final_message
