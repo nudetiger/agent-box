@@ -343,12 +343,15 @@ review_violation=false
 sealed_touched=()
 settle() {
   if [ "${REVIEW:-0}" = 1 ]; then
-    if [ -n "$(git status --porcelain)" ] || [ "$(git rev-list --count "$BASE_SHA..HEAD")" -gt 0 ]; then
+    # Against where this review started: a recheck (continue --at) starts on the fix's head, and the
+    # fix's own commits since the first review's base are not the reviewer's (all 10 REVIEW-EDIT flags
+    # to 2026-10-17 were those).
+    if [ -n "$(git status --porcelain)" ] || [ "$(git rev-list --count "$START_SHA..HEAD")" -gt 0 ]; then
       review_violation=true
-      { git status --porcelain; git log --oneline "$BASE_SHA..HEAD"; } >"$OUT/review-violation.txt"
+      { git status --porcelain; git log --oneline "$START_SHA..HEAD"; } >"$OUT/review-violation.txt"
       log "review run modified the repo; changes discarded"
     fi
-    git reset -q --hard "$BASE_SHA"; git clean -qfd
+    git reset -q --hard "$START_SHA"; git clean -qfd
     return
   fi
   if [ -n "$(git status --porcelain)" ]; then
