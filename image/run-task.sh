@@ -180,7 +180,9 @@ final_message() {
       try { return JSON.parse(b[1]); } catch { return { parse_error: b[1].slice(0, 500) }; }
     };
     fs.writeFileSync("/out/report.json", JSON.stringify(block("agent-box-report")));
-    const f = block("agent-box-findings");
+    let f = block("agent-box-findings");
+    // {"findings": [...]} inside the fence: the array (lib/ledger.mjs finalBlock does the same).
+    if (f && !Array.isArray(f) && Array.isArray(f.findings)) f = f.findings;
     if (f !== null) fs.writeFileSync("/out/findings.json", JSON.stringify(f));
   ' 2>>"$OUT/harness.log" || true
 }

@@ -46,3 +46,11 @@ test("bareBlock: bare object, bare array, json fence; a report needs status; pro
   assert.equal(bareBlock('{"tests":"pass"}', "agent-box-report"), null);
   assert.equal(bareBlock("No findings.", "agent-box-findings"), null);
 });
+
+test("finalBlock: a fenced findings block holding {findings: [...]} reads as the array; a tests block stays an object", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-wrap-"));
+  fs.writeFileSync(path.join(dir, "final.md"), 'Done.\n```agent-box-findings\n{"findings": [{"n": 1}]}\n```\n');
+  assert.deepEqual(finalBlock(dir, "agent-box-findings"), [{ n: 1 }]);
+  fs.writeFileSync(path.join(dir, "final.md"), '```agent-box-tests\n{"mode": "red", "tests": ["a"]}\n```\n');
+  assert.deepEqual(finalBlock(dir, "agent-box-tests"), { mode: "red", tests: ["a"] });
+});
