@@ -110,3 +110,9 @@ no co-author trailer in commits.
 - No LICENSE in the repo: the user's decision (lib/ticket prompts adapted from MIT skills need attribution).
 - Bench B, Gemini medium effort (implement_med, 8192-token thinking budget), dev, self-check on: 12/12,
   2199 s (high: 3340 s, -34%), 6.0M tokens (high: 9.3M, -35%). Next: medium on real Java tasks and #50.
+- 54a7a72 context pack: `always:` entries given as bare paths rendered as one "`undefined`" line, so no
+  RakunMiniItems worker (or reviewer) was pointed at AGENTS.md, CODING_STANDARDS.md, GLOSSARY.md or
+  docs/phases.md, ever. My scope change (32cc464) then put that null in scope and the ledger crashed
+  (bench real/* at medium: verdict none). Fixed with a test; always docs stay out of scope.
+- Real Java tasks at medium (dev 9d78321): lifesteal pass 386 s, reduction-incoming pass 525 s
+  (high: 473 s, 879 s; base high: 467 s, 542 s). Ledger rows to be re-recorded after the runner moves.
