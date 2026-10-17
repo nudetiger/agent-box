@@ -54,7 +54,7 @@ test("make-config: only the run's models, each with limits that compact at COMPA
   // A model whose real window is smaller keeps its real window.
   assert.equal(c.provider.omniroute.models["m-small"].limit.context, 64000);
   assert.equal(c.provider.omniroute.models["m-big"].options.reasoningEffort, "high");
-  assert.deepEqual(c.compaction, { auto: true, prune: true });
+  assert.deepEqual(c.compaction, { auto: true, prune: true, preserve_recent_tokens: 40000 });
 });
 
 test("make-config: COMPACT_AT=0 keeps the real window and turns compaction and pruning off", () => {

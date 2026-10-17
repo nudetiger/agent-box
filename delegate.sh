@@ -342,7 +342,7 @@ launch() {
   if [ "$skip_agent" != 1 ] && [ "${AGENT_BOX_TUI:-1}" != 0 ] && herdr_ok; then TUI=1; fi
   export TUI ROLE="${ROLE:-}" AUTOFIX="${AUTOFIX:-1}" HIDDEN="${HIDDEN_DIR:+1}" PREAMBLE="${PREAMBLE:-}"
   # Context management (image/make-config.mjs) and the self-check turn (run-task.sh), from the conf files.
-  export COMPACT_AT="${COMPACT_AT:-}" SELF_CHECK="${SELF_CHECK:-}"
+  export COMPACT_AT="${COMPACT_AT:-}" COMPACT_KEEP="${COMPACT_KEEP:-}" SELF_CHECK="${SELF_CHECK:-}"
   local host_ip; host_ip="$(host_address)"
   local net_args=(); [ -n "${AGENT_BOX_NETWORK:-}" ] && net_args=(--network "$AGENT_BOX_NETWORK")
   export BRANCH="$branch" BASE_SHA="$base_sha" START_SHA="$start_sha" SKIP_AGENT="$skip_agent"
@@ -350,7 +350,7 @@ launch() {
   # so the round's values go to `exec` explicitly (the OmniRoute key is already in it, never on a command line).
   local envnames=(MODEL VARIANT ALLOW_WEB REVIEW REVIEW_ASK BRANCH BASE_SHA SKIP_AGENT TEST_CMD SETUP_CMD TIMEOUT_MIN SEALED
     EFFORT SCOUT_MODEL SKILLS_ALLOW START_SHA CONTINUE_SESSION ROUND ASK ASK_WAIT_S ASK_TIMEOUT_MIN RED_CMD STEPS AUTOFIX
-    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE COMPACT_AT SELF_CHECK)
+    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE COMPACT_AT COMPACT_KEEP SELF_CHECK)
   local runenv=() execenv=(-e REUSE=1)
   for v in "${envnames[@]}"; do runenv+=(-e "$v"); execenv+=(-e "$v=${!v:-}"); done
   if [ "$reuse" = 1 ]; then

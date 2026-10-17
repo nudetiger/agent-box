@@ -25,7 +25,7 @@ const review = env.REVIEW === "1";
 let list = [];
 try { list = JSON.parse(fs.readFileSync(env.MODELS_JSON || "/tmp/models.json", "utf8")).data || []; } catch {}
 const OUT = 32000;
-const compactAt = Number(env.COMPACT_AT || 0) > 0 ? Number(env.COMPACT_AT) : env.COMPACT_AT === "0" ? 0 : 110000;
+const compactAt = Number(env.COMPACT_AT || 0) > 0 ? Number(env.COMPACT_AT) : env.COMPACT_AT === "0" ? 0 : 150000;
 const limitOf = (id) => {
   const real = Number(list.find((m) => m.id === id)?.context_length) || 1000000;
   return { context: compactAt > 0 ? Math.min(real, compactAt + OUT) : real, output: OUT };
@@ -83,7 +83,9 @@ const cfg = {
   snapshot: false,
   // Pruning clears tool outputs older than the last two user turns beyond the newest 40k tokens: a
   // continued round (fix, recheck) starts from a smaller session. COMPACT_AT=0 turns both off.
-  compaction: { auto: compactAt > 0, prune: compactAt > 0 },
+  // COMPACT_KEEP: tokens of the newest work kept verbatim (OpenCode keeps at most 15000 by default; at that,
+  // RakunMiniItems #50 re-read files 89 times across 5 compactions, 2026-10-17).
+  compaction: { auto: compactAt > 0, prune: compactAt > 0, ...(compactAt > 0 ? { preserve_recent_tokens: Number(env.COMPACT_KEEP || 40000) } : {}) },
   model: `omniroute/${model}`,
   default_agent: review ? "reviewer" : "worker",
   provider: {
