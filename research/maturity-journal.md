@@ -103,3 +103,10 @@ no co-author trailer in commits.
   - 0a9437b/1174a06 base suite and the checks' base copy drop the sealed tests: every RakunMiniItems
     base suite failed compileTestJava (the sealed test needs the task's classes), so base failing
     names were never known. (0a9437b committed a broken line; tests now gate every commit.)
+- Bench B (core, 12 tasks, Gemini implement high, one run each): base 11/12 (feature-report-sort failed its
+  hidden check), 3222 s, 9.23M tokens; dev 12/12, 3340 s (+4%), 9.30M tokens.
+- Self-check: 0 edits in 15 runs (13-103 s each) -> SELF_CHECK=0 by default (9d78321).
+- 5c1027d self-check message carries the report template; 774bc4f CI workflow (Linux, macOS, Windows).
+- No LICENSE in the repo: the user's decision (lib/ticket prompts adapted from MIT skills need attribution).
+- Bench B, Gemini medium effort (implement_med, 8192-token thinking budget), dev, self-check on: 12/12,
+  2199 s (high: 3340 s, -34%), 6.0M tokens (high: 9.3M, -35%). Next: medium on real Java tasks and #50.
