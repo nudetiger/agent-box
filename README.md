@@ -153,11 +153,8 @@ agent-box is built to be driven by an orchestrating agent. Install the skill so 
 procedure (task file, verdicts, the loop, accepting):
 
 ```bash
-mkdir -p ~/.claude/skills/agent-box
-sed "s#<agent-box>#$PWD#g" claude-skill/agent-box/SKILL.md > ~/.claude/skills/agent-box/SKILL.md
+./delegate.sh install-skill        # writes ~/.claude/skills/agent-box/SKILL.md with this clone's path
 ```
-
-Run it from the clone: it writes the clone's path into the skill.
 
 Then ask Claude Code to "delegate this to agent-box". Keep `claude-skill/` and your installed copy in
 step when either changes.

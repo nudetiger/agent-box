@@ -102,6 +102,7 @@ Usage: delegate.sh <command> ...
   setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
                                  repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
                                  overwrites a file
+  install-skill [<dir>]          The Claude Code skill, with this clone's path, into ~/.claude/skills/agent-box
   doctor   [<repo>]              Check everything agent-box needs (bash, node, engine, images, OmniRoute
                                  from the host and from inside a container), each failure with its fix
   gc       [--days N] [--yes]    Disk: model lists and session archives older than N days (14) in runs/,
@@ -1158,6 +1159,11 @@ case "${1:-}" in
   loop) shift; sub=(); [ "${1:-}" = resume ] && { sub=(resume); shift; }
     repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
+  install-skill) shift
+    # The Claude Code skill with this clone's path written in (claude-skill/agent-box/SKILL.md).
+    dest="${1:-$HOME/.claude/skills/agent-box}"; mkdir -p "$dest"
+    sed "s#<agent-box>#$(cd "$BOX" && pwd -W 2>/dev/null || pwd)#g" "$BOX/claude-skill/agent-box/SKILL.md" >"$dest/SKILL.md"
+    echo "agent-box: skill installed at $dest/SKILL.md" ;;
   doctor) shift
     if [ -n "${1:-}" ]; then load_project "$1"; else OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"; fi
     AB_BASH="$BASH_VERSION" AB_ENGINE="$ENGINE" AB_IMAGE="$IMAGE" AB_BASE_IMAGE="$BASE_IMAGE" AB_BOX="$(winpath "$BOX")" \
