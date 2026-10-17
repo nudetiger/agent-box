@@ -236,9 +236,16 @@ A reviewer will now read `git diff` of your branch against the task. Do their jo
    pack names as a duty is updated.
 4. Do not refactor or widen the scope. Do not weaken or delete a test.
 
-Fix and commit what you find, rerun the tests, then end with the report block again, keeping every
-decision and dispute from your earlier report. If nothing is missing, say so in one line and end with
-the report block.
+Fix and commit what you find, rerun the tests, then end with the report block, keeping every decision
+and dispute from your earlier report. If nothing is missing, say so in one line, then the block:
+
+```agent-box-report
+{"status": "done|partial|blocked", "tests": "pass|fail|not_run", "test_summary": "<summary line exactly as printed>",
+ "decisions": ["<choices the task left open, one line each>"],
+ "context_gaps": ["<what the task or context pack should have told you but did not>"],
+ "test_dispute": [{"file": "<sealed test you believe is wrong>", "why": "<reason>"}],
+ "disputes": [{"finding": "<review finding id you believe is wrong>", "why": "<reason>"}]}
+```
 EOF
 )"
   cp "$OUT/final.md" "$OUT/final-before-check.md" 2>/dev/null; cp "$OUT/report.json" "$OUT/report-before-check.json" 2>/dev/null

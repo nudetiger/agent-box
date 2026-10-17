@@ -97,3 +97,9 @@ no co-author trailer in commits.
   1447/140). Cache reads 13.7M (base 29.7M, 22.9M), uncached input 0.89M (base 0.93M, 0.48M), output+
   reasoning 110k (base 95k, 98k), 2 compactions, 20 file re-reads (base 18), javap 0, api 28.
   The self-check again ended without a report block; the report request got it (108 s).
+- dev t50 loop (after 3 resumes): approve, 2 rounds (round 1: 1 proven medium edge case; recheck clean).
+  Wall time not comparable (4 reviews ran: rv1 bare JSON, rv1b implemented, rv1c check hit the parked
+  daemon lock, rv1d used).
+  - 0a9437b/1174a06 base suite and the checks' base copy drop the sealed tests: every RakunMiniItems
+    base suite failed compileTestJava (the sealed test needs the task's classes), so base failing
+    names were never known. (0a9437b committed a broken line; tests now gate every commit.)
