@@ -254,9 +254,9 @@ Composer (misreported tool results, research/findings.md §6). Every worker has 
   continued rounds; step latency grows with context. Never paste big files or logs into a task.
 - **Dependency APIs**: JVM projects get `api find|show|grep` (signatures from the build caches,
   indexed once). Never ask a worker to decompile jars.
-- **Self-check**: a first round that changed code gets one more turn auditing its diff against the
-  task before the harness tests it (`SELF_CHECK`). Its report keeps the earlier decisions.
 - **Lessons**: the project's accepted review findings go into the implementer's context pack.
+- **Missing blocks**: a run whose last message has no report (or, for a review, no findings) block
+  is asked for it in one short turn; one that stopped mid-task is told to continue.
 - **Reviews** get the diff inline when it is under `REVIEW_DIFF_MAX` characters (30000).
 
 ## Housekeeping

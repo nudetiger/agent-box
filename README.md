@@ -490,9 +490,9 @@ Measured so far (one task each, so treat as anecdotes): on a comment fix, Compos
   the Gradle and Maven caches, indexed once into the shared `agent-box-api-cache` volume. Workers had
   spent 36 of 61 shell calls decompiling jars by hand (t51). The plugin points at it when a worker runs
   javap or unzip on the caches.
-- **Self-check** (`SELF_CHECK=1`): a first round that changed code gets one more turn auditing its diff
-  against the task (each requirement, the usual edge cases, the doc duties) before the harness tests.
-  The report keeps the decisions of the report before it.
+- **Self-check** (`SELF_CHECK=1`, off by default): a first round that changed code gets one more turn
+  auditing its diff against the task before the harness tests. Off because in 15 Gemini runs it edited
+  nothing (13-103 s each) while the reviews still proved the edge cases it lists (2026-10-17).
 - **Lessons**: the project's accepted review findings (`lib/examples.mjs --lessons`) go into the
   implementer's context pack. `LESSONS=0` turns them off; `LESSONS_BEFORE` limits them to an earlier time.
 
