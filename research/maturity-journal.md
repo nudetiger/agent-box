@@ -116,3 +116,13 @@ no co-author trailer in commits.
   (bench real/* at medium: verdict none). Fixed with a test; always docs stay out of scope.
 - Real Java tasks at medium (dev 9d78321): lifesteal pass 386 s, reduction-incoming pass 525 s
   (high: 473 s, 879 s; base high: 467 s, 542 s). Ledger rows to be re-recorded after the runner moves.
+- c492665 checks skip non-path scope entries (old pack.json files held the null); medium rows re-recorded.
+- t50 implement at medium: pass, 2185 s / 239 steps (high r2: 1433 s / 153). implement stays high.
+- Validation on 54a7a72 (all fixes): #49 C2: 36.6 min end to end (29.1 + 7.5), 1 round, 0 blocking ->
+  approve (old: 61.2 min, 2 rounds). #50 C2: implement 28.0 min; review asked a live spec question
+  (unanswered, the reviewer decided after waiting) and wrote {"findings": [...]} inside the fence ->
+  unreadable to the loop. 1e4070b unwraps it; resumed to check the reuse path.
+- #50 C2 resumed on 1e4070b: reused rv1 (no new review), 1 proven medium edge case fixed, recheck clean
+  -> approve; resume took 7 min. #50 C2 wall: implement 28.0 + review 18.5 (8 min of it waiting on the
+  unanswered live question) + 7.0.
+- Lykos peak-wrap on the new harness started (Node repo check).
