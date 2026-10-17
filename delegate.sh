@@ -275,10 +275,10 @@ launch() {
   [ -n "$(git -C "$REPO" status --porcelain)" ] && echo "agent-box: note: uncommitted changes in $REPO are NOT sent; base is $base_sha" >&2
   local bundle_ref="$base" tmp_ref=""
   if [ "$base" != "HEAD" ] && ! git -C "$REPO" show-ref --quiet "$base"; then
-    # A bare commit (a sha, HEAD~2): bundled through a temporary ref. Bundling HEAD instead lost a base
+    # A bare commit (a sha, HEAD~2): bundled through a temporary branch (a clone of a bundle takes refs/heads only). Bundling HEAD instead lost a base
     # that HEAD does not contain ("reference is not a tree", Lykos peak-wrap, 2026-10-17).
     if git -C "$REPO" merge-base --is-ancestor "$start_sha" HEAD 2>/dev/null; then bundle_ref="HEAD"
-    else tmp_ref="refs/agent-box-tmp/base-$name"; git -C "$REPO" update-ref "$tmp_ref" "$start_sha"; bundle_ref="$tmp_ref"; fi
+    else tmp_ref="refs/heads/agent-box-tmp/base-$name"; git -C "$REPO" update-ref "$tmp_ref" "$start_sha"; bundle_ref="$tmp_ref"; fi
   fi
   git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" "$bundle_ref" 2>/dev/null \
     || git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" --all
