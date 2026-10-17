@@ -26,15 +26,36 @@ no co-author trailer in commits.
 | # | Item | Status |
 | --- | --- | --- |
 | 1 | Namespace (AGENT_BOX_NS), local conf, prune on build | done 64af04d |
-| 2 | Model limits in make-config + compaction/prune config | |
-| 3 | `api` lookup tool for dependency jars (JVM), cached index | |
-| 4 | Fix rounds: smaller context (prune or fresh handoff), bench | |
-| 5 | Self-check turn before the worker ends | |
-| 6 | Project lessons from past findings into the pack | |
-| 7 | Price table, cost in ledger and stats | |
-| 8 | models.json out of /out; `gc` command | |
-| 9 | `doctor` command; cross-platform fixes (bash 4, GNU-isms, Linux host networking) | |
-| 10 | Docs: install, quickstart, platform notes | |
-| 11 | Bench: old vs new on the same tasks | |
+| 2 | Model limits in make-config + compaction/prune config | done c14e01a (bench pending) |
+| 3 | `api` lookup tool for dependency jars (JVM), cached index | done c14e01a |
+| 4 | Fix rounds: smaller context (prune or fresh handoff), bench | prune+compaction; bench C pending |
+| 5 | Self-check turn before the worker ends | done c14e01a, report merge 36e3ef1 |
+| 6 | Project lessons from past findings into the pack | done c14e01a |
+| 7 | Price table, cost in ledger and stats | done 36e3ef1 (prices not filled) |
+| 8 | models.json out of /out; `gc` command | done |
+| 9 | `doctor`; cross-platform fixes | done 36e3ef1; Linux container: tests + doctor ok |
+| 10 | Docs: install, platforms, config files | done 40c8cf6; install-skill d3e3abe |
+| 11 | Bench: old vs new on the same tasks | A running; B (core, high vs medium) and C (loops t49/t50) next |
+| 12 | Diff inline in reviews and rechecks | done a07ad7a |
+
+## Setup for benches
+
+- `agent-box-base` worktree (branch harness-base = master + namespace commit), NS=base, 1 slot,
+  repos in `repos-base/` (clones, origin fetch = GitHub, push disabled).
+- `agent-box-run` worktree (detached, the commit under test), NS=dev, 2 slots, repos in `repos-dev/`.
+  Edit in `agent-box`, never in `agent-box-run` while it runs; move it with `git checkout --detach`
+  and rebuild images between benches.
+- Bench C driver: `benchC/pipe.sh <base|dev> <t49|t50>` (same rulings as the E2E after-side).
 
 ## Log
+
+- 2026-10-17 14:30 smoke (core/feature-report-sort, dev): pass, 265 s, 36 steps, self-check 19 s.
+- Editing delegate.sh during a run: the run's tail executed new text ("syntax error near `)`" at exit).
+  Benches now run from agent-box-run.
+- New namespace: first run seeds the Gradle volumes (12 min for RakunMiniItems), once.
+- OpenCode provider timeouts: headerTimeout/chunkTimeout default 300 s; retry regex covers
+  "request/response/stream timeout" but whether the abort errors match is unverified: left alone.
+- Bench A (real/rakun-lifesteal, real/rakun-reduction-incoming; Gemini implement; one run each):
+  base 2/2 pass (467 s / 51 steps, 542 s / 31 steps); dev 2/2 pass (473 s / 50 steps, 879 s / 66
+  steps, 92k reasoning tokens vs 5k: model variance). Self-check 38 s and 57 s, found nothing. Neither
+  task touched dependency jars or passed 110k context: api and compaction not exercised.

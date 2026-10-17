@@ -265,6 +265,28 @@ EOF
   blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 fi
 
+# 3d. No report block: one short turn asks for it alone. 27 of 191 implement runs (2026-10-12..17)
+#     ended without one, so their claims could not be checked against the harness's tests (MISREPORT).
+report_asked=0
+if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -z "$blocked" ] \
+   && ! jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
+  report_asked=1
+  log "no report block: asking for it"
+  t0=$(date +%s)
+  timeout --kill-after=30 5m \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
+    'Your last message has no `agent-box-report` block. Do not change anything. Reply with only that fenced block, in the format the operating conditions give, filled in from the work you did (status, tests, decisions, context_gaps, test_dispute, disputes).' \
+    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  # The block is read from this reply; the message before it stays the final message.
+  cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
+  final_message
+  jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
+    && { log "report block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
+    || log "still no report block"
+fi
+
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
 #    becomes one labelled commit, so nothing is lost. Sealed files are reverted.
 leftovers=0
@@ -365,7 +387,7 @@ jq -n \
   --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" --argjson cut "$cut_resumes" \
-  --argjson recovered "$recovered" --argjson selfcheck "$self_checked" \
+  --argjson recovered "$recovered" --argjson selfcheck "$self_checked" --argjson repask "$report_asked" \
   --slurpfile report "$OUT/report.json" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | sort -u | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
@@ -373,7 +395,7 @@ jq -n \
     phase_seconds:{setup:$setup_s, agent:$agent_s, test:$test_s},
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix, cut_resumes:$cut,
-    self_check:($selfcheck == 1), final_recovered:($recovered > 0),
+    self_check:($selfcheck == 1), report_asked:($repask == 1), final_recovered:($recovered > 0),
     report:($report[0]), session:(if $session == "" then null else $session end), round:$round, start:$start,
     questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"
