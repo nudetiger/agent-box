@@ -385,7 +385,8 @@ launch() {
   if [ "${AGENT_BOX_PARK:-0}" = 1 ] && [ "$skip_agent" != 1 ] && [ -f "$run_dir/summary.json" ] && [ -n "$(jq -r '.session // empty' "$run_dir/summary.json" 2>/dev/null)" ]; then
     # Build daemons hold the cache volume's locks while idle: a parked Gradle daemon made the next run on
     # the slot fail with "Timeout waiting to lock journal cache" (RakunMiniItems #50 check, 2026-10-17).
-    dk exec "$cname" sh -c 'pkill -f GradleDaemon; pkill -f KotlinCompileDaemon; pkill -f "gradle.*Daemon"; true' >/dev/null 2>&1 || true
+    # Bracketed patterns: a plain one matches this sh -c's own command line and kills it first.
+    dk exec "$cname" sh -c 'pkill -f "[G]radleDaemon"; pkill -f "[K]otlinCompileDaemon"; true' >/dev/null 2>&1 || true
     printf '%s %s %s\n' "$cname" "$IMAGE" "${SLOT##*/}" >"$run_dir/parked"
     echo "agent-box: $name parked (container $cname kept for the next round; delegate.sh unpark)" >&2
   fi
