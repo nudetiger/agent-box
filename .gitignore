@@ -4,3 +4,5 @@ runs/
 node_modules/
 ledger/
 bench/.repos/
+agent-box.local.conf
+prices.local.conf

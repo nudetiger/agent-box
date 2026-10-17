@@ -1,5 +1,5 @@
 // Writes ~/.config/opencode/opencode.json for one run. Inputs are environment variables set by
-// delegate.sh; the model list comes from /out/models.json when OmniRoute answered.
+// delegate.sh; model limits come from /tmp/models.json (OmniRoute's list) when OmniRoute answered.
 //
 //   MODEL        OmniRoute model id for the primary agent
 //   EFFORT       optional reasoning effort (low|medium|high) sent as reasoning_effort. OmniRoute drops it
@@ -18,11 +18,21 @@ const env = process.env;
 const model = env.MODEL;
 const review = env.REVIEW === "1";
 
-let ids = [];
-try { ids = (JSON.parse(fs.readFileSync("/out/models.json", "utf8")).data || []).map((m) => m.id); } catch {}
-for (const m of [model, env.SCOUT_MODEL]) if (m && !ids.includes(m)) ids.push(m);
-const models = Object.fromEntries(ids.map((id) => [id, { name: id }]));
-if (env.EFFORT) models[model] = { name: model, options: { reasoningEffort: env.EFFORT } };
+// Only the models this run uses. Each gets limits: OpenCode never compacts a model whose
+// limit.context is 0 (SessionCompaction.isOverflow), and a model registered with a name only has 0.
+// COMPACT_AT (tokens, 0 = off) is where compaction starts: usable = limit.context - limit.output.
+// Step latency grows with context (t51, 2026-10-16: median 4 s under 60k, 42 s at 120-180k).
+let list = [];
+try { list = JSON.parse(fs.readFileSync(env.MODELS_JSON || "/tmp/models.json", "utf8")).data || []; } catch {}
+const OUT = 32000;
+const compactAt = Number(env.COMPACT_AT || 0) > 0 ? Number(env.COMPACT_AT) : env.COMPACT_AT === "0" ? 0 : 150000;
+const limitOf = (id) => {
+  const real = Number(list.find((m) => m.id === id)?.context_length) || 1000000;
+  return { context: compactAt > 0 ? Math.min(real, compactAt + OUT) : real, output: OUT };
+};
+const models = {};
+for (const id of [model, env.SCOUT_MODEL]) if (id) models[id] = { name: id, limit: limitOf(id) };
+if (env.EFFORT) models[model].options = { reasoningEffort: env.EFFORT };
 
 // OpenCode permission patterns: paths relative to the worktree, `*` also matches `/`, last match wins.
 const toPattern = (glob) => glob.replace(/\*\*\/?/g, "*");
@@ -71,6 +81,11 @@ const cfg = {
   // No per-step shadow-git snapshot (git add --all + write-tree on every step): workers never revert
   // through OpenCode, and the harness reads the result from the worker's own commits.
   snapshot: false,
+  // Pruning clears tool outputs older than the last two user turns beyond the newest 40k tokens: a
+  // continued round (fix, recheck) starts from a smaller session. COMPACT_AT=0 turns both off.
+  // COMPACT_KEEP: tokens of the newest work kept verbatim (OpenCode keeps at most 15000 by default; at that,
+  // RakunMiniItems #50 re-read files 89 times across 5 compactions, 2026-10-17).
+  compaction: { auto: compactAt > 0, prune: compactAt > 0, ...(compactAt > 0 ? { preserve_recent_tokens: Number(env.COMPACT_KEEP || 40000) } : {}) },
   model: `omniroute/${model}`,
   default_agent: review ? "reviewer" : "worker",
   provider: {

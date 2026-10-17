@@ -8,17 +8,25 @@ BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # fanout, review, explore and batch start runs of this script. "$0" is whatever the caller typed: a
 # relative "delegate.sh" is not on PATH and fails with "command not found" (bench 2026-10-13).
 SELF=(bash "$BOX/delegate.sh")
-IMAGE="agent-box:latest"
-LABEL="agent-box=1"
 # Container engine: podman (default) or docker. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
+# agent-box.local.conf (not in git) holds this machine's own overrides: slots, namespace, engine.
 [ -f "$BOX/agent-box.conf" ] && . "$BOX/agent-box.conf"
+[ -f "$BOX/agent-box.local.conf" ] && . "$BOX/agent-box.local.conf"
 ENGINE="${AGENT_BOX_ENGINE:-podman}"
 case "$ENGINE" in docker|podman) ;; *) echo "agent-box: unknown engine $ENGINE" >&2; exit 1 ;; esac
+# Namespace: a second checkout (a worktree, a test install) sets AGENT_BOX_NS so its images, containers,
+# cache volumes and herdr workspace never collide with the first one's. Empty: the plain names.
+NS="agent-box${AGENT_BOX_NS:+-$AGENT_BOX_NS}"
+BASE_IMAGE="$NS:latest"
+IMAGE="$BASE_IMAGE"
+LABEL="agent-box=1"
+NS_LABEL="agent-box.ns=${AGENT_BOX_NS:-default}"
+export AGENT_BOX_NS
 
 die() { echo "agent-box: $*" >&2; exit 1; }
 # The engine gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
 dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" "$ENGINE" "$@"; }
-cname_of() { echo "agent-box-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
+cname_of() { echo "$NS-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -94,6 +102,13 @@ Usage: delegate.sh <command> ...
   setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
                                  repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
                                  overwrites a file
+  install-skill [<dir>]          The Claude Code skill, with this clone's path, into ~/.claude/skills/agent-box
+  doctor   [<repo>]              Check everything agent-box needs (bash, node, engine, images, OmniRoute
+                                 from the host and from inside a container), each failure with its fix
+  gc       [--days N] [--yes]    Disk: model lists and session archives older than N days (14) in runs/,
+                                 untagged images, stopped containers. Dry run unless --yes
+  bench    list|run ...          Frozen benchmark suites (bench/README.md); AGENT_BOX_REPOS points real-
+                                 history tasks at another checkout
   clean                        Remove leftover agent-box containers (and parked ones)
   unpark   <repo> <run>...|--all Remove parked containers of these runs (and <run>-*); the loop does it itself
   spec-check <repo> <task.md> [--role R] [--name N] [--base REF]
@@ -118,7 +133,7 @@ load_project() {
   [ -f "$env" ] || die "no project file $env (copy projects/example.env)"
   PROJECT_ENV="$env"
   # A project with its own Dockerfile runs in its own image; IMAGE in the .env file wins over both.
-  [ -f "$BOX/projects/$PROJECT.Dockerfile" ] && IMAGE="agent-box-$PROJECT:latest"
+  [ -f "$BOX/projects/$PROJECT.Dockerfile" ] && IMAGE="$NS-$PROJECT:latest"
   set -a; # shellcheck disable=SC1090
   . "$env"; set +a
   OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"
@@ -131,15 +146,20 @@ load_project() {
 need_key() { [ -n "${OMNIROUTE_API_KEY:-}" ] || die "OMNIROUTE_API_KEY is empty in projects/$PROJECT.env"; }
 
 cmd_build() {
-  dk build -t agent-box:latest "$(winpath "$BOX/image")"
+  dk build -t "$BASE_IMAGE" "$(winpath "$BOX/image")" || return 1
+  # A rebuild leaves the previous image untagged; nothing uses it again (245 such images, 7 GB, 2026-10-17).
+  dk image prune -f >/dev/null 2>&1 || true
   [ -n "${1:-}" ] || return 0
   load_project "$1"
   local df="$BOX/projects/$PROJECT.Dockerfile"
   [ -f "$df" ] || die "no $df: $PROJECT runs in the base image, nothing more to build"
   # The context is an empty folder holding only the Dockerfile: projects/ has the .env secrets.
   local ctx="$BOX/runs/.build-$PROJECT"
-  rm -rf "$ctx"; mkdir -p "$ctx"; cp "$df" "$ctx/Dockerfile"
+  rm -rf "$ctx"; mkdir -p "$ctx"
+  # FROM agent-box:latest in a project Dockerfile means this checkout's base image (its namespace).
+  sed -E "s#^FROM[[:space:]]+agent-box:latest#FROM $BASE_IMAGE#" "$df" >"$ctx/Dockerfile"
   dk build -t "$IMAGE" "$(winpath "$ctx")"; local e=$?
+  dk image prune -f >/dev/null 2>&1 || true
   rm -rf "$ctx"; return $e
 }
 
@@ -151,11 +171,13 @@ cmd_build() {
 # The npm cache is always mounted and shared (npm's cache is safe to share).
 cache_volumes() {
   local c vol base n="${SLOT##*/}"
-  CACHE_ARGS=(-v agent-box-npm-cache:/home/node/.npm)
+  CACHE_ARGS=(-v agent-box-npm-cache:/home/node/.npm -v "$NS-api-cache:/home/node/.cache/agent-box-api")
   for c in ${CACHES:-}; do
     [[ "$c" == ?*:/?* ]] || die "CACHES entry '$c' is not name:/path"
-    base="agent-box-${c%%:*}-cache"; vol="$base"
-    if [ -n "$n" ] && [ "${AGENT_BOX_SLOT_CACHES:-1}" != 0 ]; then vol="agent-box-${c%%:*}$n-cache"; seed_volume "$base" "$vol"; fi
+    base="agent-box-${c%%:*}-cache"; vol="$NS-${c%%:*}-cache"
+    # Another namespace seeds its own volumes from the shared one and never writes to it.
+    [ "$vol" = "$base" ] || seed_volume "$base" "$vol"
+    if [ -n "$n" ] && [ "${AGENT_BOX_SLOT_CACHES:-1}" != 0 ]; then base="$vol"; vol="$NS-${c%%:*}$n-cache"; seed_volume "$base" "$vol"; fi
     CACHE_ARGS+=(-v "$vol:${c#*:}")
   done
 }
@@ -179,7 +201,7 @@ cmd_models() {
 
 cmd_clean() {
   rm -f "$BOX"/runs/*/*/parked
-  local ids; ids="$(dk ps -aq --filter "label=$LABEL")"
+  local ids; ids="$(dk ps -aq --filter "label=$LABEL" --filter "label=$NS_LABEL")"
   [ -z "$ids" ] && { echo "nothing to clean"; return; }
   dk rm -f $ids
 }
@@ -251,9 +273,16 @@ launch() {
   # A continued round starts on its previous head but keeps the first round's base (ORIG_BASE).
   local start_sha="$base_sha"; [ -n "${ORIG_BASE:-}" ] && base_sha="$ORIG_BASE"
   [ -n "$(git -C "$REPO" status --porcelain)" ] && echo "agent-box: note: uncommitted changes in $REPO are NOT sent; base is $base_sha" >&2
-  local bundle_ref="$base"; [ "$base" = "HEAD" ] || git -C "$REPO" show-ref --quiet "$base" || bundle_ref="HEAD"
+  local bundle_ref="$base" tmp_ref=""
+  if [ "$base" != "HEAD" ] && ! git -C "$REPO" show-ref --quiet "$base"; then
+    # A bare commit (a sha, HEAD~2): bundled through a temporary branch (a clone of a bundle takes refs/heads only). Bundling HEAD instead lost a base
+    # that HEAD does not contain ("reference is not a tree", Lykos peak-wrap, 2026-10-17).
+    if git -C "$REPO" merge-base --is-ancestor "$start_sha" HEAD 2>/dev/null; then bundle_ref="HEAD"
+    else tmp_ref="refs/heads/agent-box-tmp/base-$name"; git -C "$REPO" update-ref "$tmp_ref" "$start_sha"; bundle_ref="$tmp_ref"; fi
+  fi
   git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" "$bundle_ref" 2>/dev/null \
     || git -C "$REPO" bundle create -q "$(winpath "$run_dir/in.bundle")" --all
+  [ -n "$tmp_ref" ] && git -C "$REPO" update-ref -d "$tmp_ref"
   if [ -n "${CONTINUE_SESSION:-}" ]; then
     # Follow-up: no new pack. The worker already has it in its session; the message is the task.
     cp "$task" "$run_dir/message.md"
@@ -277,6 +306,11 @@ launch() {
     [ "${NO_RED:-0}" = 1 ] || RED_CMD="$(node -e 'console.log(JSON.parse(process.argv[1]).red || "")' "$meta")"
     [ -n "${STEPS:-}" ] || STEPS="$(node -e 'console.log(JSON.parse(process.argv[1]).steps || "")' "$meta")"
     export SEALED TEST_CMD SKILLS_ALLOW RED_CMD STEPS
+    # What reviews of this project kept finding (lib/examples.mjs --lessons), for implementers only.
+    # LESSONS=0 turns it off; LESSONS_BEFORE (ISO time) keeps a benchmark replay from its own findings.
+    if [ "${REVIEW:-0}" != 1 ] && [ "${LESSONS:-1}" != 0 ]; then
+      (cd "$BOX" && node lib/examples.mjs "$PROJECT" --lessons) >>"$run_dir/context.md" 2>/dev/null || true
+    fi
   fi
   # Everything `continue` needs to resume this run with the same model, rules and checks. SKIP_AGENT
   # first: the ledger reads a baseline from it (it was empty here, so every baseline's verdict was error).
@@ -286,13 +320,17 @@ launch() {
   done >"$run_dir/meta.sh"
   printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
-  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 \
-    || die "no image $IMAGE: run delegate.sh build $REPO"
+  dk image inspect "$IMAGE" >/dev/null 2>&1 \
+    || die "no image $IMAGE: run delegate.sh build$([ "$IMAGE" = "$BASE_IMAGE" ] || echo " $REPO")"
   # Into the container as well: the project's SYNTAX_<ext> checks and the names in CONTAINER_ENV.
   local v extra_env=()
   for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
   local cname; cname="$(cname_of "$name")"
-  slot_acquire "$name"
+  # A parked container still mounts its slot's cache volumes: its next round waits for that same slot,
+  # so no other container uses those volumes at the same time.
+  local want_slot=""
+  [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ] && read -r _ _ want_slot <"$CONTINUE_FROM/parked"
+  slot_acquire "$name" "$want_slot"
   # Parking (AGENT_BOX_PARK=1, set by the review loop): a finished worker's container stays up, marked
   # by <run>/parked, so `continue` on its session runs the next round in it: no new container, clone,
   # setup or session restore (40-90 s a round on RakunMiniItems). A parked container holds no slot;
@@ -300,7 +338,7 @@ launch() {
   trap "[ -f '$run_dir/parked' ] || dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
   local reuse=0 pc pimg
   if [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ]; then
-    read -r pc pimg <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
+    read -r pc pimg _ <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
     if [ "$pimg" = "$IMAGE" ] && [ "$(dk inspect -f '{{.State.Running}}' "$pc" 2>/dev/null)" = true ] \
        && dk rename "$pc" "$cname" >/dev/null 2>&1 \
        && dk exec "$cname" sh -c 'rm -rf /out/* /out/.[!.]* /in/* 2>/dev/null; mkdir -p /in/answers'; then
@@ -314,29 +352,24 @@ launch() {
   TUI=0
   if [ "$skip_agent" != 1 ] && [ "${AGENT_BOX_TUI:-1}" != 0 ] && herdr_ok; then TUI=1; fi
   export TUI ROLE="${ROLE:-}" AUTOFIX="${AUTOFIX:-1}" HIDDEN="${HIDDEN_DIR:+1}" PREAMBLE="${PREAMBLE:-}"
-  # Docker Desktop forwards host-gateway to the host's loopback, where OmniRoute listens. Podman
-  # needs user-mode networking, whose host address is what the VM itself resolves (gvproxy's .254);
-  # the gateway Podman would inject reaches the WSL interface, not loopback.
-  local host_ip="host-gateway"
-  if [ "$ENGINE" = podman ]; then
-    # podman machine ssh writes its known-hosts file to "NUL", a real file under Git Bash: run it in runs/.
-    host_ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
-    [ -n "$host_ip" ] || host_ip="192.168.127.254"
-  fi
+  # Context management (image/make-config.mjs) and the self-check turn (run-task.sh), from the conf files.
+  export COMPACT_AT="${COMPACT_AT:-}" COMPACT_KEEP="${COMPACT_KEEP:-}" SELF_CHECK="${SELF_CHECK:-}"
+  local host_ip; host_ip="$(host_address)"
+  local net_args=(); [ -n "${AGENT_BOX_NETWORK:-}" ] && net_args=(--network "$AGENT_BOX_NETWORK")
   export BRANCH="$branch" BASE_SHA="$base_sha" START_SHA="$start_sha" SKIP_AGENT="$skip_agent"
   # The run's settings. A new container takes them by name; a reused one keeps its creation-time env,
   # so the round's values go to `exec` explicitly (the OmniRoute key is already in it, never on a command line).
   local envnames=(MODEL VARIANT ALLOW_WEB REVIEW REVIEW_ASK BRANCH BASE_SHA SKIP_AGENT TEST_CMD SETUP_CMD TIMEOUT_MIN SEALED
     EFFORT SCOUT_MODEL SKILLS_ALLOW START_SHA CONTINUE_SESSION ROUND ASK ASK_WAIT_S ASK_TIMEOUT_MIN RED_CMD STEPS AUTOFIX
-    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE)
+    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE COMPACT_AT COMPACT_KEEP SELF_CHECK)
   local runenv=() execenv=(-e REUSE=1)
   for v in "${envnames[@]}"; do runenv+=(-e "$v"); execenv+=(-e "$v=${!v:-}"); done
   if [ "$reuse" = 1 ]; then
     for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do execenv+=(-e "$v=${!v:-}"); done
   else
-    dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
+    dk run -d --init --name "$cname" --label "$LABEL" --label "$NS_LABEL" --label "agent-box.project=$PROJECT" \
       --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
-      --add-host "host.docker.internal:$host_ip" \
+      --add-host "host.docker.internal:$host_ip" "${net_args[@]}" \
       "${CACHE_ARGS[@]}" "${extra_env[@]}" -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL "${runenv[@]}" \
       "$IMAGE" >/dev/null
   fi
@@ -357,7 +390,11 @@ launch() {
   dk cp "$cname:/out/." "$(winpath "$run_dir")" || echo "agent-box: could not copy /out" >&2
   rm -f "$run_dir/in.bundle"
   if [ "${AGENT_BOX_PARK:-0}" = 1 ] && [ "$skip_agent" != 1 ] && [ -f "$run_dir/summary.json" ] && [ -n "$(jq -r '.session // empty' "$run_dir/summary.json" 2>/dev/null)" ]; then
-    printf '%s %s\n' "$cname" "$IMAGE" >"$run_dir/parked"
+    # Build daemons hold the cache volume's locks while idle: a parked Gradle daemon made the next run on
+    # the slot fail with "Timeout waiting to lock journal cache" (RakunMiniItems #50 check, 2026-10-17).
+    # Bracketed patterns: a plain one matches this sh -c's own command line and kills it first.
+    dk exec "$cname" sh -c 'pkill -f "[G]radleDaemon"; pkill -f "[K]otlinCompileDaemon"; true' >/dev/null 2>&1 || true
+    printf '%s %s %s\n' "$cname" "$IMAGE" "${SLOT##*/}" >"$run_dir/parked"
     echo "agent-box: $name parked (container $cname kept for the next round; delegate.sh unpark)" >&2
   fi
 
@@ -381,14 +418,38 @@ launch() {
   report "$run_dir"
 }
 
+# The address containers reach the host (OmniRoute) at, as host.docker.internal. AGENT_BOX_HOST_IP wins.
+# Docker (Desktop, and Engine 20.10+) resolves host-gateway itself; Desktop forwards it to the host's
+# loopback. Podman with a machine (Windows, macOS) needs the address the VM resolves for the host
+# (gvproxy's .254): the gateway Podman would inject reaches the WSL interface, not loopback. Podman on
+# Linux has no machine: host-gateway (Podman 4.7+). On Linux the host service must listen where the
+# container can reach it (not only 127.0.0.1), or set AGENT_BOX_NETWORK=host and OMNIROUTE_BASE_URL
+# to http://localhost:<port>/v1. `delegate.sh doctor` checks the route from inside a container.
+host_address() {
+  if [ -n "${AGENT_BOX_HOST_IP:-}" ]; then echo "$AGENT_BOX_HOST_IP"; return; fi
+  if [ "$ENGINE" = podman ] && [ "$(uname -s)" != Linux ]; then
+    local ip cache="$BOX/runs/.host-ip"
+    # The VM's view changes only when the machine restarts: reuse it for 10 minutes (1-2 s an ssh).
+    if [ -f "$cache" ] && [ $(( $(date +%s) - $(cat "$cache.t" 2>/dev/null || echo 0) )) -lt 600 ]; then cat "$cache"; return; fi
+    # podman machine ssh writes its known-hosts file to "NUL", a real file under Git Bash: run it in runs/.
+    mkdir -p "$BOX/runs"
+    ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
+    if [ -n "$ip" ]; then echo "$ip" >"$cache"; date +%s >"$cache.t"; else ip="192.168.127.254"; fi
+    echo "$ip"; return
+  fi
+  echo host-gateway
+}
+
 # Concurrency slots: at most AGENT_BOX_SLOTS containers at once (default 4), whatever starts them
 # (fanout, bench, ticket mode, several orchestrators). A slot whose owner process died is reclaimed.
 SLOT=""
+# slot_acquire <name> [slot]: with a slot number, wait for that one (a parked container's next round).
 slot_acquire() {
-  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0
+  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0 only="${2:-}"
   mkdir -p "$d"
+  [[ "$only" =~ ^[0-9]+$ ]] && [ "$only" -le "$n" ] || only=""
   while :; do
-    for i in $(seq 1 "$n"); do
+    for i in ${only:-$(seq 1 "$n")}; do
       if mkdir "$d/$i" 2>/dev/null; then echo "$$ $1" >"$d/$i/owner"; SLOT="$d/$i"; return 0; fi
       read -r pid _ <"$d/$i/owner" 2>/dev/null || pid=""
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$d/$i"; fi
@@ -468,7 +529,7 @@ cmd_run() {
   # Rulings join the task itself, so the worker and every later reviewer read them as binding.
   if [ -n "$rulings" ]; then
     [[ "$rulings" == @* ]] && { [ -f "${rulings#@}" ] || die "rulings file not found: ${rulings#@}"; rulings="$(cat "${rulings#@}")"; }
-    local ruled; ruled="$(mktemp --suffix=.md)"
+    local ruled; ruled="$(mktemp "${TMPDIR:-/tmp}/agent-box-rulings.XXXXXX")"
     { cat "$task"; printf '\n\n## The orchestrator'"'"'s rulings (binding)\n\n%s\n' "$rulings"; } >"$ruled"
     task="$ruled"
   # A ticket (frontmatter `issue:`) gets a spec check first, once: questions stop here, before any code.
@@ -576,7 +637,7 @@ cmd_watch() {
   if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
     local short="${model##*/}"; short="${short%-tiered}"
     "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
-      --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
+      --message "done: $verdict" --seq "$(( $(date +%s) * 1000 ))" >/dev/null 2>&1 || true
     herdr_close_tab
   fi
 }
@@ -623,8 +684,8 @@ herdr_ok() {
 }
 herdr_ws() {
   local ws
-  ws="$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[] | select(.label == "agent-box") | .workspace_id' | head -n 1)"
-  [ -n "$ws" ] || ws="$(herdr workspace create --label agent-box --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
+  ws="$(herdr workspace list 2>/dev/null | jq -r --arg ns "$NS" '.result.workspaces[] | select(.label == $ns) | .workspace_id' | head -n 1)"
+  [ -n "$ws" ] || ws="$(herdr workspace create --label "$NS" --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
   echo "$ws"
 }
 # Each run's tab: the real OpenCode TUI attached to the worker on the left (TUI=1), the agent-box feed
@@ -745,7 +806,7 @@ cmd_wait() {
           local live=() r
           if [ -d "$runs/_loops/$n" ]; then
             mapfile -t live < <(dk ps --filter "label=agent-box.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | tr -d '\r' \
-              | sed -n "s/^agent-box-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
+              | sed -n "s/^$NS-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
           elif [ -d "$runs/$n" ]; then live=("$n"); fi
           for r in "${live[@]}"; do
             if cmd_questions "$repo" "$r" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
@@ -862,12 +923,26 @@ cmd_review() {
     echo
     git -C "$REPO" log --format='- %h %s' "$base..$branch"
     if [ -f "$origin" ]; then
-      echo; echo "## The task the change was made for"; echo; sed 's/^/> /' "$origin"
+      echo; echo "## The task the change was made for (it was the implementer's; you review, you do not implement)"; echo; sed 's/^/> /' "$origin"
     fi
     for f in "${specs[@]}"; do
       echo; echo "## Spec: $(basename "$f")"; echo; sed 's/^/> /' "$f"
     done
+    # The diff itself when it is small: reviewers otherwise spend their first steps on `git diff` file by
+    # file (La-t50 review, 2026-10-17: 7 of 51 shell calls). After the task and spec, so the last
+    # instructions a reviewer reads are not the implementer's: with the diff before them, a DeepSeek
+    # review of RakunMiniItems #50 implemented the task instead (2026-10-17). REVIEW_DIFF_MAX chars, 0 = never.
+    local diff; diff="$(git -C "$REPO" diff "$base" "$branch" -- 2>/dev/null)"
+    if [ -n "$diff" ] && [ "${#diff}" -le "${REVIEW_DIFF_MAX:-30000}" ]; then
+      echo; echo "## The diff (\`git diff $base..HEAD\`, already read for you)"; echo
+      echo '````diff'; printf '%s\n' "$diff"; echo '````'
+    fi
     [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
+    echo
+    echo "## Reminder: you are the reviewer"
+    echo
+    echo "Do not implement, fix or edit anything in the repository; the task above was the implementer's."
+    echo "Review the change against it and end with the \`agent-box-findings\` block (\`[]\` when nothing blocks)."
   } >"$body"
   # The spec reviewer (and review-both) is never the implementer's family: it gets its -alt role.
   local impl="" r var alt
@@ -950,7 +1025,7 @@ cmd_setup() {
 cmd_config() {
   load_project "$1"
   local k state=built
-  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 || state="not built: delegate.sh build $REPO"
+  dk image inspect "$IMAGE" >/dev/null 2>&1 || state="not built: delegate.sh build $REPO"
   printf '%-22s %s\n' image "$IMAGE ($state)" caches "agent-box-npm-cache ${CACHES:-}"
   for k in $(grep -oE '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$PROJECT_ENV" | sed -E 's/^export[[:space:]]+//; s/=$//' | sort -u); do
     if [ "$k" = OMNIROUTE_API_KEY ]; then printf '%-22s %s\n' "$k" "$([ -n "${!k:-}" ] && echo set || echo empty)"
@@ -1108,9 +1183,29 @@ case "${1:-}" in
   loop) shift; sub=(); [ "${1:-}" = resume ] && { sub=(resume); shift; }
     repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
+  install-skill) shift
+    # The Claude Code skill with this clone's path written in (claude-skill/agent-box/SKILL.md).
+    dest="${1:-$HOME/.claude/skills/agent-box}"; mkdir -p "$dest"
+    sed "s#<agent-box>#$(cd "$BOX" && pwd -W 2>/dev/null || pwd)#g" "$BOX/claude-skill/agent-box/SKILL.md" >"$dest/SKILL.md"
+    echo "agent-box: skill installed at $dest/SKILL.md" ;;
+  doctor) shift
+    if [ -n "${1:-}" ]; then load_project "$1"; else OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"; fi
+    AB_BASH="$BASH_VERSION" AB_ENGINE="$ENGINE" AB_IMAGE="$IMAGE" AB_BASE_IMAGE="$BASE_IMAGE" AB_BOX="$(winpath "$BOX")" \
+      AB_PROJECT_ENV="${PROJECT_ENV:-}" AB_REPO="${REPO:-}" AB_HOST_IP="$(host_address)" AB_NETWORK="${AGENT_BOX_NETWORK:-}" \
+      AB_SLOTS="${AGENT_BOX_SLOTS:-4}" AB_MEMORY="${MEMORY:-8g}" OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-}" \
+      OMNIROUTE_HOST_URL="${OMNIROUTE_HOST_URL:-http://localhost:20128/v1}" OMNIROUTE_BASE_URL="$OMNIROUTE_BASE_URL" \
+      node "$(winpath "$BOX/lib/doctor.mjs")" ;;
+  gc) shift; node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" "$@"
+    # Untagged images left by rebuilds and this namespace's stopped containers (parked ones keep running).
+    if [[ " $* " == *" --yes "* ]]; then
+      dk image prune -f >/dev/null 2>&1 && echo "untagged images pruned"
+      ids="$(dk ps -aq --filter "label=$NS_LABEL" --filter status=exited)"; [ -z "$ids" ] || dk rm -f $ids >/dev/null
+    else echo "and with --yes: untagged images ($(dk images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ') now), stopped containers"; fi ;;
+  bench) shift; AGENT_BOX_REPOS="${AGENT_BOX_REPOS:-}" node "$(winpath "$BOX/lib/bench.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
   unpark) shift; cmd_unpark "$@" ;;
   spec-check) shift; cmd_spec_check "$@" ;;
-  *) usage; [ -n "${1:-}" ] && exit 1 ;;
+  ""|help|-h|--help) usage ;;
+  *) usage; echo; die "unknown command $1" ;;
 esac

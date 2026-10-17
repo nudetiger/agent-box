@@ -86,9 +86,10 @@ if [ "$weak_spec" = true ]; then
 elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
   mkdir -p ~/.config/opencode
+  # The model list (1 MB) stays in the container: make-config reads limits from it, nothing else does.
   if ! curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" \
-    >"$OUT/models.json" 2>"$OUT/models.err"; then
-    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat "$OUT/models.err")"
+    >/tmp/models.json 2>/tmp/models.err; then
+    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat /tmp/models.err)"
     SKIP_AGENT=unreachable
   fi
 fi
@@ -110,7 +111,19 @@ elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" 
   else
     # Quoted replacements: a test command may hold |, & or backslashes (bash 5.2 patsub_replacement).
     pre="$(cat "$preamble")"; pre="${pre//\{\{BRANCH\}\}/"$BRANCH"}"; pre="${pre//\{\{TEST_CMD\}\}/"$TEST_CMD"}"
+    # JVM dependencies in the build caches: the `api` tool (image/api.mjs) answers signature questions.
+    api_note=""
+    if [ -d ~/.gradle/caches/modules-2/files-2.1 ] || [ -d ~/.m2/repository ]; then
+      api_note='## Dependency APIs
+
+Library classes (the jars under ~/.gradle or ~/.m2) are one command away: `api find <regex>` lists
+matching classes, `api show <Class>` prints a class'"'"'s signatures, `api grep <regex> --jar <name>`
+searches members, and `api src <Class> [method regex]` prints decompiled Java source, the whole class
+or only the matching methods. Use these instead of unzip, javap or find on the caches: the answers are
+short and cached, and source reads faster than bytecode.'
+    fi
     prompt="$(printf '%s\n' "$pre"
+              [ -n "$api_note" ] && printf '\n%s\n' "$api_note"
               [ -f /in/context.md ] && { echo; cat /in/context.md; }
               printf '\n# Task\n\n'; cat /in/task.md)"
   fi
@@ -167,7 +180,9 @@ final_message() {
       try { return JSON.parse(b[1]); } catch { return { parse_error: b[1].slice(0, 500) }; }
     };
     fs.writeFileSync("/out/report.json", JSON.stringify(block("agent-box-report")));
-    const f = block("agent-box-findings");
+    let f = block("agent-box-findings");
+    // {"findings": [...]} inside the fence: the array (lib/ledger.mjs finalBlock does the same).
+    if (f && !Array.isArray(f) && Array.isArray(f.findings)) f = f.findings;
     if (f !== null) fs.writeFileSync("/out/findings.json", JSON.stringify(f));
   ' 2>>"$OUT/harness.log" || true
 }
@@ -197,6 +212,139 @@ resume_cut() {
 resume_cut
 blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 
+# 3c. Self-check (SELF_CHECK=1): one more turn in the same session before the harness tests, on a first
+#     round that changed something. The worker audits its diff against the task the way the reviewers
+#     will, and fixes what it finds. A review round costs a fix and a recheck (30-40 min on
+#     RakunMiniItems); round 1 had a medium or worse finding in 8 of 10 loops (2026-10-14..17).
+self_checked=0
+if [ "${SELF_CHECK:-0}" = 1 ] && [ "${REVIEW:-0}" != 1 ] && [ -z "${CONTINUE_SESSION:-}" ] && [ "$agent_exit" = 0 ] \
+   && [ -z "$blocked" ] && [ -n "$session_id" ] && { [ -z "${STEPS:-}" ] || [ "${STEPS:-0}" -gt 30 ]; } \
+   && [ "$(git rev-list --count "$BASE_SHA..HEAD" 2>/dev/null || echo 0)" -gt 0 -o -n "$(git status --porcelain)" ] \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
+  self_checked=1
+  phase selfcheck
+  log "self-check: resuming $session_id"
+  msg="$(cat <<'EOF'
+# Self-check before the harness tests your work
+
+A reviewer will now read `git diff` of your branch against the task. Do their job first, briefly:
+
+1. Go through the task's required behaviour line by line. For each line, name the file:line that does it
+   and the test that would fail without it. A line with no code or no test is not done: do it now.
+2. For every code path you added or changed, check the cases reviewers find most often: empty, missing
+   or invalid input; a value at a boundary; the error path (what the user sees); reload or a second call;
+   two callers at once, or re-entry while it runs; cleanup when something throws.
+3. Check what the task said must stay the same still does, and that every doc the task or the context
+   pack names as a duty is updated.
+4. Do not refactor or widen the scope. Do not weaken or delete a test.
+
+Fix and commit what you find, rerun the tests, then end with the report block, keeping every decision
+and dispute from your earlier report. If nothing is missing, say so in one line, then the block:
+
+```agent-box-report
+{"status": "done|partial|blocked", "tests": "pass|fail|not_run", "test_summary": "<summary line exactly as printed>",
+ "decisions": ["<choices the task left open, one line each>"],
+ "context_gaps": ["<what the task or context pack should have told you but did not>"],
+ "test_dispute": [{"file": "<sealed test you believe is wrong>", "why": "<reason>"}],
+ "disputes": [{"finding": "<review finding id you believe is wrong>", "why": "<reason>"}]}
+```
+EOF
+)"
+  cp "$OUT/final.md" "$OUT/final-before-check.md" 2>/dev/null; cp "$OUT/report.json" "$OUT/report-before-check.json" 2>/dev/null
+  t0=$(date +%s)
+  timeout --kill-after=30 "${AUTOFIX_MIN:-15}m" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" "$msg" \
+    >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_exit=$?
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  log "self-check: agent exit $agent_exit"
+  final_message
+  # The earlier report's decisions and disputes stay: a short "nothing missing" report drops them.
+  node -e '
+    const fs = require("fs"), rd = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+    const a = rd("/out/report-before-check.json"), b = rd("/out/report.json");
+    if (!a || typeof a !== "object") process.exit(0);
+    if (!b || typeof b !== "object" || b.parse_error) { fs.writeFileSync("/out/report.json", JSON.stringify(a)); process.exit(0); }
+    for (const k of ["decisions", "context_gaps", "test_dispute", "disputes"]) {
+      const seen = new Set((b[k] ?? []).map((x) => JSON.stringify(x)));
+      b[k] = [...(b[k] ?? []), ...(a[k] ?? []).filter((x) => !seen.has(JSON.stringify(x)))];
+    }
+    fs.writeFileSync("/out/report.json", JSON.stringify(b));
+  ' 2>>"$OUT/harness.log" || true
+  resume_cut
+  blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
+fi
+
+# 3d. No report block: one short turn asks for it alone. 27 of 191 implement runs (2026-10-12..17)
+#     ended without one, so their claims could not be checked against the harness's tests (MISREPORT).
+report_asked=0
+# The last message announces a next step and stops ("Let me generate the findings JSON ...:"): 4 reviews
+# ended that way (2026-10-14..15). Those get "continue", not "reply with the block only".
+stopped_midway() {
+  tail -c 300 "$OUT/final.md" 2>/dev/null | tr '\n' ' ' \
+    | grep -qiE "(let me|now i'?ll|now i will|i will now|next,? i'?ll|i'?ll now)[^.!?]{0,160}[:.]?[[:space:]]*$|:[[:space:]]*$"
+}
+if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -z "$blocked" ] \
+   && ! jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
+   && ! grep -q 'agent-box-tests' "$OUT/final.md" 2>/dev/null \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null; then
+  report_asked=1
+  if stopped_midway; then
+    log "stopped mid-task (no report block): resuming"
+    rmsg='Your turn ended right after announcing a next step, with no tool call and no `agent-box-report` block. Continue the task from there, finish it, and end with the report block.'
+    rmin="${AUTOFIX_MIN:-15}"
+  else
+    log "no report block: asking for it"
+    rmsg='Your last message has no `agent-box-report` block. Do not change anything. Reply with only that fenced block, in the format the operating conditions give, filled in from the work you did (status, tests, decisions, context_gaps, test_dispute, disputes).'
+    rmin=5
+  fi
+  t0=$(date +%s)
+  timeout --kill-after=30 "${rmin}m" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
+    "$rmsg" >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  # The block is read from this reply; the message before it stays the final message.
+  cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
+  final_message
+  jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
+    && { log "report block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
+    || log "still no report block"
+fi
+
+# 3e. A review with no readable findings block: the same, for the block alone. An unreadable review
+#     stops the loop for the orchestrator (RakunMiniItems #50, 2026-10-17: a bare JSON object). Read
+#     as lib/ledger.mjs finalBlock does: the fenced block, else the message or its last json fence.
+findings_readable() {
+  node -e '
+    const t = require("fs").readFileSync("/out/final.md", "utf8");
+    const fence = t.match(/```[^\n`]*?(?:\r?\n[ \t]*)?agent-box-findings[^\n]*\n([\s\S]*?)\n\s*```/);
+    const tries = fence ? [fence[1]] : [t.trim(), ...[...t.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]).reverse()];
+    for (const s of tries) { try { const v = JSON.parse(s); if (Array.isArray(v) || Array.isArray(v?.findings)) process.exit(0); } catch {} }
+    process.exit(1);' 2>/dev/null
+}
+if [ "${REVIEW:-0}" = 1 ] && [ -z "${PREAMBLE:-}" ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [ -s "$OUT/final.md" ] \
+   && ! grep -q '^{"type":"error"' "$OUT/events.jsonl" 2>/dev/null && ! findings_readable; then
+  report_asked=1
+  if stopped_midway; then
+    log "review stopped mid-task (no findings block): resuming"
+    rmsg='Your turn ended right after announcing a next step, with no tool call and no `agent-box-findings` block. Continue from there (finish any reproduction you were writing), then end with that fenced block: a JSON array of your findings, `[]` when nothing blocks.'
+    rmin=15
+  else
+    log "no readable findings block: asking for it"
+    rmsg='Your last message has no readable `agent-box-findings` block. Do not review again. Reply with only that fenced block (```agent-box-findings, a JSON array of your findings in the format the task gives, `[]` when nothing blocks).'
+    rmin=5
+  fi
+  t0=$(date +%s)
+  timeout --kill-after=30 "${rmin}m" \
+    opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" \
+    "$rmsg" >>"$OUT/events.jsonl" 2>>"$OUT/opencode.log"
+  agent_s=$(( agent_s + $(date +%s) - t0 ))
+  cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
+  final_message
+  findings_readable && { log "findings block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
+    || log "still no readable findings block"
+fi
+
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
 #    becomes one labelled commit, so nothing is lost. Sealed files are reverted.
 leftovers=0
@@ -204,12 +352,15 @@ review_violation=false
 sealed_touched=()
 settle() {
   if [ "${REVIEW:-0}" = 1 ]; then
-    if [ -n "$(git status --porcelain)" ] || [ "$(git rev-list --count "$BASE_SHA..HEAD")" -gt 0 ]; then
+    # Against where this review started: a recheck (continue --at) starts on the fix's head, and the
+    # fix's own commits since the first review's base are not the reviewer's (all 10 REVIEW-EDIT flags
+    # to 2026-10-17 were those).
+    if [ -n "$(git status --porcelain)" ] || [ "$(git rev-list --count "$START_SHA..HEAD")" -gt 0 ]; then
       review_violation=true
-      { git status --porcelain; git log --oneline "$BASE_SHA..HEAD"; } >"$OUT/review-violation.txt"
+      { git status --porcelain; git log --oneline "$START_SHA..HEAD"; } >"$OUT/review-violation.txt"
       log "review run modified the repo; changes discarded"
     fi
-    git reset -q --hard "$BASE_SHA"; git clean -qfd
+    git reset -q --hard "$START_SHA"; git clean -qfd
     return
   fi
   if [ -n "$(git status --porcelain)" ]; then
@@ -297,7 +448,7 @@ jq -n \
   --argjson answered "$(ls /out/questions 2>/dev/null | grep -cE '^[0-9]+\.answer\.md$')" \
   --arg session "${session_id:-}" --argjson round "${ROUND:-1}" --arg start "$START_SHA" \
   --argjson red "$red_exit" --argjson weak "$weak_spec" --argjson autofix "$autofix" --argjson cut "$cut_resumes" \
-  --argjson recovered "$recovered" \
+  --argjson recovered "$recovered" --argjson selfcheck "$self_checked" --argjson repask "$report_asked" \
   --slurpfile report "$OUT/report.json" \
   --arg blocked "$blocked" --argjson sealed "$(printf '%s\n' "${sealed_touched[@]}" | sort -u | jq -R . | jq -s 'map(select(. != ""))')" \
   '{branch:$branch, base:$base, head:$head, model:$model, commits:$commits, leftovers_committed:($leftovers==1),
@@ -305,7 +456,7 @@ jq -n \
     phase_seconds:{setup:$setup_s, agent:$agent_s, test:$test_s},
     blocked:(if $blocked == "" then null else $blocked end), sealed_violation:$sealed,
     review:($review==1), review_violation:$violation, red_exit:$red, weak_spec:$weak, autofix:$autofix, cut_resumes:$cut,
-    final_recovered:($recovered > 0),
+    self_check:($selfcheck == 1), report_asked:($repask == 1), final_recovered:($recovered > 0),
     report:($report[0]), session:(if $session == "" then null else $session end), round:$round, start:$start,
     questions:{asked:$asked, answered:$answered}}' >"$OUT/summary.json"
 log "done"
