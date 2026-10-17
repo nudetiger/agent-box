@@ -28,9 +28,40 @@ cd agent-box
 npm ci                          # host-side helpers (one dependency: yaml)
 podman machine start            # Podman on Windows or macOS; skip on Linux or with Docker
 ./delegate.sh build             # the base worker image: Node, git, ripgrep, OpenCode (image/Dockerfile)
+./delegate.sh doctor            # checks everything below; each failure prints its fix
 ```
 
-Rebuild after changing anything under `image/`.
+Rebuild after changing anything under `image/`. `doctor <repo>` also checks the project file, its
+key, and that a container reaches OmniRoute over the route workers use.
+
+### Platforms
+
+| | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| shell | Git Bash | bash 4+ (`brew install bash`; macOS ships 3.2) | bash |
+| Podman | `podman machine`, user-mode networking | `podman machine` | native, rootless |
+| Docker | Docker Desktop | Docker Desktop | Docker Engine 20.10+ |
+| host address in containers | found through the machine (`host.containers.internal`) | same | `host-gateway` |
+
+Containers reach OmniRoute as `host.docker.internal`. On Linux the host service must listen where a
+container can reach it (not only `127.0.0.1`), or set `AGENT_BOX_NETWORK=host` and
+`OMNIROUTE_BASE_URL=http://localhost:20128/v1`. `AGENT_BOX_HOST_IP` overrides the address on any
+platform. Tested on Windows 10 with Podman 6.1 (2026-10-17); the unit tests and `doctor` also run in
+a Linux container. macOS and Docker Engine on Linux are untested.
+
+### Configuration files
+
+| file | in git | what |
+| --- | --- | --- |
+| `agent-box.conf` | yes | engine, roles, review and loop defaults, context and self-check settings |
+| `agent-box.local.conf` | no | this machine's overrides: `AGENT_BOX_SLOTS`, `AGENT_BOX_ENGINE`, `AGENT_BOX_NS`, `AGENT_BOX_REPOS` |
+| `projects/<repo>.env` | no | the project's OmniRoute key and settings; any `agent-box.conf` key wins here |
+| `projects/<repo>.context.yaml`, `.Dockerfile` | yes | context map; the project's toolchain image |
+| `prices.conf`, `prices.local.conf` | yes / no | USD per 1M tokens per model, for `stats` |
+
+**A second checkout** (a worktree, a test install) sets `AGENT_BOX_NS=<name>` in its
+`agent-box.local.conf`: its images (`agent-box-<name>`), containers, cache volumes and herdr workspace
+are then its own, and `clean` and `gc` touch only those.
 
 ## Set up a project
 
@@ -175,6 +206,8 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh ask    <repo> [--role advise] [--prompt q.md] [--file ctx ...]       # one-pass advisor
 ./delegate.sh show   <repo> <name>
 ./delegate.sh clean
+./delegate.sh doctor [<repo>]                       # prerequisites, images, OmniRoute route; fixes
+./delegate.sh gc     [--days N] [--yes]             # disk: old session archives, model lists, untagged images
 
 # ledger, trust, dashboard
 ./delegate.sh stats  [overview|models|runs|run R|flags|causes|notes|reviews|bench|compare|unlabeled|live] [--since 7d]
@@ -199,8 +232,8 @@ Optional but recommended: `projects/<repo>.context.yaml`, the **context map** (s
 ./delegate.sh defect  <repo> <feature-dir> "<title>" "<report>"
 
 # benchmark
-node lib/bench.mjs list [suite]
-node lib/bench.mjs run <suite[/task]> --roles a,b [--repeat N] [--parallel K]
+./delegate.sh bench list [suite]
+./delegate.sh bench run <suite[/task]> --roles a,b [--repeat N] [--parallel K]   # AGENT_BOX_REPOS: real repos elsewhere
 node bench/validate.mjs [suite]                     # base fails, reference passes, cheats fail
 ```
 
@@ -452,6 +485,19 @@ Measured so far (one task each, so treat as anecdotes): on a comment fix, Compos
 - **Skills**: Ponytail (`ponytail`, `ponytail-review`; baked into the image), the project's own `.claude/skills/` (filtered by `worker_skills` in the context map, so
   skills that interview a human are hidden) plus agent-box's `box-verify` and `box-prove-finding`.
 - `reasoning_effort` from the role, as a model option.
+- **Context**: each model gets limits, so OpenCode compacts the session at `COMPACT_AT` tokens
+  (110000) and prunes old tool output in continued rounds. OpenCode never compacts a model registered
+  without `limit.context`. Step latency grows with context: median 4 s a step under 60k tokens, 42 s
+  at 120-180k (RakunMiniItems t51, 2026-10-16). `COMPACT_AT=0` turns it off.
+- **`api`** (`image/api.mjs`): `api find|show|grep` print signatures from the JVM dependency jars in
+  the Gradle and Maven caches, indexed once into the shared `agent-box-api-cache` volume. Workers had
+  spent 36 of 61 shell calls decompiling jars by hand (t51). The plugin points at it when a worker runs
+  javap or unzip on the caches.
+- **Self-check** (`SELF_CHECK=1`): a first round that changed code gets one more turn auditing its diff
+  against the task (each requirement, the usual edge cases, the doc duties) before the harness tests.
+  The report keeps the decisions of the report before it.
+- **Lessons**: the project's accepted review findings (`lib/examples.mjs --lessons`) go into the
+  implementer's context pack. `LESSONS=0` turns them off; `LESSONS_BEFORE` limits them to an earlier time.
 
 ## Engine
 
@@ -479,6 +525,8 @@ Measured 2026-10-12, one full Lykos suite each, same commit, same machine:
 | `lib/ticket.mjs`, `lib/ticket/` | Ticket mode and its worker prompts (adapted from Matt Pocock's skills, MIT) |
 | `lib/bench.mjs`, `bench/` | Benchmark runner and the frozen suites |
 | `lib/watch.mjs`, `lib/forward.mjs` | Live feed; review findings into a fix round |
+| `lib/doctor.mjs`, `lib/gc.mjs`, `lib/prices.mjs` | `doctor`; `gc`; prices applied to the ledger |
+| `image/api.mjs` | `api` in the container: dependency signatures from the build caches |
 | `lib/reviewmode.mjs`, `lib/family.mjs` | Who reviews (review mode, roles, axes); the implementer's family never reviews its own code |
 | `image/progress.mjs`, `image/plugin.js`, `image/syntax-check.mjs` | Live progress file; syntax check after every edit |
 | `image/run-task.sh` | Container side: clone, setup, config, OpenCode, sealed check, tests, bundle |
