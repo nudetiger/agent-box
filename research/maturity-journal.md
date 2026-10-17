@@ -87,3 +87,13 @@ no co-author trailer in commits.
     implemented the task. Diff now after task and spec, then a reviewer reminder; cap 30000 chars.
 - Dev t50 loop: rv1 unreadable (bare JSON), resume rv1b implemented instead of reviewing; resumed
   again on 9109a15. Its time is not comparable to base t50 (two extra reviews, ~21 min).
+  - 94c226d/947119d parked containers held their slot's Gradle volume with a live daemon: the next run on
+    the slot failed setup (journal lock timeout; dev t50 loop check1). Parking stops build daemons
+    (bracketed pkill: a plain pattern killed its own sh), records the slot, the next round waits for it.
+  - e444a67 a resume after a failed check reruns only the check (fresh name), not the review.
+- base t50 implement r2: 1447 s, 140 steps (r1 1512 s, 154): the old harness is consistent on #50.
+- Bench B started: core suite (12 tasks) on base; dev (implement, implement_med) after.
+- dev t50 implement r2 (COMPACT_AT 150000, KEEP 40000, api src): 1433 s, 153 steps (base r1/r2: 1512/154,
+  1447/140). Cache reads 13.7M (base 29.7M, 22.9M), uncached input 0.89M (base 0.93M, 0.48M), output+
+  reasoning 110k (base 95k, 98k), 2 compactions, 20 file re-reads (base 18), javap 0, api 28.
+  The self-check again ended without a report block; the report request got it (108 s).
