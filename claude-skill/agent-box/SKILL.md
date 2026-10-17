@@ -257,7 +257,7 @@ Composer (misreported tool results, research/findings.md §6). Every worker has 
 - **Self-check**: a first round that changed code gets one more turn auditing its diff against the
   task before the harness tests it (`SELF_CHECK`). Its report keeps the earlier decisions.
 - **Lessons**: the project's accepted review findings go into the implementer's context pack.
-- **Reviews** get the diff inline when it is under `REVIEW_DIFF_MAX` characters (60000).
+- **Reviews** get the diff inline when it is under `REVIEW_DIFF_MAX` characters (30000).
 
 ## Housekeeping
 

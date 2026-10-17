@@ -905,20 +905,27 @@ cmd_review() {
     echo "Review the change on this branch: \`git diff $base..HEAD\` ($(git -C "$REPO" rev-list --count "$base..$branch") commits)."
     echo
     git -C "$REPO" log --format='- %h %s' "$base..$branch"
-    # The diff itself when it is small: reviewers otherwise spend their first steps on `git diff` file by
-    # file (La-t50 review, 2026-10-17: 7 of 51 shell calls). REVIEW_DIFF_MAX chars, 0 = never.
-    local diff; diff="$(git -C "$REPO" diff "$base" "$branch" -- 2>/dev/null)"
-    if [ -n "$diff" ] && [ "${#diff}" -le "${REVIEW_DIFF_MAX:-60000}" ]; then
-      echo; echo "## The diff (\`git diff $base..HEAD\`, already read for you)"; echo
-      echo '````diff'; printf '%s\n' "$diff"; echo '````'
-    fi
     if [ -f "$origin" ]; then
-      echo; echo "## The task the change was made for"; echo; sed 's/^/> /' "$origin"
+      echo; echo "## The task the change was made for (it was the implementer's; you review, you do not implement)"; echo; sed 's/^/> /' "$origin"
     fi
     for f in "${specs[@]}"; do
       echo; echo "## Spec: $(basename "$f")"; echo; sed 's/^/> /' "$f"
     done
+    # The diff itself when it is small: reviewers otherwise spend their first steps on `git diff` file by
+    # file (La-t50 review, 2026-10-17: 7 of 51 shell calls). After the task and spec, so the last
+    # instructions a reviewer reads are not the implementer's: with the diff before them, a DeepSeek
+    # review of RakunMiniItems #50 implemented the task instead (2026-10-17). REVIEW_DIFF_MAX chars, 0 = never.
+    local diff; diff="$(git -C "$REPO" diff "$base" "$branch" -- 2>/dev/null)"
+    if [ -n "$diff" ] && [ "${#diff}" -le "${REVIEW_DIFF_MAX:-30000}" ]; then
+      echo; echo "## The diff (\`git diff $base..HEAD\`, already read for you)"; echo
+      echo '````diff'; printf '%s\n' "$diff"; echo '````'
+    fi
     [ -n "$focus" ] && { echo; echo "Focus especially on: $focus"; }
+    echo
+    echo "## Reminder: you are the reviewer"
+    echo
+    echo "Do not implement, fix or edit anything in the repository; the task above was the implementer's."
+    echo "Review the change against it and end with the \`agent-box-findings\` block (\`[]\` when nothing blocks)."
   } >"$body"
   # The spec reviewer (and review-both) is never the implementer's family: it gets its -alt role.
   local impl="" r var alt

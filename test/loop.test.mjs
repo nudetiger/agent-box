@@ -381,6 +381,22 @@ test("loop: an unreadable review stops; resuming runs the review again instead o
   h.left();
 });
 
+test("loop: a stopped review that can be read on resume is used, not run again", async () => {
+  const h = harness([]);
+  fs.mkdirSync(path.join(h.P.runs, "rv-b"), { recursive: true });
+  fs.writeFileSync(path.join(h.P.runs, "rv-b", "summary.json"), JSON.stringify({ verdict: "review", next: "read_final_message" }));
+  fs.writeFileSync(path.join(h.P.runs, "rv-b", "meta.sh"), "ROLE=review-both\n");
+  let st = await loop(h.P, "impl", { name: "L", reviews: ["rv-b"] }, h.deps);
+  assert.equal(st.next, "read_final_message");
+  // The reader learns the shape (a bare JSON object): the same review now reads as no findings.
+  fs.writeFileSync(path.join(h.P.runs, "rv-b", "final.md"), '{"findings": []}');
+  st = await resume(h.P, "L", {}, h.deps);
+  assert.equal(st.next, "approve");
+  assert.equal(h.calls.length, 0, "no new review");
+  assert.ok(fs.existsSync(path.join(h.P.runs, "rv-b", "findings.json")));
+  h.left();
+});
+
 test("delegate.sh review --name and --prior: runs named by the prefix, each axis gets only its own", async () => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const BOX = path.resolve(import.meta.dirname, "..");
