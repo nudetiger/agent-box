@@ -28,7 +28,7 @@ export const AgentBox = async ({ directory }) => ({
     // whose answers are short and cached. t51 (2026-10-16): 36 of 61 shell calls were this.
     const cmd = input.tool === "bash" ? String(input.args?.command ?? "") : "";
     if (/\bjavap\b|\bunzip\b[^|]*\.jar|\bjar\s+-?t|\.gradle\/caches|\.m2\/repository/.test(cmd) && !/\bapi\s/.test(cmd))
-      output.output = `${output.output ?? ""}\n\n[agent-box] For dependency classes use \`api find <regex>\`, \`api show <Class>\` or \`api grep <regex> --jar <name>\`: short, cached signatures instead of raw jar output.`;
+      output.output = `${output.output ?? ""}\n\n[agent-box] For dependency classes use \`api find <regex>\`, \`api show <Class>\`, \`api grep <regex> --jar <name>\`, or \`api src <Class> [method]\` for decompiled source instead of javap -c bytecode: short and cached.`;
     for (const f of touched(input.tool, input.args)) {
       const file = f.startsWith("/") ? f : `${directory}/${f}`;
       try {

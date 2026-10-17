@@ -118,8 +118,9 @@ elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" 
 
 Library classes (the jars under ~/.gradle or ~/.m2) are one command away: `api find <regex>` lists
 matching classes, `api show <Class>` prints a class'"'"'s signatures, `api grep <regex> --jar <name>`
-searches members. Use these instead of unzip, javap or find on the caches: the answers are short and
-cached. Use javap -c only when you need a method'"'"'s bytecode, on that one class.'
+searches members, and `api src <Class> [method regex]` prints decompiled Java source, the whole class
+or only the matching methods. Use these instead of unzip, javap or find on the caches: the answers are
+short and cached, and source reads faster than bytecode.'
     fi
     prompt="$(printf '%s\n' "$pre"
               [ -n "$api_note" ] && printf '\n%s\n' "$api_note"

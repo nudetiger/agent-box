@@ -11,6 +11,12 @@ RUN apt-get update \
 
 RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && npm cache clean --force
 
+# Vineflower (Java decompiler, Apache-2.0) for `api src`: workers read dependency behaviour as source
+# instead of javap -c bytecode. Used only where the project image has a JDK. Pinned and verified.
+RUN mkdir -p /opt/agent-box \
+ && curl -fsSL -o /opt/agent-box/vineflower.jar https://repo1.maven.org/maven2/org/vineflower/vineflower/1.10.1/vineflower-1.10.1.jar \
+ && echo "b9b208e50793b64657a6b6292067526613f549de7405f9243624b02f4276e409  /opt/agent-box/vineflower.jar" | sha256sum -c -
+
 COPY run-task.sh /usr/local/bin/run-task.sh
 COPY api.mjs /usr/local/bin/api
 COPY changed-tests.sh /opt/agent-box/changed-tests.sh
