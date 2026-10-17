@@ -376,6 +376,53 @@ includes slot waits and, after, the orchestrator's minutes ruling on the spec ch
 Reading: the spec check is worth its ~3 minutes on tickets whose task text can contradict the docs
 (it catches what reviews otherwise catch a round later); it does not make loops faster by itself.
 
+## 14. The maturity pass: context, dependency lookups, robustness (2026-10-17)
+
+Old = master 93df15a (+ namespaces only); new = branch `harness-mature`. Same machine, Gemini 3.8 Flash
+high implements, DeepSeek review-both reviews, one run per cell unless noted; the old and new sides ran
+at the same time from separate checkouts, images and repo clones.
+
+**Where step time goes.** Median step time grows with context, but less than t51 suggested (its 42 s at
+120-180k were reasoning-heavy steps): old #50 implement 2.2 s under 60k, 3.0 s at 60-120k, 5.1 s at
+120-200k, 8.0 s at 200-320k. The old harness never compacts: OpenCode skips compaction for a model
+whose `limit.context` is 0, and models were registered with a name only. Contexts reached 311-329k.
+
+**Dependency discovery.** On #49, 75 of the old implementer's shell calls were `javap`/`unzip` on
+the Gradle cache (43 in its review). With `api find|show|grep|src`: `api` 47 calls; the remaining
+javap calls were all `javap -c -p` (bytecode), which `api src` (decompiled source) then replaced: the
+#50 rerun made 0 javap calls and 28 `api` calls.
+
+| ticket | side | end to end | implement | loop | round-1 blocking | cache reads | max context |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| #49 | old | 61.2 m | 39.4 m | 21.7 m | 2 | 68.0M | 329k |
+| #49 | new (compact 110k) | 44.5 m | 30.5 m | 14.0 m | 1 | 22.6M | 112k |
+| #50 | old | 44.7 m | 25.2 m | 19.5 m | 1 | 29.7M + loop | 311k |
+| #50 implement r2 | old | | 24.1 m (140 steps) | | | 22.9M | 259k |
+| #50 implement | new (compact 110k) | | 38.2 m (316 steps) | | | 19.6M | 114k |
+| #50 implement r2 | new (compact 150k, keep 40k) | | 23.9 m (153 steps) | | | 13.7M | 151k |
+
+Compacting at 110k with OpenCode's default 15k-token tail made #50 compact 5 times and re-read files
+89 times (old: 18): steps doubled. At 150k with 40k kept: 2 compactions, 20 re-reads, the same time as
+old, 40-54% fewer cache reads. Those are the defaults now (`COMPACT_AT`, `COMPACT_KEEP`).
+
+**Core suite** (12 frozen tasks with hidden checks): old 11/12 (feature-report-sort failed its hidden
+check), 3222 s, 9.23M tokens; new 12/12, 3340 s, 9.30M. Gemini at **medium** effort (8192-token thinking
+budget) on the new harness: 12/12, 2199 s (-34%), 6.0M tokens (-35%); on the two real Java tasks it
+passed both (386 s, 525 s vs 473 s, 879 s at high), but on #50 it took 2185 s / 239 steps vs 1433 s /
+153 at high. Medium suits small tasks; `implement` stays high.
+
+**Self-check** (one more turn auditing the diff before the harness tests): 0 edits in 15 runs, 13-103 s
+each, while the #49/#50 reviews then proved the edge cases its checklist names. Off by default.
+
+**Bugs the benchmarks found and the pass fixed** (each with a test where one could be written):
+a review written as bare JSON stopped the loop; a review given a 57 KB diff before the implementer's
+task implemented the task; parked containers kept their slot's Gradle volume and daemon lock, failing
+the next run's setup; every RakunMiniItems base suite failed to compile because of the sealed test;
+REVIEW-EDIT flagged every recheck (10 of 10 were false); bare-path docs in a context map rendered as
+"`undefined`", so RakunMiniItems workers were never pointed at AGENTS.md or CODING_STANDARDS.md;
+doc-duty files were flagged OUT-OF-SCOPE; 27 of 191 implement runs had no report block; a resumed loop
+reviewed again instead of reusing a readable review or rerunning only a failed check.
+
 ## Unmeasured
 
 Token budget per 5 hours; review precision and recall beyond the cases above; misreport rate; any
