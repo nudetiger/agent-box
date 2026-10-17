@@ -16,12 +16,15 @@ the evidence.
 
 ## Preconditions
 
-1. `projects/<repo>.env` holds `OMNIROUTE_API_KEY` (the user fills it; never print it).
-2. OmniRoute is running; the engine in `agent-box.conf` is up (`podman machine start`). The engine is
-   Podman, not Docker: use `podman` for images and containers, and rebuild with `delegate.sh build
-   <repo>`. Never start Docker Desktop for agent-box; its images are separate and stale.
-3. A recent `delegate.sh baseline <repo>` exists, so pre-existing failures are known.
-4. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
+1. `delegate.sh doctor <repo>` says `ready`. It checks bash, node, the engine and its images, the
+   project file and its key, and OmniRoute from the host and from inside a container; each failure
+   prints its fix. Run it first in a new session or after any setup change.
+2. `projects/<repo>.env` holds `OMNIROUTE_API_KEY` (the user fills it; never print it).
+3. The engine is the one `agent-box.conf` (or `agent-box.local.conf`) names, Podman by default. Use
+   that engine for images and containers and rebuild with `delegate.sh build <repo>`; never mix in
+   the other one (on a Podman machine, never start Docker Desktop: its images are separate and stale).
+4. A recent `delegate.sh baseline <repo>` exists, so pre-existing failures are known.
+5. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
 
 ## Write the task file (the harness builds the rest)
 
@@ -242,4 +245,26 @@ Composer (misreported tool results, research/findings.md §6). Every worker has 
 2. Rerun the verification on the host.
 3. Cherry-pick or merge under the repo's own commit rules (author, message, trailers). Delete rejected
    branches (`git branch -D agent/<name>`) and say why.
-4. `delegate.sh clean` after an interrupted run. Never edit `delegate.sh` while a run is executing it.
+4. `delegate.sh clean` after an interrupted run. Never edit `delegate.sh` while a run is executing it:
+   bash reads the script as it goes, and a run that outlives the edit executes the new text.
+
+## What the harness already does for workers (do not repeat it in tasks)
+
+- **Context**: OpenCode compacts a session at `COMPACT_AT` tokens and prunes old tool output in
+  continued rounds; step latency grows with context. Never paste big files or logs into a task.
+- **Dependency APIs**: JVM projects get `api find|show|grep` (signatures from the build caches,
+  indexed once). Never ask a worker to decompile jars.
+- **Self-check**: a first round that changed code gets one more turn auditing its diff against the
+  task before the harness tests it (`SELF_CHECK`). Its report keeps the earlier decisions.
+- **Lessons**: the project's accepted review findings go into the implementer's context pack.
+- **Reviews** get the diff inline when it is under `REVIEW_DIFF_MAX` characters (60000).
+
+## Housekeeping
+
+- `delegate.sh gc` shows what disk it would free (model lists, session archives older than 14 days,
+  untagged images); `gc --yes` frees it. Ask the user before `--yes`: an old run's session can no
+  longer be continued afterwards.
+- `delegate.sh stats` prices runs from `prices.conf` (USD per 1M tokens per model). Unpriced models
+  show as unpriced; report token counts then, never $0.
+- A second checkout of agent-box (a worktree, a test install) sets `AGENT_BOX_NS` in its
+  `agent-box.local.conf`, so its images, containers and cache volumes never collide with the first.

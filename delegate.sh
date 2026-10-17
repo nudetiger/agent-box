@@ -904,6 +904,13 @@ cmd_review() {
     echo "Review the change on this branch: \`git diff $base..HEAD\` ($(git -C "$REPO" rev-list --count "$base..$branch") commits)."
     echo
     git -C "$REPO" log --format='- %h %s' "$base..$branch"
+    # The diff itself when it is small: reviewers otherwise spend their first steps on `git diff` file by
+    # file (La-t50 review, 2026-10-17: 7 of 51 shell calls). REVIEW_DIFF_MAX chars, 0 = never.
+    local diff; diff="$(git -C "$REPO" diff "$base" "$branch" -- 2>/dev/null)"
+    if [ -n "$diff" ] && [ "${#diff}" -le "${REVIEW_DIFF_MAX:-60000}" ]; then
+      echo; echo "## The diff (\`git diff $base..HEAD\`, already read for you)"; echo
+      echo '````diff'; printf '%s\n' "$diff"; echo '````'
+    fi
     if [ -f "$origin" ]; then
       echo; echo "## The task the change was made for"; echo; sed 's/^/> /' "$origin"
     fi
@@ -1169,5 +1176,6 @@ case "${1:-}" in
   clean) cmd_clean ;;
   unpark) shift; cmd_unpark "$@" ;;
   spec-check) shift; cmd_spec_check "$@" ;;
-  *) usage; [ -n "${1:-}" ] && exit 1 ;;
+  ""|help|-h|--help) usage ;;
+  *) usage; echo; die "unknown command $1" ;;
 esac
