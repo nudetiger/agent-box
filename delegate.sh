@@ -102,6 +102,12 @@ Usage: delegate.sh <command> ...
   setup    <repo> [--dry-run]    First-time projects/<repo>.env, .Dockerfile and .context.yaml from the
                                  repo's manifests (Node, Go, Rust, CMake, Gradle, Maven, Python); never
                                  overwrites a file
+  doctor   [<repo>]              Check everything agent-box needs (bash, node, engine, images, OmniRoute
+                                 from the host and from inside a container), each failure with its fix
+  gc       [--days N] [--yes]    Disk: model lists and session archives older than N days (14) in runs/,
+                                 untagged images, stopped containers. Dry run unless --yes
+  bench    list|run ...          Frozen benchmark suites (bench/README.md); AGENT_BOX_REPOS points real-
+                                 history tasks at another checkout
   clean                        Remove leftover agent-box containers (and parked ones)
   unpark   <repo> <run>...|--all Remove parked containers of these runs (and <run>-*); the loop does it itself
   spec-check <repo> <task.md> [--role R] [--name N] [--base REF]
@@ -336,15 +342,8 @@ launch() {
   export TUI ROLE="${ROLE:-}" AUTOFIX="${AUTOFIX:-1}" HIDDEN="${HIDDEN_DIR:+1}" PREAMBLE="${PREAMBLE:-}"
   # Context management (image/make-config.mjs) and the self-check turn (run-task.sh), from the conf files.
   export COMPACT_AT="${COMPACT_AT:-}" SELF_CHECK="${SELF_CHECK:-}"
-  # Docker Desktop forwards host-gateway to the host's loopback, where OmniRoute listens. Podman
-  # needs user-mode networking, whose host address is what the VM itself resolves (gvproxy's .254);
-  # the gateway Podman would inject reaches the WSL interface, not loopback.
-  local host_ip="host-gateway"
-  if [ "$ENGINE" = podman ]; then
-    # podman machine ssh writes its known-hosts file to "NUL", a real file under Git Bash: run it in runs/.
-    host_ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
-    [ -n "$host_ip" ] || host_ip="192.168.127.254"
-  fi
+  local host_ip; host_ip="$(host_address)"
+  local net_args=(); [ -n "${AGENT_BOX_NETWORK:-}" ] && net_args=(--network "$AGENT_BOX_NETWORK")
   export BRANCH="$branch" BASE_SHA="$base_sha" START_SHA="$start_sha" SKIP_AGENT="$skip_agent"
   # The run's settings. A new container takes them by name; a reused one keeps its creation-time env,
   # so the round's values go to `exec` explicitly (the OmniRoute key is already in it, never on a command line).
@@ -358,7 +357,7 @@ launch() {
   else
     dk run -d --init --name "$cname" --label "$LABEL" --label "$NS_LABEL" --label "agent-box.project=$PROJECT" \
       --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
-      --add-host "host.docker.internal:$host_ip" \
+      --add-host "host.docker.internal:$host_ip" "${net_args[@]}" \
       "${CACHE_ARGS[@]}" "${extra_env[@]}" -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL "${runenv[@]}" \
       "$IMAGE" >/dev/null
   fi
@@ -401,6 +400,28 @@ launch() {
       || echo "ledger: could not record this run (see harness.log)" >"$run_dir/verdict.txt"
   fi
   report "$run_dir"
+}
+
+# The address containers reach the host (OmniRoute) at, as host.docker.internal. AGENT_BOX_HOST_IP wins.
+# Docker (Desktop, and Engine 20.10+) resolves host-gateway itself; Desktop forwards it to the host's
+# loopback. Podman with a machine (Windows, macOS) needs the address the VM resolves for the host
+# (gvproxy's .254): the gateway Podman would inject reaches the WSL interface, not loopback. Podman on
+# Linux has no machine: host-gateway (Podman 4.7+). On Linux the host service must listen where the
+# container can reach it (not only 127.0.0.1), or set AGENT_BOX_NETWORK=host and OMNIROUTE_BASE_URL
+# to http://localhost:<port>/v1. `delegate.sh doctor` checks the route from inside a container.
+host_address() {
+  if [ -n "${AGENT_BOX_HOST_IP:-}" ]; then echo "$AGENT_BOX_HOST_IP"; return; fi
+  if [ "$ENGINE" = podman ] && [ "$(uname -s)" != Linux ]; then
+    local ip cache="$BOX/runs/.host-ip"
+    # The VM's view changes only when the machine restarts: reuse it for 10 minutes (1-2 s an ssh).
+    if [ -f "$cache" ] && [ $(( $(date +%s) - $(cat "$cache.t" 2>/dev/null || echo 0) )) -lt 600 ]; then cat "$cache"; return; fi
+    # podman machine ssh writes its known-hosts file to "NUL", a real file under Git Bash: run it in runs/.
+    mkdir -p "$BOX/runs"
+    ip="$(cd "$BOX/runs" && podman machine ssh getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}' | tr -d '\r'; rm -f NUL)"
+    if [ -n "$ip" ]; then echo "$ip" >"$cache"; date +%s >"$cache.t"; else ip="192.168.127.254"; fi
+    echo "$ip"; return
+  fi
+  echo host-gateway
 }
 
 # Concurrency slots: at most AGENT_BOX_SLOTS containers at once (default 4), whatever starts them
@@ -490,7 +511,7 @@ cmd_run() {
   # Rulings join the task itself, so the worker and every later reviewer read them as binding.
   if [ -n "$rulings" ]; then
     [[ "$rulings" == @* ]] && { [ -f "${rulings#@}" ] || die "rulings file not found: ${rulings#@}"; rulings="$(cat "${rulings#@}")"; }
-    local ruled; ruled="$(mktemp --suffix=.md)"
+    local ruled; ruled="$(mktemp "${TMPDIR:-/tmp}/agent-box-rulings.XXXXXX")"
     { cat "$task"; printf '\n\n## The orchestrator'"'"'s rulings (binding)\n\n%s\n' "$rulings"; } >"$ruled"
     task="$ruled"
   # A ticket (frontmatter `issue:`) gets a spec check first, once: questions stop here, before any code.
@@ -598,7 +619,7 @@ cmd_watch() {
   if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
     local short="${model##*/}"; short="${short%-tiered}"
     "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" --source agent-box --agent "$name${short:+ ($short)}" --state idle \
-      --message "done: $verdict" --seq "$(date +%s%3N)" >/dev/null 2>&1 || true
+      --message "done: $verdict" --seq "$(( $(date +%s) * 1000 ))" >/dev/null 2>&1 || true
     herdr_close_tab
   fi
 }
@@ -1130,6 +1151,19 @@ case "${1:-}" in
   loop) shift; sub=(); [ "${1:-}" = resume ] && { sub=(resume); shift; }
     repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
+  doctor) shift
+    if [ -n "${1:-}" ]; then load_project "$1"; else OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"; fi
+    AB_BASH="$BASH_VERSION" AB_ENGINE="$ENGINE" AB_IMAGE="$IMAGE" AB_BASE_IMAGE="$BASE_IMAGE" AB_BOX="$(winpath "$BOX")" \
+      AB_PROJECT_ENV="${PROJECT_ENV:-}" AB_REPO="${REPO:-}" AB_HOST_IP="$(host_address)" AB_NETWORK="${AGENT_BOX_NETWORK:-}" \
+      AB_SLOTS="${AGENT_BOX_SLOTS:-4}" AB_MEMORY="${MEMORY:-8g}" OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-}" \
+      OMNIROUTE_HOST_URL="${OMNIROUTE_HOST_URL:-http://localhost:20128/v1}" OMNIROUTE_BASE_URL="$OMNIROUTE_BASE_URL" \
+      node "$(winpath "$BOX/lib/doctor.mjs")" ;;
+  gc) shift; node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" "$@"
+    # Untagged images left by rebuilds and this namespace's stopped containers (parked ones keep running).
+    if [[ " $* " == *" --yes "* ]]; then
+      dk image prune -f >/dev/null 2>&1 && echo "untagged images pruned"
+      ids="$(dk ps -aq --filter "label=$NS_LABEL" --filter status=exited)"; [ -z "$ids" ] || dk rm -f $ids >/dev/null
+    else echo "and with --yes: untagged images ($(dk images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ') now), stopped containers"; fi ;;
   bench) shift; AGENT_BOX_REPOS="${AGENT_BOX_REPOS:-}" node "$(winpath "$BOX/lib/bench.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;

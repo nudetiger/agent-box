@@ -235,10 +235,12 @@ A reviewer will now read `git diff` of your branch against the task. Do their jo
    pack names as a duty is updated.
 4. Do not refactor or widen the scope. Do not weaken or delete a test.
 
-Fix and commit what you find, rerun the tests, then end with the report block again. If nothing is
-missing, say so in one line and end with the report block.
+Fix and commit what you find, rerun the tests, then end with the report block again, keeping every
+decision and dispute from your earlier report. If nothing is missing, say so in one line and end with
+the report block.
 EOF
 )"
+  cp "$OUT/final.md" "$OUT/final-before-check.md" 2>/dev/null; cp "$OUT/report.json" "$OUT/report-before-check.json" 2>/dev/null
   t0=$(date +%s)
   timeout --kill-after=30 "${AUTOFIX_MIN:-15}m" \
     opencode run --auto --format json --agent "$agent_name" -m "omniroute/$MODEL" "${attach_args[@]}" "${variant_args[@]}" --session "$session_id" --title "$BRANCH" "$msg" \
@@ -247,6 +249,18 @@ EOF
   agent_s=$(( agent_s + $(date +%s) - t0 ))
   log "self-check: agent exit $agent_exit"
   final_message
+  # The earlier report's decisions and disputes stay: a short "nothing missing" report drops them.
+  node -e '
+    const fs = require("fs"), rd = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+    const a = rd("/out/report-before-check.json"), b = rd("/out/report.json");
+    if (!a || typeof a !== "object") process.exit(0);
+    if (!b || typeof b !== "object" || b.parse_error) { fs.writeFileSync("/out/report.json", JSON.stringify(a)); process.exit(0); }
+    for (const k of ["decisions", "context_gaps", "test_dispute", "disputes"]) {
+      const seen = new Set((b[k] ?? []).map((x) => JSON.stringify(x)));
+      b[k] = [...(b[k] ?? []), ...(a[k] ?? []).filter((x) => !seen.has(JSON.stringify(x)))];
+    }
+    fs.writeFileSync("/out/report.json", JSON.stringify(b));
+  ' 2>>"$OUT/harness.log" || true
   resume_cut
   blocked="$(cat "$OUT/blocked.txt" 2>/dev/null || true)"
 fi
