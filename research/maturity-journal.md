@@ -126,3 +126,6 @@ no co-author trailer in commits.
   -> approve; resume took 7 min. #50 C2 wall: implement 28.0 + review 18.5 (8 min of it waiting on the
   unanswered live question) + 7.0.
 - Lykos peak-wrap on the new harness started (Node repo check).
+  - e33b0fa+: `--base <sha>` not contained in HEAD bundled HEAD instead ("reference is not a tree"); now a
+    temporary branch refs/heads/agent-box-tmp/base-<run> (a bundle clone takes refs/heads only).
+- Lykos peak-wrap on e33b0fa+: 17.3 min end to end (9.1 + 8.2), 1 round, 0 blocking -> approve.

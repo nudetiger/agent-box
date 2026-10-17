@@ -414,6 +414,18 @@ passed both (386 s, 525 s vs 473 s, 879 s at high), but on #50 it took 2185 s / 
 **Self-check** (one more turn auditing the diff before the harness tests): 0 edits in 15 runs, 13-103 s
 each, while the #49/#50 reviews then proved the edge cases its checklist names. Off by default.
 
+**Validation on the final branch** (all fixes, compaction 150k/40k, self-check off):
+
+| ticket | end to end | implement | loop | rounds | round-1 blocking |
+| --- | --- | --- | --- | --- | --- |
+| #49 | 36.6 m (old 61.2) | 29.1 m | 7.5 m | 1 | 0 |
+| #50 | 53.5 m wall, one resume (old 44.7) | 28.0 m | 18.5 + 7.0 m | 2 | 1 |
+| Lykos peak-wrap | 17.3 m (old, 2026-10-17 E2E: 24 m run time) | 9.1 m | 8.2 m | 1 | 0 |
+
+#50's review asked a live spec question nobody was watching (8 of its 18.5 minutes were the wait) and
+wrapped its findings as `{"findings": [...]}` inside the fence; both the wait and the unwrap are
+covered now (the resume reused that review). Without them #50 lands near the old harness's time.
+
 **Bugs the benchmarks found and the pass fixed** (each with a test where one could be written):
 a review written as bare JSON stopped the loop; a review given a 57 KB diff before the implementer's
 task implemented the task; parked containers kept their slot's Gradle volume and daemon lock, failing
@@ -421,7 +433,8 @@ the next run's setup; every RakunMiniItems base suite failed to compile because 
 REVIEW-EDIT flagged every recheck (10 of 10 were false); bare-path docs in a context map rendered as
 "`undefined`", so RakunMiniItems workers were never pointed at AGENTS.md or CODING_STANDARDS.md;
 doc-duty files were flagged OUT-OF-SCOPE; 27 of 191 implement runs had no report block; a resumed loop
-reviewed again instead of reusing a readable review or rerunning only a failed check.
+reviewed again instead of reusing a readable review or rerunning only a failed check; a fenced
+findings object was unreadable; a `--base` commit HEAD does not contain never reached the container.
 
 ## Unmeasured
 
