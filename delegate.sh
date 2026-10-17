@@ -8,17 +8,25 @@ BOX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # fanout, review, explore and batch start runs of this script. "$0" is whatever the caller typed: a
 # relative "delegate.sh" is not on PATH and fails with "command not found" (bench 2026-10-13).
 SELF=(bash "$BOX/delegate.sh")
-IMAGE="agent-box:latest"
-LABEL="agent-box=1"
 # Container engine: podman (default) or docker. Set AGENT_BOX_ENGINE in the environment or in agent-box.conf.
+# agent-box.local.conf (not in git) holds this machine's own overrides: slots, namespace, engine.
 [ -f "$BOX/agent-box.conf" ] && . "$BOX/agent-box.conf"
+[ -f "$BOX/agent-box.local.conf" ] && . "$BOX/agent-box.local.conf"
 ENGINE="${AGENT_BOX_ENGINE:-podman}"
 case "$ENGINE" in docker|podman) ;; *) echo "agent-box: unknown engine $ENGINE" >&2; exit 1 ;; esac
+# Namespace: a second checkout (a worktree, a test install) sets AGENT_BOX_NS so its images, containers,
+# cache volumes and herdr workspace never collide with the first one's. Empty: the plain names.
+NS="agent-box${AGENT_BOX_NS:+-$AGENT_BOX_NS}"
+BASE_IMAGE="$NS:latest"
+IMAGE="$BASE_IMAGE"
+LABEL="agent-box=1"
+NS_LABEL="agent-box.ns=${AGENT_BOX_NS:-default}"
+export AGENT_BOX_NS
 
 die() { echo "agent-box: $*" >&2; exit 1; }
 # The engine gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
 dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" "$ENGINE" "$@"; }
-cname_of() { echo "agent-box-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
+cname_of() { echo "$NS-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -118,7 +126,7 @@ load_project() {
   [ -f "$env" ] || die "no project file $env (copy projects/example.env)"
   PROJECT_ENV="$env"
   # A project with its own Dockerfile runs in its own image; IMAGE in the .env file wins over both.
-  [ -f "$BOX/projects/$PROJECT.Dockerfile" ] && IMAGE="agent-box-$PROJECT:latest"
+  [ -f "$BOX/projects/$PROJECT.Dockerfile" ] && IMAGE="$NS-$PROJECT:latest"
   set -a; # shellcheck disable=SC1090
   . "$env"; set +a
   OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://host.docker.internal:20128/v1}"
@@ -131,15 +139,20 @@ load_project() {
 need_key() { [ -n "${OMNIROUTE_API_KEY:-}" ] || die "OMNIROUTE_API_KEY is empty in projects/$PROJECT.env"; }
 
 cmd_build() {
-  dk build -t agent-box:latest "$(winpath "$BOX/image")"
+  dk build -t "$BASE_IMAGE" "$(winpath "$BOX/image")" || return 1
+  # A rebuild leaves the previous image untagged; nothing uses it again (245 such images, 7 GB, 2026-10-17).
+  dk image prune -f >/dev/null 2>&1 || true
   [ -n "${1:-}" ] || return 0
   load_project "$1"
   local df="$BOX/projects/$PROJECT.Dockerfile"
   [ -f "$df" ] || die "no $df: $PROJECT runs in the base image, nothing more to build"
   # The context is an empty folder holding only the Dockerfile: projects/ has the .env secrets.
   local ctx="$BOX/runs/.build-$PROJECT"
-  rm -rf "$ctx"; mkdir -p "$ctx"; cp "$df" "$ctx/Dockerfile"
+  rm -rf "$ctx"; mkdir -p "$ctx"
+  # FROM agent-box:latest in a project Dockerfile means this checkout's base image (its namespace).
+  sed -E "s#^FROM[[:space:]]+agent-box:latest#FROM $BASE_IMAGE#" "$df" >"$ctx/Dockerfile"
   dk build -t "$IMAGE" "$(winpath "$ctx")"; local e=$?
+  dk image prune -f >/dev/null 2>&1 || true
   rm -rf "$ctx"; return $e
 }
 
@@ -154,8 +167,10 @@ cache_volumes() {
   CACHE_ARGS=(-v agent-box-npm-cache:/home/node/.npm)
   for c in ${CACHES:-}; do
     [[ "$c" == ?*:/?* ]] || die "CACHES entry '$c' is not name:/path"
-    base="agent-box-${c%%:*}-cache"; vol="$base"
-    if [ -n "$n" ] && [ "${AGENT_BOX_SLOT_CACHES:-1}" != 0 ]; then vol="agent-box-${c%%:*}$n-cache"; seed_volume "$base" "$vol"; fi
+    base="agent-box-${c%%:*}-cache"; vol="$NS-${c%%:*}-cache"
+    # Another namespace seeds its own volumes from the shared one and never writes to it.
+    [ "$vol" = "$base" ] || seed_volume "$base" "$vol"
+    if [ -n "$n" ] && [ "${AGENT_BOX_SLOT_CACHES:-1}" != 0 ]; then base="$vol"; vol="$NS-${c%%:*}$n-cache"; seed_volume "$base" "$vol"; fi
     CACHE_ARGS+=(-v "$vol:${c#*:}")
   done
 }
@@ -179,7 +194,7 @@ cmd_models() {
 
 cmd_clean() {
   rm -f "$BOX"/runs/*/*/parked
-  local ids; ids="$(dk ps -aq --filter "label=$LABEL")"
+  local ids; ids="$(dk ps -aq --filter "label=$LABEL" --filter "label=$NS_LABEL")"
   [ -z "$ids" ] && { echo "nothing to clean"; return; }
   dk rm -f $ids
 }
@@ -286,8 +301,8 @@ launch() {
   done >"$run_dir/meta.sh"
   printf 'RUN_BASE_SHA=%q\nRUN_BASE_REF=%q\nRUN_ROUND=%q\n' "$base_sha" "$bundle_ref" "${ROUND:-1}" >>"$run_dir/meta.sh"
 
-  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 \
-    || die "no image $IMAGE: run delegate.sh build $REPO"
+  dk image inspect "$IMAGE" >/dev/null 2>&1 \
+    || die "no image $IMAGE: run delegate.sh build$([ "$IMAGE" = "$BASE_IMAGE" ] || echo " $REPO")"
   # Into the container as well: the project's SYNTAX_<ext> checks and the names in CONTAINER_ENV.
   local v extra_env=()
   for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do export "${v?}"; extra_env+=(-e "$v"); done
@@ -334,7 +349,7 @@ launch() {
   if [ "$reuse" = 1 ]; then
     for v in $(compgen -v SYNTAX_) ${CONTAINER_ENV:-}; do execenv+=(-e "$v=${!v:-}"); done
   else
-    dk run -d --init --name "$cname" --label "$LABEL" --label "agent-box.project=$PROJECT" \
+    dk run -d --init --name "$cname" --label "$LABEL" --label "$NS_LABEL" --label "agent-box.project=$PROJECT" \
       --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 --memory "${MEMORY:-8g}" \
       --add-host "host.docker.internal:$host_ip" \
       "${CACHE_ARGS[@]}" "${extra_env[@]}" -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL "${runenv[@]}" \
@@ -623,8 +638,8 @@ herdr_ok() {
 }
 herdr_ws() {
   local ws
-  ws="$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[] | select(.label == "agent-box") | .workspace_id' | head -n 1)"
-  [ -n "$ws" ] || ws="$(herdr workspace create --label agent-box --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
+  ws="$(herdr workspace list 2>/dev/null | jq -r --arg ns "$NS" '.result.workspaces[] | select(.label == $ns) | .workspace_id' | head -n 1)"
+  [ -n "$ws" ] || ws="$(herdr workspace create --label "$NS" --cwd "$(winpath "$BOX")" --no-focus 2>/dev/null | jq -r '.result.workspace.workspace_id')"
   echo "$ws"
 }
 # Each run's tab: the real OpenCode TUI attached to the worker on the left (TUI=1), the agent-box feed
@@ -745,7 +760,7 @@ cmd_wait() {
           local live=() r
           if [ -d "$runs/_loops/$n" ]; then
             mapfile -t live < <(dk ps --filter "label=agent-box.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | tr -d '\r' \
-              | sed -n "s/^agent-box-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
+              | sed -n "s/^$NS-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
           elif [ -d "$runs/$n" ]; then live=("$n"); fi
           for r in "${live[@]}"; do
             if cmd_questions "$repo" "$r" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
@@ -950,7 +965,7 @@ cmd_setup() {
 cmd_config() {
   load_project "$1"
   local k state=built
-  [ "$IMAGE" = agent-box:latest ] || dk image inspect "$IMAGE" >/dev/null 2>&1 || state="not built: delegate.sh build $REPO"
+  dk image inspect "$IMAGE" >/dev/null 2>&1 || state="not built: delegate.sh build $REPO"
   printf '%-22s %s\n' image "$IMAGE ($state)" caches "agent-box-npm-cache ${CACHES:-}"
   for k in $(grep -oE '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$PROJECT_ENV" | sed -E 's/^export[[:space:]]+//; s/=$//' | sort -u); do
     if [ "$k" = OMNIROUTE_API_KEY ]; then printf '%-22s %s\n' "$k" "$([ -n "${!k:-}" ] && echo set || echo empty)"
