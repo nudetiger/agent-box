@@ -80,3 +80,12 @@ junction"). The harness's review did not flag it.
 
 **Workaround.** Name this in the task for any worker that creates worktrees. Better: a standing
 lesson in the Lykos context pack.
+
+## 8. `wait --questions` returns at once on a question already answered
+
+**Seen.** Lykos T197 loop: after `answer ... 1`, a new `wait loop-t197-r2 t199-r2 --any --questions`
+returned immediately with "loop-t197-r2-rv1-review-both asks:" and an empty question;
+`questions` said "no open questions".
+
+**Workaround.** Check `questions <run>` before trusting the wake; start the wait again. Better: count
+only unanswered questions.
