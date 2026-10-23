@@ -1,0 +1,4 @@
+1: The task state CHECK and the TaskState type gain 'disputed', with a ledger migration for existing databases. The Outcome type is unchanged.
+2: The dispute reaches the parent in the spawned child's agent tool result; no new channel. The ruling goes back as the parent's next message to that child.
+3: seal.resolver accepts orchestrator and test-writer, default test-writer; test-writer behaves as orchestrator until T204. seal.escalate_after is a positive integer, default 1, parsed and documented now, used by T204.
+4: A parked test is named by file plus full describe path plus name, matched exactly as T201's red-list match.

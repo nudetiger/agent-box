@@ -1,0 +1,24 @@
+---
+files:
+  - src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java
+  - src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+  - src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
+sealed:
+  - src/foliaTest/java/me/rakkoon69/rakunloots/server/Phase9FoliaShutdownOwnershipProofTest.java
+  - src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiSessionCloseProofTest.java
+scope: [src/main/java/me/rakkoon69/rakunloots/menu/**, src/main/java/me/rakkoon69/rakunloots/wiki/**, src/main/java/me/rakkoon69/rakunloots/server/**, src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java, src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java, src/test/**, src/foliaTest/**]
+test: "bash ./gradlew --console=plain :test --tests 'me.rakkoon69.rakunloots.menu.*' --tests 'me.rakkoon69.rakunloots.wiki.*' --tests 'me.rakkoon69.rakunloots.claim.*' --tests 'me.rakkoon69.rakunloots.PluginEnableTest' :foliaTest"
+steps: 85
+---
+Fix the TWO retained findings from full Phase9 review at product008664d, reviewer IDs1 and3. Tests are sealed on base429acbcaf0118a8429b93f76079c19dd3ce24b7b. Work in this agent-box sandbox; you are not alone in this codebase and must preserve others' edits. Exactly one model at a time; DO NOT launch scout/subagents.
+
+Finding1 (#109): Folia closeMenu marks handle closed but onEntity silently skips work once plugin.isEnabled is false. Actual server shutdown halts region ticks BEFORE disabling plugins, with online players still present. Simply reordering HandlerList/unregister or waiting for entity callbacks cannot close the physical menu. Public Server.isOwnedByCurrentRegion(Entity) is the supported ownership seam: Folia TickThread.isTickThreadFor(Entity) returns true for RegionShutdownThread. In that context closeMenu can close the player's physical inventory synchronously despite the disabled flag; do not bypass ownership or weaken a fake. Preserve scheduled routing when caller doesn't own player. Check source/API floor signatures. Source evidence:
+https://docs.papermc.io/folia/reference/overview/#server-shutdown-process
+https://github.com/PaperMC/Folia/blob/ver/26.2.x/folia-server/paper-patches/features/0001-Region-Threading-Base.patch (TickThread.isTickThreadFor(Entity), shutdown true)
+The sealed test decorates FakeFoliaServer with a faithful shutdown ownership predicate and refuses a direct non-owner close. Add coverage for non-owner/enabled scheduling, offline/retired players, already closed/replaced handles, and shutdown. Do not introduce NMS, reflection/version checks in production, plugin shims, cross-region inventory writes, kicking users, indefinite blocking, or listeners which silently stop guarding items. The original review's arbitrary live hot-disable-from-non-owner trigger must be checked honestly: do not claim this is fixed merely by a future that completes. Investigate an API-supported safe path if feasible, and explicitly report any unsupported remaining scenario with evidence rather than inventing a solution.
+
+Finding3 (#112): WikiMenu.sessions only removes entries on chance publication. Ordinary menu close, explicit close, reload/closeAll and replacements must retire the matching wiki session immediately, without needing another cache publish. Add a small lifecycle seam from MenuService so every terminal path is covered. Notifications must identify exact session/epoch or handle and must not drop a newer replacement. Deliver callbacks outside MenuService locks to avoid inverse lock order with WikiMenu.Session locks. Guard late successful-open registration against a menu already closed between landing and registration; stale callbacks must not resurrect/leak a session. Preserve existing late/inverse world-read and chance-ready/navigation proofs. Keep the real shipped menu/language inputs in proof tests.
+
+Write meaningful failing tests first for new races, verify RED, implement, then GREEN. Existing sealed proof tests must stay byte-for-byte. One issue per commit: finding1 commit names #109, finding3 commit names #112. Scope excludes chance math, language/menu resources, formatting, and dismissed observations2/4/5. No ADR/spec edits. Report ID -> fix -> test names -> exact output, extra changes, source/API evidence, and any honest limitation. Do not push/merge from the sandbox.
+
+Lifecycle design constraint: wiki navigation uses replaceIf to install a new physical inventory while keeping the SAME logical Session. Do not remove the session on that old handle's close. A small per-open retirement subscription registered for an exact installed epoch, transferred by replaceIf, and retired by new open/ordinary close/explicit close/closeAll is one viable seam. Register-after-close must invoke disposal or refuse atomically, not leak. If you choose generic listeners instead, prove navigation preservation and late-registration races explicitly. Do not make WikiMenu's private sessions map the menu engine's knowledge.

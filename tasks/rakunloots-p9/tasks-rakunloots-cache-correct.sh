@@ -1,0 +1,2 @@
+set -euo pipefail
+MSYS_NO_PATHCONV=1 podman run --rm --user root --entrypoint bash -v agent-box-gradle1-cache:/seed:ro -v agent-box-rakunloots-gradle-cache:/dest agent-box:latest -c 'tar -C /seed --exclude=daemon --exclude="*.lock" --exclude="*.lck" --exclude="*.part" --exclude=.tmp -cf - . | tar -C /dest -xf -'

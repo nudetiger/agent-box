@@ -1,0 +1,5 @@
+The90-minute run timed out after finishing the code and tests, before your final commit/report. The harness preserved all source in commit31aff3dbcb0f6cfb7c2cea3ccda6cb1963292be3 and its required gate passed (test_exit0). Your container/session is reused.
+
+This follow-up is REPORT ONLY. Do not edit source, call box-verify again, or rerun broad checks. Read the current test comments/results only if needed for an exact measurement, then finish immediately with the required agent-box-report JSON block. State all added test names and deliberate-wrong red evidence, the measured100-entry performance protocol/result, the warnings.yml resource change, and the known pre-existing Folia fixture bootstrap failure (116/122 fail on stashed/base too). Root:test andfancyTest passed. Do not describe that Folia baseline issue as a107 regression. The orchestrator will run independent review/regressions afterward.
+
+The code is already committed by the harness; no commit is needed if there are no changes. Keep this to one short final response with the mandatory report block, not another implementation round.

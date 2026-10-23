@@ -1,0 +1,98 @@
+{
+  "query": "rakunloots/p9-107-report",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "780ff464",
+    "ts": "2026-10-20T20:30:20Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-107-report",
+    "role": "implement",
+    "model": "gemini-3.8-flash-tiered",
+    "harness": "4e312604",
+    "mode": "implement",
+    "parent": "p9-107-complete",
+    "round": 2,
+    "task": "8414f226",
+    "title": "The90-minute run timed out after finishing the code and tests, before your final",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "5c671a9fbd",
+    "head": "31aff3dbcb",
+    "effort": "high",
+    "seconds": {
+      "total": 326,
+      "setup": 0,
+      "agent": 300,
+      "test": 12
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 124,
+      "test": 0,
+      "first_test": 0
+    },
+    "steps": 5,
+    "tools": 4,
+    "tool_s": 0,
+    "tokens": {
+      "input": 8255,
+      "output": 94,
+      "reasoning": 1156,
+      "cache_read": 318929,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 2,
+    "diff": {
+      "files": 11,
+      "insertions": 940,
+      "deletions": 5
+    },
+    "verdict": "timeout",
+    "flags": [],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": null,
+    "steps_budget": 90
+  },
+  "contextGaps": [],
+  "trust": null,
+  "verdictLabel": {
+    "cause": "model_limit",
+    "source": "orchestrator",
+    "why": "Report-only continuation exceeded5-minute deadline without a report, despite passing required gate. This second consecutive timeout triggered the user-authorized DeepSeekMax/OpusHigh fallback.",
+    "worker": null,
+    "orchestrator": "model_limit"
+  },
+  "flags": [],
+  "labels": [
+    {
+      "id": "facd7891",
+      "ts": "2026-10-20T20:47:28Z",
+      "refs": [
+        "780ff464#verdict"
+      ],
+      "cause": "model_limit",
+      "source": "orchestrator",
+      "why": "Report-only continuation exceeded5-minute deadline without a report, despite passing required gate. This second consecutive timeout triggered the user-authorized DeepSeekMax/OpusHigh fallback."
+    }
+  ],
+  "reviews": [],
+  "outcome": {
+    "result": "rejected",
+    "cause": "model_limit",
+    "why": "Second timeout; no usable report, work retained in codex/phase9-107-gemini-saved.",
+    "ts": "2026-10-20T20:47:28Z"
+  },
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

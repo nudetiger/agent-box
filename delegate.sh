@@ -27,6 +27,16 @@ die() { echo "agent-box: $*" >&2; exit 1; }
 # The engine gets container paths verbatim; Git Bash would otherwise rewrite /in/... into C:/...
 dk() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" "$ENGINE" "$@"; }
 cname_of() { echo "$NS-$PROJECT-${1//[^a-zA-Z0-9_.-]/-}"; }
+# The engine answers, or the run stops with its own message. A stopped Podman machine otherwise read as
+# "ended with no summary" 9 ms after a loop resume (Lykos L212, 2026-10-20).
+engine_up() {
+  local err
+  err="$(dk info 2>&1 >/dev/null)" && return 0
+  die "container engine $ENGINE is not reachable: $(printf '%s' "$err" | tr -d '\r' | tail -n 3 | tr '\n' ' ')$([ "$ENGINE" = podman ] && echo "(podman machine start?)")"
+}
+# The terminal's width for the feeds, or nothing: with no controlling terminal, opening /dev/tty
+# printed "No such device or address" on every watch (RakunLoots P9, plain-pipe shells).
+term_cols() { { stty size </dev/tty | cut -d' ' -f2; } 2>/dev/null || true; }
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 
 usage() {
@@ -43,9 +53,12 @@ Usage: delegate.sh <command> ...
                                  --role picks the model from agent-box.conf. --review (or a read-only
                                  role) discards every edit and skips tests; the output is the report.
   continue <repo> <run-name> (-m TEXT | -f FILE) [--name N] [--timeout MIN] [--steps N] [--at BRANCH (review runs)]
+                            [--reseal COMMIT] [--seal GLOB ...]
                                  Resume that run's worker session with a follow-up (answer to its
                                  BLOCKED question, review findings, next step). Same model, sealed
                                  files and test; starts on its branch. Result: agent/<run>-r2, -r3...
+                                 --reseal: start from COMMIT (your corrected sealed test on top of the
+                                 run's head) in the same session; --seal adds sealed globs
   watch    <repo> <run-name>     Live feed of a running worker: harness steps, tool calls, messages.
                                  With herdr running, every run opens one automatically in a tab of
                                  the "agent-box" workspace (AGENT_BOX_HERDR=0 turns that off)
@@ -68,7 +81,7 @@ Usage: delegate.sh <command> ...
                                  --roles names the reviewers outright (one axis: --roles review-spec).
                                  --name P names the runs P-<role>; --prior spec=FILE|std=FILE|both=FILE
                                  puts the previous round's findings first, to recheck
-  loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2] [--no-spec]
+  loop     <repo> <run> [--spec FILE ...] [--name N] [--max-rounds N] [--reviews RV1,RV2] [--no-spec] [--add FILE]
                         [--review-mode split|both] [--roles a,b] [--fresh ROLES|none] [--max-fixes N]
                                  Review, rerun each finding's reproduction and the tests next to the
                                  change, fix what is proven, review the fix, until nothing blocks.
@@ -77,9 +90,12 @@ Usage: delegate.sh <command> ...
                                  Prints a short summary (open items, spec questions, triage items with
                                  their text), ending in next: approve, answer_spec, triage,
                                  answer_question, decide, or the run's own. --json: the whole result
-  loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--add FILE] [-m TEXT|@FILE] [--max-rounds N]
-                        [--review-mode split|both] [--roles a,b] [--fresh ROLES|none] [--max-fixes N]
+  loop resume <repo> <loop> [--answer TEXT|@FILE] [--drop ID,ID] [--retire ID,ID] [--add FILE] [-m TEXT|@FILE]
+                        [--max-rounds N] [--review-mode split|both] [--roles a,b] [--fresh ROLES|none] [--max-fixes N]
                                  Your decisions on a stopped loop, then it goes on with a fix round.
+                                 --drop: a false positive (labelled so); --retire: out of the loop, no
+                                 label. --add: markdown for the fixer, or a JSON findings array whose
+                                 items with a reproduction become proven open items
                                  --max-rounds raises the cap of a loop stopped at it; a new review mode
                                  or roles start the next review cold with those reviewers. --fresh: the
                                  roles of the fresh attempts on a stall (one role: a single implementer;
@@ -118,14 +134,27 @@ Usage: delegate.sh <command> ...
 
 Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 Parallel: at most AGENT_BOX_SLOTS containers at once (default 4); each slot has its own CACHES volumes.
+PROJECT_SLOTS=N in a project's .env caps that project's containers (checks and base suites included).
 
+<repo> is the repo's path; a bare name works when projects/<name>.env sets REPO_PATH.
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
 EOF
 }
 
+# <repo> is the repo's path. A bare name with no such folder is looked up as projects/<name>.env's
+# REPO_PATH (Lykos P3, 2026-10-22: `doctor lykos` failed "not a git repo").
+repo_path() {
+  [ -d "$1" ] && { echo "$1"; return; }
+  local env="$BOX/projects/$(tr '[:upper:]' '[:lower:]' <<<"$1").env" p=""
+  [ -f "$env" ] && p="$(sed -nE "s/^(export[[:space:]]+)?REPO_PATH=['\"]?([^'\"]*)['\"]?[[:space:]]*$/\2/p" "$env" | tail -n 1)"
+  [ -n "$p" ] && [ -d "$p" ] && { echo "$p"; return; }
+  die "not a folder: $1 (pass the repo's path, e.g. /c/Workspace/Projects/Lykos; a bare name works when projects/<name>.env sets REPO_PATH)"
+}
+
 # Loads projects/<name>.env into this shell. Sets PROJECT and REPO.
 load_project() {
-  REPO="$(cd "$1" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repo: $1"
+  local dir; dir="$(repo_path "$1")" || exit 1
+  REPO="$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || die "not a git repo: $dir"
   PROJECT="$(basename "$REPO" | tr '[:upper:]' '[:lower:]')"
   local env="$BOX/projects/$PROJECT.env"
   # Benchmark fixture repos share one settings file (projects/bench.env).
@@ -267,7 +296,13 @@ launch() {
   local run_dir="$BOX/runs/$PROJECT/$name" branch="agent/$name"
   [ -e "$run_dir" ] && die "run $name already exists"
   git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" && die "branch $branch already exists in $REPO"
+  engine_up
   mkdir -p "$run_dir"
+  # `wait` and `watch` know the run is over by <run>/ended, written however launch exits; launcher.pid
+  # covers a launcher killed outright. A run stopped before its summary never woke `wait` (RakunLoots
+  # baseline, 2026-10-21: run-task exited 137, the wait ran to its timeout).
+  echo "$$" >"$run_dir/launcher.pid"
+  trap "date +%s >'$run_dir/ended'" EXIT
 
   local base_sha; base_sha="$(git -C "$REPO" rev-parse --verify "$base^{commit}")" || die "bad base $base"
   # A continued round starts on its previous head but keeps the first round's base (ORIG_BASE).
@@ -334,12 +369,15 @@ launch() {
   # Parking (AGENT_BOX_PARK=1, set by the review loop): a finished worker's container stays up, marked
   # by <run>/parked, so `continue` on its session runs the next round in it: no new container, clone,
   # setup or session restore (40-90 s a round on RakunMiniItems). A parked container holds no slot;
-  # `unpark` or `clean` removes it, and a continue that cannot use it starts fresh as before.
-  trap "[ -f '$run_dir/parked' ] || dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release" EXIT INT TERM
+  # `unpark` or `clean` removes it, and a continue that cannot use it starts fresh as before. It mounts
+  # its old slot's cache volumes, so it is reused only in that slot; in another one it is removed.
+  trap "[ -f '$run_dir/parked' ] || dk rm -f '$cname' >/dev/null 2>&1 || true; slot_release; date +%s >'$run_dir/ended'" EXIT
+  trap "exit 130" INT TERM
   local reuse=0 pc pimg
   if [ -n "${CONTINUE_SESSION:-}" ] && [ -f "$CONTINUE_FROM/parked" ]; then
     read -r pc pimg _ <"$CONTINUE_FROM/parked"; rm -f "$CONTINUE_FROM/parked"
-    if [ "$pimg" = "$IMAGE" ] && [ "$(dk inspect -f '{{.State.Running}}' "$pc" 2>/dev/null)" = true ] \
+    [ "$SLOT_PREFERRED" = 1 ] || echo "agent-box: slot $want_slot is busy: $name starts a fresh container in ${SLOT##*/} (session restored from ${CONTINUE_FROM##*/})" >&2
+    if [ "$SLOT_PREFERRED" = 1 ] && [ "$pimg" = "$IMAGE" ] && [ "$(dk inspect -f '{{.State.Running}}' "$pc" 2>/dev/null)" = true ] \
        && dk rename "$pc" "$cname" >/dev/null 2>&1 \
        && dk exec "$cname" sh -c 'rm -rf /out/* /out/.[!.]* /in/* 2>/dev/null; mkdir -p /in/answers'; then
       reuse=1
@@ -361,7 +399,7 @@ launch() {
   # so the round's values go to `exec` explicitly (the OmniRoute key is already in it, never on a command line).
   local envnames=(MODEL VARIANT ALLOW_WEB REVIEW REVIEW_ASK BRANCH BASE_SHA SKIP_AGENT TEST_CMD SETUP_CMD TIMEOUT_MIN SEALED
     EFFORT SCOUT_MODEL SKILLS_ALLOW START_SHA CONTINUE_SESSION ROUND ASK ASK_WAIT_S ASK_TIMEOUT_MIN RED_CMD STEPS AUTOFIX
-    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE COMPACT_AT COMPACT_KEEP SELF_CHECK)
+    AUTOFIX_MIN TUI ROLE HIDDEN PREAMBLE COMPACT_AT COMPACT_KEEP SELF_CHECK SETUP_RETRIES SERVE_WAIT_S)
   local runenv=() execenv=(-e REUSE=1)
   for v in "${envnames[@]}"; do runenv+=(-e "$v"); execenv+=(-e "$v=${!v:-}"); done
   if [ "$reuse" = 1 ]; then
@@ -414,6 +452,10 @@ launch() {
     [ -n "${REVIEW_TARGET:-}" ] && lopts+=(--target "$REVIEW_TARGET")
     node "$(winpath "$BOX/lib/ledger.mjs")" finish "$(winpath "$REPO")" "$(winpath "$run_dir")" "${lopts[@]}" >"$run_dir/verdict.txt" 2>>"$run_dir/harness.log" \
       || echo "ledger: could not record this run (see harness.log)" >"$run_dir/verdict.txt"
+  elif [ ! -f "$run_dir/summary.json" ]; then
+    # Stopped before its summary (container killed, engine gone): a verdict all the same, never a pass.
+    # `discard <repo> <run> --why ...` records it in the ledger.
+    echo "verdict interrupted  next fix_environment  (no summary.json: $(tail -n 1 "$run_dir/harness.log" 2>/dev/null | tr -d '\r' | cut -c1-200))" >"$run_dir/verdict.txt"
   fi
   report "$run_dir"
 }
@@ -442,23 +484,69 @@ host_address() {
 
 # Concurrency slots: at most AGENT_BOX_SLOTS containers at once (default 4), whatever starts them
 # (fanout, bench, ticket mode, several orchestrators). A slot whose owner process died is reclaimed.
+# PROJECT_SLOTS (projects/<repo>.env): at most that many of them for this project, checks included, so
+# PROJECT_SLOTS=1 runs one project serially while others use the rest (RakunLoots P9, 2026-10-21:
+# AGENT_BOX_SLOTS=1 meant "slot 1 only", busy with another project, while slot 4 was free).
 SLOT=""
-# slot_acquire <name> [slot]: with a slot number, wait for that one (a parked container's next round).
+# slot_acquire <name> [slot]: with a slot number, that one is preferred (a parked container's next round
+# keeps its cache volumes); SLOT_PREFERRED=1 when it got it. Another free slot is taken after
+# SLOT_PREFER_WAIT seconds (default 0): Lykos 2026-10-19 and RakunLoots 2026-10-22 resumes waited an
+# hour for their old slot while others were free.
 slot_acquire() {
-  local d="$BOX/runs/.slots" i pid n="${AGENT_BOX_SLOTS:-4}" waited=0 only="${2:-}"
-  mkdir -p "$d"
-  [[ "$only" =~ ^[0-9]+$ ]] && [ "$only" -le "$n" ] || only=""
+  local d="$BOX/runs/.slots" i pid pr n="${AGENT_BOX_SLOTS:-4}" waited=0 want="${2:-}" cap="${PROJECT_SLOTS:-0}" t0 mine=0 holders
+  mkdir -p "$d"; t0=$(date +%s); SLOT_PREFERRED=0
+  [[ "$want" =~ ^[0-9]+$ ]] && [ "$want" -le "$n" ] || want=""
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
   while :; do
-    for i in ${only:-$(seq 1 "$n")}; do
-      if mkdir "$d/$i" 2>/dev/null; then echo "$$ $1" >"$d/$i/owner"; SLOT="$d/$i"; return 0; fi
-      read -r pid _ <"$d/$i/owner" 2>/dev/null || pid=""
+    # Owners that died leave their slot behind.
+    for i in $(seq 1 "$n"); do
+      read -r pid _ 2>/dev/null <"$d/$i/owner" || continue
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$d/$i"; fi
     done
-    [ "$waited" = 0 ] && echo "agent-box: $1 waits for a free slot ($n in use; AGENT_BOX_SLOTS)" >&2
+    # The project cap is counted and taken under one lock, so two launches cannot both see room.
+    if slot_lock "$d"; then
+      mine=0
+      if [ "$cap" -gt 0 ]; then
+        for i in $(seq 1 "$n"); do read -r _ _ pr 2>/dev/null <"$d/$i/owner" && [ "$pr" = "${PROJECT:-}" ] && mine=$((mine + 1)); done
+      fi
+      if [ "$cap" = 0 ] || [ "$mine" -lt "$cap" ]; then
+        local order; order="$(seq 1 "$n")"
+        if [ -n "$want" ]; then
+          order="$want"
+          [ $(( $(date +%s) - t0 )) -ge "${SLOT_PREFER_WAIT:-0}" ] && order="$want $(seq 1 "$n" | grep -vx "$want")"
+        fi
+        for i in $order; do
+          if mkdir "$d/$i" 2>/dev/null; then
+            echo "$$ $1 ${PROJECT:-}" >"$d/$i/owner"; SLOT="$d/$i"; [ "$i" = "$want" ] && SLOT_PREFERRED=1
+            slot_unlock "$d"; return 0
+          fi
+        done
+      fi
+      slot_unlock "$d"
+    fi
+    if [ "$waited" = 0 ]; then
+      holders="$(for i in $(seq 1 "$n"); do read -r _ nm pr 2>/dev/null <"$d/$i/owner" && echo "$i:$nm${pr:+ ($pr)}"; done | paste -sd, -)"
+      if [ "$cap" -gt 0 ] && [ "$mine" -ge "$cap" ]; then
+        echo "agent-box: $1 waits: $PROJECT already has $mine of PROJECT_SLOTS=$cap (slots: ${holders:-none})" >&2
+      else
+        echo "agent-box: $1 waits for a free slot of $n (AGENT_BOX_SLOTS; held: ${holders:-none})" >&2
+      fi
+    fi
     waited=1; sleep 3
   done
 }
 slot_release() { [ -n "$SLOT" ] && rm -rf "$SLOT"; SLOT=""; return 0; }
+# A short mutex under runs/.slots; a lock older than 30 s is a dead holder's and is broken.
+slot_lock() {
+  local k
+  for k in $(seq 1 50); do
+    mkdir "$1/.lock" 2>/dev/null && return 0
+    if [ -n "$(find "$1/.lock" -maxdepth 0 -mmin +0.5 2>/dev/null)" ]; then rm -rf "$1/.lock"; fi
+    sleep 0.2
+  done
+  return 1
+}
+slot_unlock() { rm -rf "$1/.lock"; }
 
 # Setup and a test command on any commit, no agent: a merged tree before it lands, a benchmark's hidden
 # check (--hidden: files the worker never saw, copied in first). Not a run in the ledger.
@@ -481,7 +569,7 @@ cmd_check() {
 }
 
 # Ticket mode (lib/ticket.mjs): to-tickets tickets, tests first, locked, implemented, reviewed, landed.
-cmd_ticket_js() { local sub="$1" repo="$2"; shift 2; node "$(winpath "$BOX/lib/ticket.mjs")" "$sub" "$(winpath "$(cd "$repo" && pwd)")" "$@"; }
+cmd_ticket_js() { local sub="$1" repo="$2"; shift 2; node "$(winpath "$BOX/lib/ticket.mjs")" "$sub" "$(winpath "$(cd "$(repo_path "$repo")" && pwd)")" "$@"; }
 
 cmd_baseline() {
   load_project "$1"
@@ -554,7 +642,7 @@ cmd_run() {
 # findings, or asks for the next step. Any earlier round can be continued again, which forks it.
 cmd_continue() {
   local repo="$1" from="$2"; shift 2
-  local msg_file="" name="" timeout="" findings="" drop="" cause="worker_careless" text="" at="" steps=""
+  local msg_file="" name="" timeout="" findings="" drop="" cause="worker_careless" text="" at="" steps="" reseal="" seals=()
   while [ $# -gt 0 ]; do
     case "$1" in
       -m|--message) text="$2"; shift 2 ;;
@@ -567,6 +655,10 @@ cmd_continue() {
       # A reviewer resumed on a newer branch (the review loop): its session, the fix's code.
       --at) at="$2"; shift 2 ;;
       --steps) steps="$2"; shift 2 ;;
+      # The orchestrator corrected a sealed file: the round starts on that commit (it must contain the
+      # run's head), and sealed files are checked against it. --seal adds a sealed glob.
+      --reseal) reseal="$2"; shift 2 ;;
+      --seal) seals+=("$2"); shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -593,8 +685,17 @@ cmd_continue() {
   [ -n "$steps" ] && STEPS="$steps"
   # Start where the previous round ended: its branch, or (no commits, e.g. a review or an early
   # BLOCKED) the commit it ran on, through a temporary ref so it can be bundled.
-  local start="agent/$from"
-  if [ -n "$at" ]; then
+  local start="agent/$from" g
+  for g in "${seals[@]}"; do SEALED="${SEALED:+$SEALED$'\n'}$g"; done
+  if [ -n "$reseal" ]; then
+    [ "${REVIEW:-0}" = 1 ] && die "--reseal is for implementation runs"
+    [ -z "$at" ] || die "--reseal and --at do not go together"
+    local rs; rs="$(git -C "$REPO" rev-parse --verify --quiet "$reseal^{commit}")" || die "no such commit $reseal"
+    git -C "$REPO" merge-base --is-ancestor "$head" "$rs" || die "$reseal does not contain $from's head ${head:0:10}: commit the correction on top of agent/$from"
+    echo "agent-box: resealed: the next round of $from starts on ${rs:0:10}; sealed files are checked against it" >&2
+    start="refs/heads/agent-box-tmp/start-$from"
+    git -C "$REPO" update-ref "$start" "$rs"
+  elif [ -n "$at" ]; then
     [ "${REVIEW:-0}" = 1 ] || die "--at is for review runs: a worker continues on its own branch"
     git -C "$REPO" show-ref --verify --quiet "refs/heads/$at" || die "no such branch $at"
     start="refs/heads/$at"; export REVIEW_TARGET="$at"
@@ -623,10 +724,19 @@ cmd_watch() {
   local name="$2" c dir model="" role="" i
   c="$(cname_of "$name")"; dir="$BOX/runs/$PROJECT/$name"
   [ -f "$dir/meta.sh" ] && read -r model role < <(. "$dir/meta.sh"; echo "$MODEL ${ROLE:-}")
-  for i in $(seq 1 60); do [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && break; sleep 1; done
-  # The exec ends with an error when the run removes its container: that is the normal end.
-  { dk exec "$c" sh -c 'tail -n +1 -F /out/harness.log /out/events.jsonl 2>/dev/null' 2>/dev/null || true; } \
-    | AB_COLS="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" node "$(winpath "$BOX/lib/watch.mjs")" "$name" "$model" "$role" || true
+  # The exec ends with an error when the run removes its container: that is the normal end. It also
+  # ends when the watch starts before the container is up, or while a parked container is renamed and
+  # cleared for this round: the feed then reattaches until the run has ended (RakunLoots #107 rv2,
+  # 2026-10-22: a watch opened early printed "no verdict" while the review ran 14 steps).
+  {
+    local k
+    for k in $(seq 1 40); do
+      for i in $(seq 1 60); do [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && break; run_over "$dir" && break; sleep 1; done
+      dk exec "$c" sh -c 'tail -n +1 -F /out/harness.log /out/events.jsonl 2>/dev/null' 2>/dev/null || true
+      run_over "$dir" && break
+      sleep 2
+    done
+  } | AB_COLS="$(term_cols)" node "$(winpath "$BOX/lib/watch.mjs")" "$name" "$model" "$role" || true
   # The verdict line comes from lib/ledger.mjs (checks + ledger), written after the container is gone.
   for i in $(seq 1 60); do [ -f "$dir/verdict.txt" ] && break; sleep 1; done
   local verdict="no verdict (run interrupted?)"
@@ -640,6 +750,15 @@ cmd_watch() {
       --message "done: $verdict" --seq "$(( $(date +%s) * 1000 ))" >/dev/null 2>&1 || true
     herdr_close_tab
   fi
+}
+
+# A run is over when launch wrote <run>/ended (or a verdict), or its launcher is gone with no container
+# left running (a launcher killed outright writes nothing).
+run_over() {
+  local dir="$1" pid
+  [ -f "$dir/ended" ] || [ -f "$dir/verdict.txt" ] && return 0
+  read -r pid 2>/dev/null <"$dir/launcher.pid" || return 1
+  ! kill -0 "$pid" 2>/dev/null && [ "$(dk inspect -f '{{.State.Running}}' "$(cname_of "${dir##*/}")" 2>/dev/null)" != true ]
 }
 
 # In a herdr tab: Enter closes it. AB_TAB_LINGER (seconds) closes it by itself: benchmarks open many tabs.
@@ -657,7 +776,7 @@ cmd_loop_watch() {
   load_project "$1"
   local name="$2" dir="$BOX/runs/$PROJECT/_loops/$2"
   [ -d "$dir" ] || die "no loop $name in runs/$PROJECT/_loops"
-  AB_COLS="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" \
+  AB_COLS="$(term_cols)" \
     node "$(winpath "$BOX/lib/loopwatch.mjs")" "$(winpath "$dir/progress.jsonl")" "$name" "$REPO" || true
   herdr_close_tab
 }
@@ -749,7 +868,8 @@ cmd_questions() {
     out="$(dk exec "$c" sh -c 'cd /out/questions 2>/dev/null || exit 0
       for f in *.md; do
         [ -e "$f" ] || continue; case "$f" in *.answer.md) continue ;; esac
-        n="${f%.md}"; [ -e "/in/answers/$n.md" ] || [ -e "$n.timeout" ] || { printf "## question %s\n" "$n"; cat "$f"; }
+        n="${f%.md}"; [ -s "$f" ] || continue
+        [ -e "/in/answers/$n.md" ] || [ -e "$n.answer.md" ] || [ -e "$n.timeout" ] || { printf "## question %s\n" "$n"; cat "$f"; }
       done')"
     [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
     [ "$wait" = --wait ] || { echo "no open questions"; return 0; }
@@ -777,12 +897,14 @@ cmd_wait() {
   [ "${#names[@]}" -gt 0 ] || die "wait needs one or more run or loop names"
   load_project "$repo"
   local runs="$BOX/runs/$PROJECT" start; start=$(date +%s)
+  local qfile="$runs/.wait-q-$$"
   local -A shown=()
   ended() {
     local d="$runs/_loops/$1"
     if [ -f "$d/progress.jsonl" ]; then tail -n 1 "$d/progress.jsonl" | grep -q '"ev":"end"'; return; fi
     d="$runs/$1"
-    [ -f "$d/verdict.txt" ] && return 0
+    [ -d "$d" ] || return 1
+    run_over "$d" && return 0
     [ -f "$d/summary.json" ] && [ "$(dk inspect -f '{{.State.Running}}' "$(cname_of "$1")" 2>/dev/null)" != true ]
   }
   show_one() {
@@ -808,16 +930,19 @@ cmd_wait() {
             mapfile -t live < <(dk ps --filter "label=agent-box.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | tr -d '\r' \
               | sed -n "s/^$NS-$PROJECT-//p" | grep -F -- "$n-" | grep -E "^$n-" || true)
           elif [ -d "$runs/$n" ]; then live=("$n"); fi
+          # A parked container is idle between rounds: its old, answered questions are not new ones
+          # (Lykos T197, 2026-10-22: a wait woke on one and printed an empty question).
           for r in "${live[@]}"; do
-            if cmd_questions "$repo" "$r" >"$runs/.wait-q" 2>/dev/null && ! grep -q '^no open questions' "$runs/.wait-q"; then
-              echo "== $r asks:"; cat "$runs/.wait-q"; echo "answer: delegate.sh answer $REPO $r <id> -m TEXT"; return 0
+            [ -f "$runs/$r/parked" ] && continue
+            if cmd_questions "$repo" "$r" >"$qfile" 2>/dev/null && grep -q '^## question ' "$qfile"; then
+              echo "== $r asks:"; cat "$qfile"; rm -f "$qfile"; echo "answer: delegate.sh answer $REPO $r <id> -m TEXT"; return 0
             fi
           done
         fi
       fi
     done
-    [ "$left" = 0 ] && return 0
-    [ "$any" = 1 ] && [ "${#shown[@]}" -gt 0 ] && { echo "still running: $left"; return 0; }
+    [ "$left" = 0 ] && { rm -f "$qfile"; return 0; }
+    [ "$any" = 1 ] && [ "${#shown[@]}" -gt 0 ] && { rm -f "$qfile"; echo "still running: $left"; return 0; }
     if [ -n "$timeout" ] && [ $(( $(date +%s) - start )) -ge $(( timeout * 60 )) ]; then echo "wait: ${timeout} min passed, $left still running"; return 3; fi
     sleep 10
   done
@@ -988,6 +1113,11 @@ cmd_review() {
 # Ledger: reasons and decisions. note labels why something failed; accept/reject/merged/discard record
 # the orchestrator's decision on a run (the trust ledger). refs lists what still needs a reason.
 cmd_note() {
+  if [ $# -lt 2 ]; then
+    echo "usage: note <repo-path> <run> (--refs a,b | --all) --cause CAUSE --why TEXT   (refs <repo-path> <run> lists the refs)"
+    echo "causes: $(cd "$BOX" && node --input-type=module -e 'import { CAUSES } from "./lib/ledger.mjs"; console.log(CAUSES.join(", "))')"
+    return 0
+  fi
   local repo="$1" run="$2"; shift 2
   load_project "$repo"
   node "$(winpath "$BOX/lib/ledger.mjs")" note "$PROJECT" "$run" "$@"
@@ -1017,8 +1147,7 @@ cmd_roles() {
 # First-time project files from the repo's manifests (lib/setup.mjs); never overwrites one.
 cmd_setup() {
   local repo="${1:?usage: setup <repo> [--dry-run]}"; shift
-  [ -d "$repo" ] || die "not a folder: $repo"
-  node "$(winpath "$BOX/lib/setup.mjs")" "$(winpath "$(cd "$repo" && pwd)")" "$@"
+  node "$(winpath "$BOX/lib/setup.mjs")" "$(winpath "$(cd "$(repo_path "$repo")" && pwd)")" "$@"
 }
 
 # Everything the project's .env sets (the OmniRoute key only as set/empty), its image and its caches.
@@ -1181,7 +1310,7 @@ case "${1:-}" in
   defect) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js defect "$repo" "$(winpath "$f")" "$@" ;;
   hunt) shift; repo="$1" f="$2"; shift 2; cmd_ticket_js hunt "$repo" "$(winpath "$f")" "$@" ;;
   loop) shift; sub=(); [ "${1:-}" = resume ] && { sub=(resume); shift; }
-    repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$repo" && pwd)")" "$@" ;;
+    repo="$1"; shift; node "$(winpath "$BOX/lib/loop.mjs")" "${sub[@]}" "$(winpath "$(cd "$(repo_path "$repo")" && pwd)")" "$@" ;;
   stats) shift; node "$(winpath "$BOX/lib/stats.mjs")" "$@" ;;
   install-skill) shift
     # The Claude Code skill with this clone's path written in (claude-skill/agent-box/SKILL.md).

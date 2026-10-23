@@ -1,0 +1,70 @@
+Root audit: the owner has now approved correcting #107 cost; that is separate, do not edit chance math in #112.
+
+Fix the new root stale-world-read/session registration finding with its supplied reproduction. Retain it as a repository JUnit regression. Preserve the existing title/size replacement, captured snapshot messages, physical menu ordering, stale close/reload, same-list-page back and cache generation guarantees.
+
+The old 1.both.2 replay has an obsolete oracle: it expects Missing not_an_item, while the reviewer explicitly corrected that to Missing vanilla:not_an_item in review2 final.md. Root drops only that stale assertion, not the missing-item behavior. The source:id label must stay. Current normal missing-info behavior and the one-resolution changing-source regression pass on2ad2057. Do not revert those fixes.
+
+Both failed-open findings1.both.3 and2.both.1 must remain fixed, including refused/exceptional opens and two in flight. Root read the fix2 full diff and all reports. Avoid declaring the earlier PluginListenerWiringTest failure proven pre-existing: an isolated and rerun pass are not a baseline reproduction. Report exact evidence and any unresolved concern; don't patch unrelated tests here.
+
+Retain this additional already-proven regression for the one-resolution fix. Root saw it fail on6b78a9b (barrier relabelled demo) and pass unchanged on2ad2057; it represents a permitted third-party source availability change, and adds no new product requirement:
+
+```java
+package me.rakkoon69.rakunloots.wiki;
+import be.seeseemelk.mockbukkit.MockBukkit;
+import me.rakkoon69.rakunloots.command.SenderLocation;
+import me.rakkoon69.rakunloots.config.*;
+import me.rakkoon69.rakunloots.items.*;
+import me.rakkoon69.rakunloots.menu.*;
+import me.rakkoon69.rakunloots.storage.StreamableServerMock;
+import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
+import org.bukkit.Material;
+import org.bukkit.inventory.ItemStack;
+import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.*;
+
+class Phase9WikiInfoResolutionProofTest {
+    @Test void infoDecorationUsesTheSameResolutionThatBuiltItsIcon() throws Exception {
+        StreamableServerMock.mock();
+        try {
+            UUID world=UUID.randomUUID(), player=UUID.randomUUID();
+            FakeServerAdapter adapter=new FakeServerAdapter(world);
+            adapter.addOnlinePlayer(player);
+            String language;
+            try(var stream=getClass().getResourceAsStream("/languages/en.yml")) {
+                language=new String(Objects.requireNonNull(stream).readAllBytes(),StandardCharsets.UTF_8);
+            }
+            ConfigSnapshot snapshot=ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
+                .worlds("{}\n").language("en",language)
+                .menu("wiki","list:\n  rows: 2\n  content_slots: ['0-8']\nloot:\n  rows: 2\n  content_slots: ['0-8']\n  buttons:\n    info:\n      slot: 10\n      item: {source: changing, id: book}\n")
+                .loot("demo","open_mode: drop\nblock: barrel\nroll:\n  entries:\n    a:\n      item: {id: diamond}\n")
+                .build(),id->Optional.of(id));
+            assertTrue(snapshot.loot("demo").isPresent());
+            ItemSourceRegistry items=ItemSourceRegistry.create();
+            AtomicInteger resolutions=new AtomicInteger();
+            // A third-party item becoming available after its first read is a permitted resolver outcome.
+            assertTrue(items.register("changing",id->resolutions.getAndIncrement()==0
+                ? ItemResolveResult.miss("changing",id,MissReason.UNKNOWN_ID,ItemWarning.unknownId(id))
+                : ItemResolveResult.hit("changing",id,new ItemStack(Material.BOOK))));
+            MenuRenderer renderer=new MenuRenderer(items,key->snapshot.message("",key),MenuWarnings.ignore);
+            MenuService menus=new MenuService(adapter,renderer);
+            LootChanceCache cache=new LootChanceCache(adapter.async());
+            WikiMenu wiki=new WikiMenu(adapter,()->snapshot,items,menus,renderer,cache,
+                (what,cause)->{throw new AssertionError(what,cause);});
+            cache.load(snapshot);
+            wiki.open(player,new SenderLocation(world,0,64,0));
+            menus.click(player,0).join();
+            ItemStack info=adapter.menuOpens().get(1).contents().get(10);
+            assertEquals(Material.BARRIER,info.getType());
+            assertTrue(info.getItemMeta().getDisplayName().contains("Missing changing:book"),
+                "The first resolution missed, but the barrier was relabelled: "+info.getItemMeta().getDisplayName());
+            assertEquals(1,resolutions.get(),"decoration must use the item resolution that actually built the icon");
+        } finally { MockBukkit.unmock(); }
+    }
+}
+
+```
+
+Also fix BOTH review3 findings3.both.1(missing back barrier must retain its back action while preserving missing name/lore) and3.both.2(paging the still-visible list before refused loot open must not leave optimistic loot-page state). They are included verbatim as added findings with original reviewer IDs in their issue text. Keep1.both.3/2.both.1 passing as well. Fix the session ownership/page-state problem across these interleavings rather than adding only another narrow revision guard. The report must cover every listed ID and all other changes.

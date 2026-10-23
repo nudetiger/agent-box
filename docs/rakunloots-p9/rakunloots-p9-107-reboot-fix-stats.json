@@ -1,0 +1,139 @@
+{
+  "query": "rakunloots/p9-107-reboot-tail-fix2",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "1098aaf8",
+    "ts": "2026-10-22T17:08:35Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-107-reboot-tail-fix2",
+    "role": "implement-hard",
+    "model": "deepseek/deepseek-flash-max",
+    "harness": "4e312604",
+    "mode": "implement",
+    "parent": "p9-107-loop-fix1-3",
+    "round": 3,
+    "task": "cd92a5e5",
+    "title": "Computer restarted, interrupted reviewer had no saved verdict. Continue your SAM",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "5c671a9fbd",
+    "head": "dc6ec63fb5",
+    "effort": null,
+    "seconds": {
+      "total": 777,
+      "setup": 15,
+      "agent": 741,
+      "test": 3
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": 0,
+      "first_test": 0
+    },
+    "steps": 20,
+    "tools": 24,
+    "tool_s": 407,
+    "tokens": {
+      "input": 21138,
+      "output": 57162,
+      "reasoning": 0,
+      "cache_read": 2078208,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 8,
+    "diff": {
+      "files": 16,
+      "insertions": 1438,
+      "deletions": 6
+    },
+    "verdict": "pass",
+    "flags": [
+      {
+        "flag": "OUT-OF-SCOPE",
+        "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md"
+      }
+    ],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": {
+      "status": "done",
+      "tests": [
+        "Exact gate: 543 tests, 0 failures, 0 errors, 0 skipped, 64 classes; BUILD SUCCESSFUL in 40s.",
+        "Unfiltered root suite: 1320 tests, 0 failures, 0 errors, 35 skipped, 128 classes; BUILD SUCCESSFUL in 56s.",
+        "Round-3 repro: maxError=1.74027480713e-10 (was 1.91712656462e-9); exit 0 under timeout 30; 283.3 ms.",
+        "500-entry oracle: light error=1.29340982369e-14; heavy error=5.92859095150e-14; total error=1.15676357382e-11.",
+        "Performance: strict test passed with original three warm-ups and 50 ms threshold; reported 23 ms.",
+        "Reviewer 1.both.2/1.both.3 and retained equal-weight, exact-edge, ratio-million, grouped-underflow and percent-scanner tests pass."
+      ],
+      "context_gaps": [
+        "None for #107; the confirmed 1e-9 failure, exact oracles, exact gate and unfiltered root suite all pass."
+      ],
+      "decisions": [
+        "The k=1 lower tail is exact: (w_i/W)*(1-e^(-W*t_min)), removing the 10,000-entry first-draw bias.",
+        "For k>=2, C=max(14,(2*ln(n)+ln(1e11/6))/3) keeps the neglected lower-tail contribution at most 1e-11.",
+        "Removed the 12,800-interval cap; the grid doubles until the Richardson estimate is at most 9e-10 per group.",
+        "Error budget: lower tail <=1e-11, upper tail <=3e-20, quadrature <=9e-10, roundoff as remainder; observed combined error 1.74e-10.",
+        "No normalization, tolerance widening or input-size limit; stable method, c4ebfac docs and warnings.yml:72 UNUSABLE_DECIMALS: high retained.",
+        "Strengthened the 500-entry test with the supplied 100-digit per-entry values and added the 10,000-entry exact-weight-share test.",
+        "Committed c0aa0a1 with comment-only follow-up dc6ec63 on agent/p9-107-reboot-tail-fix2; working tree clean."
+      ]
+    },
+    "steps_budget": 100
+  },
+  "contextGaps": [
+    "None for #107; the confirmed 1e-9 failure, exact oracles, exact gate and unfiltered root suite all pass."
+  ],
+  "trust": "delegate.sh accept|reject rakunloots p9-107-reboot-tail-fix2 --why \"...\"",
+  "verdictLabel": null,
+  "flags": [
+    {
+      "flag": "OUT-OF-SCOPE",
+      "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md",
+      "needsReason": true,
+      "label": {
+        "cause": "scope_too_narrow",
+        "source": "orchestrator",
+        "why": "Inherited root-authored c4ebfac ADR/phases cost correction is explicitly approved by owner; current worker changed only LootChance and its accuracy tests. Full diff read.",
+        "worker": null,
+        "orchestrator": "scope_too_narrow"
+      }
+    }
+  ],
+  "labels": [
+    {
+      "id": "5c4de267",
+      "ts": "2026-10-22T17:08:35Z",
+      "refs": [
+        "1098aaf8#OUT-OF-SCOPE"
+      ],
+      "cause": "worker_scope_creep",
+      "source": "auto",
+      "why": "Changed files outside `files:`, `scope:` and their tests."
+    },
+    {
+      "id": "238dfe85",
+      "ts": "2026-10-22T17:09:08Z",
+      "refs": [
+        "1098aaf8#OUT-OF-SCOPE"
+      ],
+      "cause": "scope_too_narrow",
+      "source": "orchestrator",
+      "why": "Inherited root-authored c4ebfac ADR/phases cost correction is explicitly approved by owner; current worker changed only LootChance and its accuracy tests. Full diff read."
+    }
+  ],
+  "reviews": [],
+  "outcome": null,
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

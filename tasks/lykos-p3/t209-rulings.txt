@@ -1,0 +1,3 @@
+1: The suffix match is the whole fix for defect 1; a reported path that matches no sealed file stays as it is.
+2: The dispute count used by escalate_after counts `dispute filed` events only (one per dispute); rulings and escalations are not counted again.
+3: The script restores the tampered file itself between the two sessions, on the host; the model is not asked to revert.

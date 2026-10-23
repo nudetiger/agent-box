@@ -1,0 +1,2273 @@
+diff --git a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+index 18bf7ef..a674f18 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
++++ b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+@@ -4,6 +4,7 @@ import me.rakkoon69.rakunloots.animation.AnimationRegistry;
+ import me.rakkoon69.rakunloots.animation.AnimationService;
+ import me.rakkoon69.rakunloots.animation.ParticleSink;
+ import me.rakkoon69.rakunloots.claim.ClaimJoinListener;
++import me.rakkoon69.rakunloots.claim.ClaimMenu;
+ import me.rakkoon69.rakunloots.claim.UnclaimedSummonItems;
+ import me.rakkoon69.rakunloots.command.AdminCommands;
+ import me.rakkoon69.rakunloots.command.BukkitCommandRegistrar;
+@@ -154,7 +155,8 @@ public class RakunLootsPlugin extends JavaPlugin {
+                     + "some visuals are off. Do not run it on a live server yet.");
+         }
+         ConfigSnapshot snapshot = loadConfig();
+-        menus = new MenuService(adapter, new MenuRenderer(itemSources, key -> config.message("", key), log));
++        MenuRenderer menuRenderer = new MenuRenderer(itemSources, key -> config.message("", key), log);
++        menus = new MenuService(adapter, menuRenderer);
+ 
+         store = openStore(snapshot.storage());
+         try {
+@@ -194,9 +196,10 @@ public class RakunLootsPlugin extends JavaPlugin {
+         timers.start();
+ 
+         UnclaimedSummonItems claims = new UnclaimedSummonItems(adapter, this::config, store, maker, log::failure);
++        ClaimMenu claimMenu = new ClaimMenu(adapter, this::config, claims, maker, menus, menuRenderer, log::failure);
+         SummonItemUse use = new SummonItemUse(maker, this::config, summons, giveBack, log::failure);
+         registerEvents(use, claims);
+-        registerCommands(giveBack, claims);
++        registerCommands(giveBack, claims, claimMenu);
+     }
+ 
+     /**
+@@ -266,7 +269,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+         getServer().getPluginManager().registerEvents(listener, this);
+     }
+ 
+-    private void registerCommands(SummonItemGiveBack giveBack, UnclaimedSummonItems claims) {
++    private void registerCommands(SummonItemGiveBack giveBack, UnclaimedSummonItems claims, ClaimMenu claimMenu) {
+         BukkitCommandSources sources = new BukkitCommandSources(getServer(), this::config);
+         CommandRegistry registry = new CommandRegistry(sources, key -> config.message("", key), log::debug);
+         registrar = new BukkitCommandRegistrar(this, registry);
+@@ -274,7 +277,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+         registrar.register(AdminCommands.root(snapshot.adminCommand(), new AdminCommands.Parts(
+                 this::reloadConfigFiles, adapter, sources, lifecycle, summons, timers, holograms, animations, visuals,
+                 search::reload, menus::reload, giveBack::give, log.record())));
+-        registrar.register(ClaimCommand.node(snapshot.claimCommand(), claims));
++        registrar.register(ClaimCommand.node(snapshot.claimCommand(), claims, claimMenu));
+     }
+ 
+     /**
+diff --git a/src/main/java/me/rakkoon69/rakunloots/claim/ClaimMenu.java b/src/main/java/me/rakkoon69/rakunloots/claim/ClaimMenu.java
+new file mode 100644
+index 0000000..ccc2818
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/claim/ClaimMenu.java
+@@ -0,0 +1,339 @@
++package me.rakkoon69.rakunloots.claim;
++
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.Loot;
++import me.rakkoon69.rakunloots.config.MenuButton;
++import me.rakkoon69.rakunloots.config.MenuPage;
++import me.rakkoon69.rakunloots.lootbox.MessageText;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
++import me.rakkoon69.rakunloots.server.ServerAdapter;
++import me.rakkoon69.rakunloots.storage.UnclaimedSummonItem;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
++
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.Set;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.function.BiConsumer;
++import java.util.function.Supplier;
++
++/**
++ * The claim menu: a player's unclaimed summon items by loot, with a click that takes one loot's items and a button
++ * that takes everything. A click is ignored while that player's claim from this menu runs, even if they page or
++ * reopen the menu. A completion refreshes the menu it came from and closes it when nothing is left; a completion for
++ * a menu that was since closed or replaced leaves the newer view alone.
++ */
++public final class ClaimMenu {
++
++    private static final String MENU_ID = "claim";
++    private static final String CLAIM_ALL = "claim_all";
++    private static final String KEY_TITLE = "menu_claim_title";
++    private static final String KEY_ENTRY_NAME = "menu_claim_entry_name";
++    private static final String KEY_ENTRY_LORE = "menu_claim_entry_lore";
++    private static final String KEY_MISSING_NAME = "menu_claim_missing_name";
++    private static final String KEY_MISSING_LORE = "menu_claim_missing_lore";
++    private static final String KEY_BUTTON_NAME = "menu_button_claim_all_name";
++    private static final String KEY_BUTTON_LORE = "menu_button_claim_all_lore";
++    private static final String KEY_PREFIX = "prefix";
++    private static final int STACK_LIMIT = 64;
++
++    private final ServerAdapter adapter;
++    private final Supplier<ConfigSnapshot> config;
++    private final UnclaimedSummonItems claims;
++    private final SummonItemFactory items;
++    private final MenuService menus;
++    private final MenuRenderer renderer;
++    private final BiConsumer<String, Throwable> failures;
++    private final Set<UUID> claiming = ConcurrentHashMap.newKeySet();
++
++    public ClaimMenu(ServerAdapter adapter, Supplier<ConfigSnapshot> config, UnclaimedSummonItems claims,
++                     SummonItemFactory items, MenuService menus, MenuRenderer renderer,
++                     BiConsumer<String, Throwable> failures) {
++        this.adapter = Objects.requireNonNull(adapter, "adapter");
++        this.config = Objects.requireNonNull(config, "config");
++        this.claims = Objects.requireNonNull(claims, "claims");
++        this.items = Objects.requireNonNull(items, "items");
++        this.menus = Objects.requireNonNull(menus, "menus");
++        this.renderer = Objects.requireNonNull(renderer, "renderer");
++        this.failures = Objects.requireNonNull(failures, "failures");
++    }
++
++    /**
++     * Opens the player's claim menu when they are owed something, after reading storage on the async scheduler. A
++     * player owed nothing gets {@code whenNothing} on their thread instead, and no menu.
++     */
++    public void open(UUID playerId, Runnable whenNothing) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(whenNothing, "whenNothing");
++        ConfigSnapshot snapshot;
++        MenuService.MenuState state;
++        try {
++            state = menus.state(playerId);
++            snapshot = config.get();
++        } catch (Throwable failure) {
++            failures.accept("could not read the config for the claim menu of " + playerId, failure);
++            return;
++        }
++        claims.owed(playerId, snapshot).whenComplete((owed, failure) -> {
++            if (failure != null) {
++                // The read reported its failure to the sink.
++                return;
++            }
++            if (owed.isEmpty()) {
++                adapter.forPlayer(playerId).run(whenNothing);
++                return;
++            }
++            Session session;
++            try {
++                session = new Session(playerId, snapshot, owed);
++            } catch (Throwable failureToBuild) {
++                failures.accept("could not build the claim menu for " + playerId, failureToBuild);
++                return;
++            }
++            menus.openTracked(playerId, render(session), state).whenComplete((epoch, openFailure) -> {
++                if (openFailure != null) {
++                    failures.accept("could not open the claim menu for " + playerId, unwrap(openFailure));
++                    return;
++                }
++                epoch.ifPresent(session::openedAs);
++            });
++        });
++    }
++
++    private void claim(Session session, String lootId) {
++        UUID playerId = session.playerId;
++        if (!claiming.add(playerId)) {
++            return;
++        }
++        CompletableFuture<ClaimResult> result;
++        try {
++            result = lootId == null ? claims.claim(playerId) : claims.claim(playerId, lootId);
++        } catch (RuntimeException failure) {
++            claiming.remove(playerId);
++            failures.accept("could not claim the summon items of " + playerId, failure);
++            return;
++        }
++        result.whenComplete((done, failure) -> {
++            // The claim reported its failure to the sink; the menu still re-reads what is really left.
++            claiming.remove(playerId);
++            refresh(session);
++        });
++    }
++
++    private void refresh(Session session) {
++        long sequence = session.beginRefresh();
++        ConfigSnapshot snapshot;
++        try {
++            snapshot = config.get();
++        } catch (RuntimeException failure) {
++            failures.accept("could not read the config for the claim menu of " + session.playerId, failure);
++            return;
++        }
++        try {
++            claims.owed(session.playerId, snapshot).whenComplete((owed, failure) -> {
++                if (failure != null) {
++                    // The read reported its failure to the sink; leave the menu as it is, with the guard released.
++                    return;
++                }
++                try {
++                    if (owed.isEmpty()) {
++                        session.closeIfCurrent(sequence);
++                        return;
++                    }
++                    session.applyRefresh(sequence, owed, snapshot);
++                } catch (Throwable failureToBuild) {
++                    failures.accept("could not refresh the claim menu for " + session.playerId, failureToBuild);
++                }
++            });
++        } catch (RuntimeException failure) {
++            failures.accept("could not read the unclaimed summon items of " + session.playerId, failure);
++        }
++    }
++
++    private MenuView render(Session session) {
++        synchronized (session.lock) {
++            return render(session, session.state);
++        }
++    }
++
++    private MenuView render(Session session, State state) {
++        ConfigSnapshot snapshot = state.snapshot;
++        MenuPage layout = snapshot.claimMenu();
++        List<MenuIcon> entries = new ArrayList<>();
++        long total = 0L;
++        for (UnclaimedSummonItem row : state.owed) {
++            total += row.amount();
++            Loot loot = row.lootMissing() ? null : snapshot.loot(row.lootId()).orElse(null);
++            if (loot == null) {
++                entries.add(new MenuIcon(missing(snapshot, row), Optional.empty(), Optional.empty()));
++                continue;
++            }
++            Map<String, String> values = values(loot.displayName(), row.amount());
++            ItemStack item;
++            try {
++                item = items.create(loot);
++                item.setAmount(Math.min(row.amount(), STACK_LIMIT));
++                decorate(item, text(snapshot, KEY_ENTRY_NAME, values), lines(snapshot, KEY_ENTRY_LORE, values));
++            } catch (RuntimeException failure) {
++                failures.accept("could not build the summon item of " + row.lootId() + " owed by "
++                        + session.playerId, failure);
++                entries.add(new MenuIcon(missing(snapshot, row), Optional.empty(), Optional.empty()));
++                continue;
++            }
++            entries.add(new MenuIcon(item, Optional.of(() -> claim(session, row.lootId())), Optional.empty()));
++        }
++
++        String title = text(snapshot, KEY_TITLE, Map.of("amount", Long.toString(total)));
++        MenuView view = renderer.render(MENU_ID, title, layout, entries, state.page, session::goToPage,
++                key -> snapshot.message("", key));
++        MenuButton claimAll = layout.buttons().get(CLAIM_ALL);
++        MenuIcon icon = claimAll == null ? null : view.icons().get(claimAll.slot());
++        if (icon == null) {
++            return view;
++        }
++        ItemStack item = icon.item();
++        decorate(item, text(snapshot, KEY_BUTTON_NAME, Map.of()), lines(snapshot, KEY_BUTTON_LORE, Map.of()));
++        Map<Integer, MenuIcon> icons = new LinkedHashMap<>(view.icons());
++        icons.put(claimAll.slot(), new MenuIcon(item, Optional.of(() -> claim(session, null)), icon.sound()));
++        return new MenuView(view.title(), view.rows(), icons);
++    }
++
++    private ItemStack missing(ConfigSnapshot snapshot, UnclaimedSummonItem row) {
++        Map<String, String> values = values(row.lootId(), row.amount());
++        ItemStack barrier = new ItemStack(Material.BARRIER);
++        decorate(barrier, text(snapshot, KEY_MISSING_NAME, values), lines(snapshot, KEY_MISSING_LORE, values));
++        return barrier;
++    }
++
++    private static Map<String, String> values(String loot, int amount) {
++        return Map.of("loot", loot, "amount", Integer.toString(amount));
++    }
++
++    private static String text(ConfigSnapshot snapshot, String key, Map<String, String> values) {
++        return MessageText.render(snapshot, "", key, values);
++    }
++
++    private static List<String> lines(ConfigSnapshot snapshot, String key, Map<String, String> values) {
++        String prefix = snapshot.message("", KEY_PREFIX);
++        List<String> lines = new ArrayList<>();
++        for (String line : snapshot.messageLines("", key)) {
++            if (line.isBlank()) {
++                continue;
++            }
++            String rendered = line.replace("{prefix}", prefix);
++            for (Map.Entry<String, String> value : values.entrySet()) {
++                rendered = rendered.replace("{" + value.getKey() + "}", value.getValue());
++            }
++            lines.add(MessageText.color(rendered));
++        }
++        return lines;
++    }
++
++    private static void decorate(ItemStack item, String name, List<String> lore) {
++        ItemMeta meta = item.getItemMeta();
++        if (meta == null) {
++            return;
++        }
++        meta.setDisplayName(name);
++        meta.setLore(lore);
++        item.setItemMeta(meta);
++    }
++
++    private static Throwable unwrap(Throwable failure) {
++        return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
++    }
++
++    private record State(ConfigSnapshot snapshot, List<UnclaimedSummonItem> owed, int page, long epoch) {
++
++        private State withPage(int page) {
++            return new State(snapshot, owed, page, epoch);
++        }
++
++        private State withEpoch(long epoch) {
++            return new State(snapshot, owed, page, epoch);
++        }
++    }
++
++    private final class Session {
++
++        private final UUID playerId;
++        private final Object lock = new Object();
++        private State state;
++        private long revision;
++        private long refreshSequence;
++        private long appliedRefresh;
++
++        private Session(UUID playerId, ConfigSnapshot snapshot, List<UnclaimedSummonItem> owed) {
++            this.playerId = playerId;
++            this.state = new State(snapshot, List.copyOf(owed), 0, -1L);
++        }
++
++        private void openedAs(long openedEpoch) {
++            synchronized (lock) {
++                state = state.withEpoch(openedEpoch);
++                revision++;
++            }
++        }
++
++        private long beginRefresh() {
++            synchronized (lock) {
++                return ++refreshSequence;
++            }
++        }
++
++        private void applyRefresh(long sequence, List<UnclaimedSummonItem> rows, ConfigSnapshot current) {
++            synchronized (lock) {
++                if (sequence < appliedRefresh || state.epoch < 0L) {
++                    return;
++                }
++                appliedRefresh = sequence;
++                int page = renderer.clampPage(current.claimMenu(), rows.size(), state.page);
++                state = new State(current, List.copyOf(rows), page, state.epoch);
++                long rendered = ++revision;
++                MenuView view = render(this, state);
++                if (revision != rendered || sequence < appliedRefresh) {
++                    return;
++                }
++                menus.refreshIf(playerId, state.epoch, view);
++            }
++        }
++
++        private void closeIfCurrent(long sequence) {
++            synchronized (lock) {
++                if (sequence < appliedRefresh || state.epoch < 0L) {
++                    return;
++                }
++                appliedRefresh = sequence;
++                menus.closeIf(playerId, state.epoch);
++            }
++        }
++
++        private void goToPage(int destination) {
++            synchronized (lock) {
++                int page = renderer.clampPage(state.snapshot.claimMenu(), state.owed.size(), destination);
++                state = state.withPage(page);
++                if (state.epoch < 0L) {
++                    return;
++                }
++                long rendered = ++revision;
++                MenuView view = render(this, state);
++                if (revision != rendered) {
++                    return;
++                }
++                menus.refreshIf(playerId, state.epoch, view);
++            }
++        }
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/claim/UnclaimedSummonItems.java b/src/main/java/me/rakkoon69/rakunloots/claim/UnclaimedSummonItems.java
+index 77352e7..edef458 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/claim/UnclaimedSummonItems.java
++++ b/src/main/java/me/rakkoon69/rakunloots/claim/UnclaimedSummonItems.java
+@@ -54,18 +54,56 @@ public final class UnclaimedSummonItems {
+         this.failures = Objects.requireNonNull(failures, "failures");
+     }
+ 
++    /**
++     * Reads what the player is owed, on the async scheduler, in storage order. A row whose loot is missing is flagged.
++     * The future completes exceptionally when storage fails; then the failure sink was told too.
++     */
++    public CompletableFuture<List<UnclaimedSummonItem>> owed(UUID playerId) {
++        Objects.requireNonNull(playerId, "playerId");
++        return owed(playerId, config.get());
++    }
++
++    /**
++     * Reads what the player is owed against one config snapshot, for a caller that also renders from that snapshot.
++     */
++    CompletableFuture<List<UnclaimedSummonItem>> owed(UUID playerId, ConfigSnapshot snapshot) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(snapshot, "snapshot");
++        CompletableFuture<List<UnclaimedSummonItem>> result = new CompletableFuture<>();
++        adapter.async().run(() -> {
++            try {
++                result.complete(store.unclaimedSummonItems(playerId, snapshot));
++            } catch (Throwable failure) {
++                fail(result, "could not read the unclaimed summon items of " + playerId, failure);
++            }
++        });
++        return result;
++    }
++
+     /**
+      * Gives the player the summon items they are owed, as many as fit, and tells them what was given, what stays,
+      * and which loots are missing. The future completes with what was done, or exceptionally when storage or a give
+      * fails; then the failure sink was told too.
+      */
+     public CompletableFuture<ClaimResult> claim(UUID playerId) {
++        return claim(playerId, null);
++    }
++
++    /**
++     * Gives the player the summon items they are owed for one loot, with the same read, storage lowering, give, write
++     * back, and messages as {@link #claim(UUID)}. A missing loot is left as it is and the claim says so.
++     */
++    public CompletableFuture<ClaimResult> claim(UUID playerId, String lootId) {
+         Objects.requireNonNull(playerId, "playerId");
+         CompletableFuture<ClaimResult> result = new CompletableFuture<>();
+         adapter.async().run(() -> {
+             try {
+                 ConfigSnapshot snapshot = config.get();
+-                new Claim(playerId, snapshot, store.unclaimedSummonItems(playerId, snapshot), result).next(0);
++                List<UnclaimedSummonItem> owed = store.unclaimedSummonItems(playerId, snapshot);
++                if (lootId != null) {
++                    owed = owed.stream().filter(row -> row.lootId().equals(lootId)).toList();
++                }
++                new Claim(playerId, snapshot, owed, result).next(0);
+             } catch (Throwable failure) {
+                 fail(result, "could not read the unclaimed summon items of " + playerId, failure);
+             }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/command/ClaimCommand.java b/src/main/java/me/rakkoon69/rakunloots/command/ClaimCommand.java
+index 494346a..8ee05c5 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/command/ClaimCommand.java
++++ b/src/main/java/me/rakkoon69/rakunloots/command/ClaimCommand.java
+@@ -1,5 +1,6 @@
+ package me.rakkoon69.rakunloots.command;
+ 
++import me.rakkoon69.rakunloots.claim.ClaimMenu;
+ import me.rakkoon69.rakunloots.claim.UnclaimedSummonItems;
+ import me.rakkoon69.rakunloots.config.ClaimCommandSettings;
+ 
+@@ -7,10 +8,11 @@ import java.util.Optional;
+ import java.util.UUID;
+ 
+ /**
+- * The claim command: a root of its own, named by the {@code claim_command} block of {@code config.yml}, that gives a
+- * player the summon items they are owed. The claim itself tells the player what was given and what stays. Who may run
+- * it by default comes from the {@code claim_command} block's {@code permission_default}, through {@value #PERMISSION};
+- * only a player can, because the items go into their inventory.
++ * The claim command: a root of its own, named by the {@code claim_command} block of {@code config.yml}. With no
++ * argument it opens the claim menu, or says nothing is waiting and opens nothing. Its {@code all} child gives
++ * everything that fits at once. Who may run either by default comes from the {@code claim_command} block's
++ * {@code permission_default}, through {@value #PERMISSION}; only a player can, because the items go into their
++ * inventory.
+  */
+ public final class ClaimCommand {
+ 
+@@ -23,7 +25,7 @@ public final class ClaimCommand {
+     private ClaimCommand() {
+     }
+ 
+-    public static CommandNode node(ClaimCommandSettings settings, UnclaimedSummonItems claims) {
++    public static CommandNode node(ClaimCommandSettings settings, UnclaimedSummonItems claims, ClaimMenu menu) {
+         return CommandNode.builder(settings.name())
+                 .aliases(settings.aliases().toArray(String[]::new))
+                 .permission(PERMISSION)
+@@ -33,8 +35,19 @@ public final class ClaimCommand {
+                         invocation.reply("cmd_claim_needs_player");
+                         return;
+                     }
+-                    claims.claim(playerId.get());
++                    menu.open(playerId.get(), () -> invocation.reply("claim_nothing"));
+                 })
++                .child(CommandNode.builder("all")
++                        .permission(PERMISSION)
++                        .handler(invocation -> {
++                            Optional<UUID> playerId = invocation.sender().playerId();
++                            if (playerId.isEmpty()) {
++                                invocation.reply("cmd_claim_needs_player");
++                                return;
++                            }
++                            claims.claim(playerId.get());
++                        })
++                        .build())
+                 .build();
+     }
+ }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+index e27204a..7ef9eef 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+@@ -62,11 +62,21 @@ public final class MenuRenderer {
+ 
+     public MenuView render(String menuId, String title, MenuPage layout, List<MenuIcon> entries, int requestedPage,
+                            IntConsumer goToPage) {
++        return render(menuId, title, layout, entries, requestedPage, goToPage, language);
++    }
++
++    /**
++     * Renders one page with the caller's captured language, so page labels use the same config snapshot as the rest
++     * of the view. The constructor's language remains the default for the old overload.
++     */
++    public MenuView render(String menuId, String title, MenuPage layout, List<MenuIcon> entries, int requestedPage,
++                           IntConsumer goToPage, Function<String, String> pageLanguage) {
+         Objects.requireNonNull(menuId, "menuId");
+         Objects.requireNonNull(title, "title");
+         Objects.requireNonNull(layout, "layout");
+         Objects.requireNonNull(entries, "entries");
+         Objects.requireNonNull(goToPage, "goToPage");
++        Objects.requireNonNull(pageLanguage, "pageLanguage");
+         List<MenuIcon> pageEntries = List.copyOf(entries);
+         pageEntries.forEach(entry -> Objects.requireNonNull(entry, "entry"));
+ 
+@@ -104,8 +114,10 @@ public final class MenuRenderer {
+                 case NEXT -> "menu_button_next_page";
+                 default -> null;
+             };
+-            String displayName = keyBase == null ? null : pageText(keyBase + "_name", target.page().orElse(page), pages);
+-            List<String> lore = keyBase == null ? null : pageLore(keyBase + "_lore", target.page().orElse(page), pages);
++            String displayName = keyBase == null ? null
++                    : pageText(pageLanguage, keyBase + "_name", target.page().orElse(page), pages);
++            List<String> lore = keyBase == null ? null
++                    : pageLore(pageLanguage, keyBase + "_lore", target.page().orElse(page), pages);
+             icons.put(value.slot(), icon(menuId, "button:" + name, value.item(), action, value.sound(),
+                     displayName, lore, pages, page));
+         }
+@@ -163,14 +175,13 @@ public final class MenuRenderer {
+         item.setItemMeta(meta);
+     }
+ 
+-    private String pageText(String key, int page, int pages) {
++    private static String pageText(Function<String, String> language, String key, int page, int pages) {
+         return MessageText.color(placeholders(language.apply(key), page, pages));
+     }
+ 
+-    private List<String> pageLore(String key, int page, int pages) {
+-        String text = pageText(key, page, pages);
+-        List<String> lines = new ArrayList<>(List.of(text.split("\n", -1)));
+-        return lines;
++    private static List<String> pageLore(Function<String, String> language, String key, int page, int pages) {
++        String text = pageText(language, key, page, pages);
++        return new ArrayList<>(List.of(text.split("\n", -1)));
+     }
+ 
+     private static String placeholders(String text, int page, int pages) {
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+index c00e9d8..a4000c8 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+@@ -21,7 +21,26 @@ import java.util.concurrent.CompletionException;
+  */
+ public final class MenuService {
+ 
+-    private record Entry(MenuHandle handle, MenuView view) {
++    private record Entry(MenuHandle handle, MenuView view, MenuView visible, long visibleVersion) {
++
++        private Entry withView(MenuView view) {
++            return new Entry(handle, view, visible, visibleVersion);
++        }
++
++        private Entry withVisible(MenuView visible, long visibleVersion) {
++            return new Entry(handle, view, visible, visibleVersion);
++        }
++    }
++
++    private record Dispatch(MenuHandle handle, CompletableFuture<Void> tail) {
++    }
++
++    /**
++     * A player's menu state when an open starts: the service generation and the player's menu epoch. Passing it back
++     * to {@link #openTracked(UUID, MenuView, MenuState)} refuses an open that lost a race with a reload, close, or
++     * replacement.
++     */
++    public record MenuState(long generation, long epoch) {
+     }
+ 
+     private static final class OpenAttempt {
+@@ -42,8 +61,10 @@ public final class MenuService {
+     private final Object lock = new Object();
+     private final Map<UUID, Entry> entries = new HashMap<>();
+     private final Map<UUID, OpenAttempt> openings = new HashMap<>();
++    private final Map<UUID, Dispatch> dispatches = new HashMap<>();
+     private final Map<UUID, Long> epochs = new HashMap<>();
+     private long generation;
++    private long viewVersion;
+ 
+     public MenuService(ServerAdapter adapter) {
+         this(adapter, null);
+@@ -55,15 +76,35 @@ public final class MenuService {
+     }
+ 
+     public CompletableFuture<Void> open(UUID playerId, MenuView view) {
++        return openTracked(playerId, view).thenApply(epoch -> null);
++    }
++
++    /**
++     * Opens a menu and returns the generation it was installed as, or empty when the player did not see it. A later
++     * refresh or close can name that generation, so a completion that arrives after the menu was closed, paged away,
++     * or replaced does not touch the newer view.
++     */
++    public CompletableFuture<Optional<Long>> openTracked(UUID playerId, MenuView view) {
++        return openTracked(playerId, view, state(playerId));
++    }
++
++    /**
++     * Opens a menu only if the player's menu state still matches the state captured when the open began.
++     */
++    public CompletableFuture<Optional<Long>> openTracked(UUID playerId, MenuView view, MenuState expected) {
+         Objects.requireNonNull(playerId, "playerId");
+         Objects.requireNonNull(view, "view");
++        Objects.requireNonNull(expected, "expected");
+         Map<Integer, ItemStack> contents = contents(view);
+         OpenAttempt attempt;
+         MenuHandle made;
+         synchronized (lock) {
++            if (generation != expected.generation() || epochs.getOrDefault(playerId, 0L) != expected.epoch()) {
++                return CompletableFuture.completedFuture(Optional.empty());
++            }
+             Entry current = entries.get(playerId);
+-            attempt = new OpenAttempt(current == null ? null : current.handle(), epochs.getOrDefault(playerId, 0L),
+-                    generation);
++            attempt = new OpenAttempt(current == null ? null : current.handle(), expected.epoch(),
++                    expected.generation());
+             openings.put(playerId, attempt);
+         }
+         try {
+@@ -81,7 +122,7 @@ public final class MenuService {
+                     }
+                     if (opened.handle().isEmpty()) {
+                         forget(playerId, attempt);
+-                        return CompletableFuture.completedFuture(null);
++                        return CompletableFuture.completedFuture(Optional.empty());
+                     }
+                     return land(playerId, view, attempt, opened.handle().orElseThrow());
+                 });
+@@ -90,8 +131,9 @@ public final class MenuService {
+     private record Opened(Optional<MenuHandle> handle, Throwable failure) {
+     }
+ 
+-    private CompletableFuture<Void> land(UUID playerId, MenuView view, OpenAttempt attempt, MenuHandle next) {
++    private CompletableFuture<Optional<Long>> land(UUID playerId, MenuView view, OpenAttempt attempt, MenuHandle next) {
+         boolean installed;
++        long installedEpoch = 0L;
+         synchronized (lock) {
+             Entry current = entries.get(playerId);
+             boolean sameOld = current == null ? attempt.old == null : current.handle() == attempt.old;
+@@ -101,12 +143,15 @@ public final class MenuService {
+                     && sameOld;
+             if (installed) {
+                 openings.remove(playerId);
+-                entries.put(playerId, new Entry(next, view));
+-                epochs.merge(playerId, 1L, Long::sum);
++                entries.put(playerId, new Entry(next, view, view, ++viewVersion));
++                dispatches.remove(playerId);
++                installedEpoch = epochs.merge(playerId, 1L, Long::sum);
+             }
+         }
++        boolean landed = installed;
++        long epoch = installedEpoch;
+         MenuHandle close = !installed ? next : attempt.old;
+-        return close(close);
++        return close(close).thenApply(done -> landed ? Optional.of(epoch) : Optional.empty());
+     }
+ 
+     private void forget(UUID playerId, OpenAttempt attempt) {
+@@ -117,11 +162,22 @@ public final class MenuService {
+             Entry current = entries.get(playerId);
+             if (attempt.oldClosed && current != null && current.handle() == attempt.old) {
+                 entries.remove(playerId);
++                dispatches.remove(playerId);
+                 epochs.merge(playerId, 1L, Long::sum);
+             }
+         }
+     }
+ 
++    /**
++     * The player's current menu state, read atomically with the generation.
++     */
++    public MenuState state(UUID playerId) {
++        Objects.requireNonNull(playerId, "playerId");
++        synchronized (lock) {
++            return new MenuState(generation, epochs.getOrDefault(playerId, 0L));
++        }
++    }
++
+     public CompletableFuture<Void> refresh(UUID playerId, MenuView view) {
+         Objects.requireNonNull(playerId, "playerId");
+         Objects.requireNonNull(view, "view");
+@@ -131,45 +187,85 @@ public final class MenuService {
+             if (current == null) {
+                 return CompletableFuture.completedFuture(null);
+             }
+-            entries.put(playerId, new Entry(current.handle(), view));
++            entries.put(playerId, current.withView(view));
++        }
++        return dispatch(playerId, current.handle(), view);
++    }
++
++    /**
++     * Refreshes the menu only while it is still the one opened as {@code epoch}. A menu closed, reopened, replaced, or
++     * closed by a reload since then is left alone.
++     */
++    public CompletableFuture<Void> refreshIf(UUID playerId, long epoch, MenuView view) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(view, "view");
++        Entry current;
++        synchronized (lock) {
++            current = entries.get(playerId);
++            if (current == null || epochs.getOrDefault(playerId, 0L) != epoch) {
++                return CompletableFuture.completedFuture(null);
++            }
++            entries.put(playerId, current.withView(view));
+         }
+-        return adapter.updateMenu(current.handle(), contents(view));
++        return dispatch(playerId, current.handle(), view);
++    }
++
++    /**
++     * Closes the menu only while it is still the one opened as {@code epoch}.
++     */
++    public CompletableFuture<Void> closeIf(UUID playerId, long epoch) {
++        Objects.requireNonNull(playerId, "playerId");
++        Entry current;
++        synchronized (lock) {
++            current = entries.get(playerId);
++            if (current == null || epochs.getOrDefault(playerId, 0L) != epoch) {
++                return CompletableFuture.completedFuture(null);
++            }
++            entries.remove(playerId);
++            dispatches.remove(playerId);
++            epochs.merge(playerId, 1L, Long::sum);
++        }
++        return close(current.handle());
+     }
+ 
+     public CompletableFuture<Void> click(UUID playerId, int slot) {
+-        return click(playerId, slot, null);
++        return click(playerId, slot, null, -1L);
+     }
+ 
+     /**
+-     * Runs a click on the player's thread on the next tick. The menu it was for is captured now, so a click that
+-     * arrives after its menu was replaced or closed does nothing.
++     * Runs a click on the player's thread on the next tick. The physically visible menu and its version are captured
++     * now, so a refresh that replaces the view before the tick cannot redirect this click to a different icon action.
++     * A click that arrives after its menu was replaced, closed, or visibly refreshed does nothing.
+      */
+     public CompletableFuture<Void> clickLater(UUID playerId, int slot) {
+         Objects.requireNonNull(playerId, "playerId");
+         MenuHandle expected;
++        long expectedVersion;
+         synchronized (lock) {
+             Entry current = entries.get(playerId);
+             if (current == null) {
+                 return CompletableFuture.completedFuture(null);
+             }
+             expected = current.handle();
++            expectedVersion = current.visibleVersion();
+         }
+-        return adapter.runOnPlayerNextTick(playerId, () -> click(playerId, slot, expected));
++        return adapter.runOnPlayerNextTick(playerId, () -> click(playerId, slot, expected, expectedVersion));
+     }
+ 
+-    private CompletableFuture<Void> click(UUID playerId, int slot, MenuHandle expected) {
++    private CompletableFuture<Void> click(UUID playerId, int slot, MenuHandle expected, long expectedVersion) {
+         Objects.requireNonNull(playerId, "playerId");
+         Entry current;
+         synchronized (lock) {
+             current = entries.get(playerId);
+-            if (current != null && expected != null && current.handle() != expected) {
++            if (current != null && expected != null
++                    && (current.handle() != expected || current.visibleVersion() != expectedVersion)) {
+                 current = null;
+             }
+         }
+-        if (current == null || slot < 0 || slot >= current.view().size()) {
++        if (current == null || slot < 0 || slot >= current.visible().size()) {
+             return CompletableFuture.completedFuture(null);
+         }
+-        MenuIcon icon = current.view().icons().get(slot);
++        MenuIcon icon = current.visible().icons().get(slot);
+         if (icon == null || icon.action().isEmpty()) {
+             return CompletableFuture.completedFuture(null);
+         }
+@@ -200,6 +296,7 @@ public final class MenuService {
+                 return;
+             }
+             entries.remove(playerId);
++            dispatches.remove(playerId);
+             epochs.merge(playerId, 1L, Long::sum);
+         }
+     }
+@@ -214,6 +311,7 @@ public final class MenuService {
+         synchronized (lock) {
+             current = entries.remove(playerId);
+             opening = openings.remove(playerId);
++            dispatches.remove(playerId);
+             epochs.merge(playerId, 1L, Long::sum);
+         }
+         MenuHandle menu = current != null ? current.handle() : opening == null ? null : opening.old;
+@@ -226,6 +324,7 @@ public final class MenuService {
+             closing = List.copyOf(entries.values());
+             entries.clear();
+             openings.clear();
++            dispatches.clear();
+             generation++;
+             epochs.replaceAll((playerId, epoch) -> epoch + 1);
+         }
+@@ -243,6 +342,61 @@ public final class MenuService {
+         closeAll();
+     }
+ 
++    /**
++     * Serializes physical menu updates for one player's current handle. Paper may run an update from a caller thread
++     * after this method returns, so an older update can land after a newer one. Chaining each update's completion
++     * means the newer view is applied after the older view, and a queued update also rechecks the handle at the moment
++     * it actually runs.
++     */
++    private CompletableFuture<Void> dispatch(UUID playerId, MenuHandle handle, MenuView view) {
++        Dispatch next;
++        CompletableFuture<Void> tail;
++        synchronized (lock) {
++            Dispatch prior = dispatches.get(playerId);
++            CompletableFuture<Void> previous = prior != null && prior.handle() == handle
++                    ? prior.tail()
++                    : CompletableFuture.completedFuture(null);
++            tail = previous.handle((done, failure) -> null)
++                    .thenCompose(done -> applyDispatch(playerId, handle, view));
++            next = new Dispatch(handle, tail);
++            dispatches.put(playerId, next);
++        }
++        tail.whenComplete((done, failure) -> {
++            synchronized (lock) {
++                if (dispatches.get(playerId) == next) {
++                    dispatches.remove(playerId);
++                }
++            }
++        });
++        return tail;
++    }
++
++    private CompletableFuture<Void> applyDispatch(UUID playerId, MenuHandle handle, MenuView view) {
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            if (current == null || current.handle() != handle) {
++                return CompletableFuture.completedFuture(null);
++            }
++        }
++        CompletableFuture<Void> applied;
++        try {
++            applied = adapter.updateMenu(handle, contents(view));
++        } catch (RuntimeException failure) {
++            return CompletableFuture.failedFuture(failure);
++        }
++        return applied.thenRun(() -> markVisible(playerId, handle, view));
++    }
++
++    private void markVisible(UUID playerId, MenuHandle handle, MenuView view) {
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            if (current == null || current.handle() != handle || current.visible() == view) {
++                return;
++            }
++            entries.put(playerId, current.withVisible(view, ++viewVersion));
++        }
++    }
++
+     private CompletableFuture<Void> close(MenuHandle menu) {
+         if (menu == null) {
+             return CompletableFuture.completedFuture(null);
+diff --git a/src/main/resources/config.yml b/src/main/resources/config.yml
+index 8922e20..02f8539 100644
+--- a/src/main/resources/config.yml
++++ b/src/main/resources/config.yml
+@@ -63,7 +63,8 @@ storage:
+   # Copies are named with the UTC time they were taken. 0 keeps none and removes the old ones.
+   backups_kept: 5
+ 
+-# The claim command gives a player the summon items they are owed: ones a summon gave back while their inventory was
++# The claim command opens the claim menu, where a player takes one loot's summon items at a time. Adding `all`
++# after it gives every summon item they are owed at once. They are ones a summon gave back while their inventory was
+ # full or they were offline, or an admin gave them. It gives as many as fit and keeps the rest. A player with some
+ # waiting is told its name when they join. A loot that no longer exists keeps its items waiting until it comes back.
+ # Names are lower case, with no space or slash. Changing them needs a restart.
+diff --git a/src/main/resources/languages/en.yml b/src/main/resources/languages/en.yml
+index 829ab78..27bcbbc 100644
+--- a/src/main/resources/languages/en.yml
++++ b/src/main/resources/languages/en.yml
+@@ -175,3 +175,17 @@ menu_button_previous_page_name: "&a[< Previous page]"
+ menu_button_previous_page_lore: "&7Page {page} of {pages}"
+ menu_button_next_page_name: "&a[Next page >]"
+ menu_button_next_page_lore: "&7Page {page} of {pages}"
++
++# The claim menu. {amount} is the total owed, {loot} a loot's name.
++menu_claim_title: "&8Unclaimed summon items ({amount})"
++menu_claim_entry_name: "&e{loot}"
++menu_claim_entry_lore:
++  - "&7You are owed &e{amount}&7."
++  - "&7Click to take them."
++menu_claim_missing_name: "&c{loot}"
++menu_claim_missing_lore:
++  - "&7The loot &c{loot} &7is missing or cannot be prepared now."
++  - "&e{amount} &7item(s) stay waiting until they can be claimed."
++menu_button_claim_all_name: "&a[Claim all]"
++menu_button_claim_all_lore:
++  - "&7Take every summon item that fits."
+diff --git a/src/main/resources/languages/vi.yml b/src/main/resources/languages/vi.yml
+index f752618..064053e 100644
+--- a/src/main/resources/languages/vi.yml
++++ b/src/main/resources/languages/vi.yml
+@@ -174,3 +174,17 @@ menu_button_previous_page_name: "&a[< Trang truoc]"
+ menu_button_previous_page_lore: "&7Trang {page}/{pages}"
+ menu_button_next_page_name: "&a[Trang sau >]"
+ menu_button_next_page_lore: "&7Trang {page}/{pages}"
++
++# Menu nhan. {amount} la tong so dang cho, {loot} ten loot.
++menu_claim_title: "&8Vat pham trieu hoi dang cho ({amount})"
++menu_claim_entry_name: "&e{loot}"
++menu_claim_entry_lore:
++  - "&7Ban dang duoc nhan &e{amount}&7."
++  - "&7Bam de nhan."
++menu_claim_missing_name: "&c{loot}"
++menu_claim_missing_lore:
++  - "&7Loot &c{loot} &7dang thieu hoac chua the chuan bi."
++  - "&e{amount} &7vat pham van duoc giu cho den khi co the nhan."
++menu_button_claim_all_name: "&a[Nhan tat ca]"
++menu_button_claim_all_lore:
++  - "&7Nhan moi vat pham trieu hoi vua tui."
+diff --git a/src/main/resources/languages/zh.yml b/src/main/resources/languages/zh.yml
+index aaca99b..7ccdc0f 100644
+--- a/src/main/resources/languages/zh.yml
++++ b/src/main/resources/languages/zh.yml
+@@ -174,3 +174,17 @@ menu_button_previous_page_name: "&a[< 上一页]"
+ menu_button_previous_page_lore: "&7第 {page}/{pages} 页"
+ menu_button_next_page_name: "&a[下一页 >]"
+ menu_button_next_page_lore: "&7第 {page}/{pages} 页"
++
++# 领取菜单。{amount} 为待领取总数，{loot} 为战利品名称。
++menu_claim_title: "&8待领取的召唤物品（{amount}）"
++menu_claim_entry_name: "&e{loot}"
++menu_claim_entry_lore:
++  - "&7你还有 &e{amount} &7个待领取。"
++  - "&7点击领取。"
++menu_claim_missing_name: "&c{loot}"
++menu_claim_missing_lore:
++  - "&7战利品 &c{loot} &7不存在，或暂时无法准备。"
++  - "&e{amount} &7个物品会继续保留，直到可以领取。"
++menu_button_claim_all_name: "&a[全部领取]"
++menu_button_claim_all_lore:
++  - "&7领取所有能放进背包的召唤物品。"
+diff --git a/src/test/java/me/rakkoon69/rakunloots/claim/ClaimMenuTest.java b/src/test/java/me/rakkoon69/rakunloots/claim/ClaimMenuTest.java
+new file mode 100644
+index 0000000..8eb0083
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/claim/ClaimMenuTest.java
+@@ -0,0 +1,643 @@
++package me.rakkoon69.rakunloots.claim;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.storage.LootBoxStore;
++import me.rakkoon69.rakunloots.storage.SqliteStores;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.storage.UnclaimedSummonItem;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import me.rakkoon69.rakunloots.summonitem.SummonItemMaker;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.UncheckedIOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.Supplier;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class ClaimMenuTest {
++
++    private static final UUID WORLD = UUID.fromString("00000000-0000-0000-0000-00000000c1a1");
++
++    @TempDir
++    Path folder;
++
++    private FakeServerAdapter adapter;
++    private LootBoxStore store;
++    private ConfigSnapshot config;
++    private UnclaimedSummonItems claims;
++    private ClaimMenu menu;
++    private MenuService menus;
++    private UUID player;
++    private final List<String> failures = new ArrayList<>();
++    private final SummonItemFactory summonItems = loot -> new ItemStack(Material.NETHER_STAR);
++
++    @BeforeEach
++    void setUp() throws Exception {
++        StreamableServerMock.mock();
++        adapter = new FakeServerAdapter(WORLD);
++        store = SqliteStores.open(folder);
++        player = UUID.randomUUID();
++        adapter.addOnlinePlayer(player);
++        use(snapshot("alpha", "beta", "gamma"));
++    }
++
++    @AfterEach
++    void tearDown() throws Exception {
++        store.close();
++        MockBukkit.unmock();
++        assertTrue(failures.isEmpty(), failures.toString());
++    }
++
++    @Test
++    void aRowShowsTheSummonItemCappedAt64WithTheFullAmountInItsLore() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 100);
++
++        open();
++
++        ItemStack row = contents().get(0);
++        assertEquals(Material.NETHER_STAR, row.getType());
++        assertEquals(64, row.getAmount());
++        assertTrue(String.join(" ", row.getItemMeta().getLore()).contains("100"),
++                row.getItemMeta().getLore().toString());
++        assertTrue(adapter.menuOpens().get(0).title().contains("100"), adapter.menuOpens().get(0).title());
++    }
++
++    @Test
++    void aClickTakesOnlyThatLootAndRefreshesTheSameMenu() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++
++        menus.click(player, 0).join();
++
++        assertEquals(5, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(new UnclaimedSummonItem("beta", 7, false)), owed());
++        assertEquals(1, adapter.menuUpdates().size());
++        assertEquals(7, adapter.menuUpdates().get(0).contents().get(0).getAmount());
++        assertTrue(adapter.menuCloses().isEmpty());
++    }
++
++    @Test
++    void theClaimAllButtonTakesEveryLoot() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++
++        menus.click(player, 49).join();
++
++        assertEquals(12, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(), owed());
++        assertEquals(1, adapter.menuCloses().size());
++    }
++
++    @Test
++    void theMenuClosesWhenItsLastRowIsTaken() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        open();
++
++        menus.click(player, 0).join();
++
++        assertEquals(List.of(), owed());
++        assertEquals(1, adapter.menuCloses().size());
++    }
++
++    @Test
++    void twoClicksBeforeTheFirstClaimCompletesTakeOnlyTheFirstLoot() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        menus.click(player, 1).join();
++
++        assertEquals(List.of(5), adapter.giveCalls());
++        assertEquals(List.of(new UnclaimedSummonItem("beta", 7, false)), owed());
++
++        adapter.releaseGives();
++
++        assertEquals(5, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(new UnclaimedSummonItem("beta", 7, false)), owed());
++        assertEquals(7, adapter.menuUpdates().get(0).contents().get(0).getAmount());
++    }
++
++    @Test
++    void aFailedClaimReleasesTheGuardAndRefreshesTheMenu() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.onGive(() -> {
++            throw new IllegalStateException("the give failed");
++        });
++
++        menus.click(player, 0).join();
++
++        assertEquals(1, failures.size());
++        failures.clear();
++        assertEquals(List.of(new UnclaimedSummonItem("beta", 7, false)), owed());
++
++        adapter.onGive(null);
++        menus.click(player, 0).join();
++
++        assertEquals(7, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(), owed());
++        assertEquals(1, adapter.menuCloses().size());
++    }
++
++    @Test
++    void aMissingLootShowsABarrierAndAClickOnItChangesNothing() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++        store.addUnclaimedSummonItems(player, "gone", 4);
++        open();
++
++        ItemStack barrier = contents().get(1);
++        assertEquals(Material.BARRIER, barrier.getType());
++        assertTrue(barrier.getItemMeta().getDisplayName().contains("gone"), barrier.getItemMeta().getDisplayName());
++        assertTrue(String.join(" ", barrier.getItemMeta().getLore()).contains("4"),
++                barrier.getItemMeta().getLore().toString());
++
++        menus.click(player, 1).join();
++
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 2, false), new UnclaimedSummonItem("gone", 4, true)),
++                owed());
++        assertEquals(0, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertTrue(adapter.menuUpdates().isEmpty());
++    }
++
++    @Test
++    void anUnbuildableSummonItemShowsABarrierAndKeepsTheOtherRowUsable() throws Exception {
++        useRealSummonItems(realSummonSnapshot());
++        store.addUnclaimedSummonItems(player, "broken", 3);
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++
++        open();
++
++        Map<Integer, ItemStack> shown = contents();
++        ItemStack barrier = shown.get(1);
++        assertEquals(Material.BARRIER, barrier.getType());
++        assertTrue(barrier.getItemMeta().getDisplayName().contains("broken"),
++                barrier.getItemMeta().getDisplayName());
++        assertTrue(String.join(" ", barrier.getItemMeta().getLore()).contains("3"),
++                barrier.getItemMeta().getLore().toString());
++        assertEquals(1, failures.size(), failures.toString());
++        assertTrue(failures.get(0).contains("broken"), failures.toString());
++        failures.clear();
++
++        menus.click(player, 1).join();
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(0, adapter.inventoryOf(player).countOfType(Material.DIAMOND));
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 2, false),
++                new UnclaimedSummonItem("broken", 3, false)), owed());
++
++        menus.click(player, 0).join();
++        assertEquals(2, adapter.inventoryOf(player).countOfType(Material.DIAMOND));
++        assertEquals(List.of(new UnclaimedSummonItem("broken", 3, false)), owed());
++        assertEquals(1, failures.size(), failures.toString());
++        failures.clear();
++    }
++
++    @Test
++    void aRefreshCannotDispatchItsStaleViewAfterANewerClaimDuringRendering() throws Exception {
++        AtomicBoolean arm = new AtomicBoolean();
++        SummonItemFactory factory = loot -> {
++            if (arm.compareAndSet(true, false)) {
++                menus.click(player, 1).join();
++            }
++            return new ItemStack(Material.NETHER_STAR);
++        };
++        use(snapshot("alpha", "beta", "gamma"), () -> config, factory);
++        store.addUnclaimedSummonItems(player, "alpha", 1);
++        store.addUnclaimedSummonItems(player, "beta", 1);
++        store.addUnclaimedSummonItems(player, "gamma", 1);
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        arm.set(true);
++        adapter.releaseGives();
++
++        assertEquals(1, adapter.menuUpdates().size(), adapter.menuUpdates().toString());
++        Map<Integer, ItemStack> refreshed = adapter.menuUpdates().get(0).contents();
++        assertTrue(refreshed.get(0).getItemMeta().getDisplayName().contains("gamma"),
++                refreshed.get(0).getItemMeta().getDisplayName());
++        assertFalse(refreshed.containsKey(1), refreshed.keySet().toString());
++        assertEquals(List.of(new UnclaimedSummonItem("gamma", 1, false)), owed());
++    }
++
++    @Test
++    void rowsPageAt45WithPreviousAndNextButtons() throws Exception {
++        use(snapshot(46));
++        for (int i = 0; i < 46; i++) {
++            store.addUnclaimedSummonItems(player, id(i), 1);
++        }
++
++        open();
++
++        Map<Integer, ItemStack> first = contents();
++        assertEquals(Material.NETHER_STAR, first.get(0).getType());
++        assertEquals(Material.NETHER_STAR, first.get(44).getType());
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, first.get(45).getType());
++        assertEquals(Material.ARROW, first.get(53).getType());
++        assertTrue(first.get(53).getItemMeta().getDisplayName().contains("Next"),
++                first.get(53).getItemMeta().getDisplayName());
++
++        menus.click(player, 53).join();
++
++        Map<Integer, ItemStack> second = adapter.menuUpdates().get(0).contents();
++        assertEquals(Material.NETHER_STAR, second.get(0).getType());
++        assertFalse(second.containsKey(1), second.keySet().toString());
++        assertEquals(Material.ARROW, second.get(45).getType());
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, second.get(53).getType());
++
++        menus.click(player, 45).join();
++
++        assertEquals(Material.NETHER_STAR, adapter.menuUpdates().get(1).contents().get(0).getType());
++    }
++
++    @Test
++    void aPartialGiveKeepsTheRestOwedAndRefreshesTheRemainingAmount() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 200);
++        adapter.inventoryOf(player).fillAllButSlots(new ItemStack(Material.STONE), 2);
++
++        open();
++        menus.click(player, 0).join();
++
++        assertEquals(128, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 72, false)), owed());
++        ItemStack row = adapter.menuUpdates().get(0).contents().get(0);
++        assertEquals(64, row.getAmount());
++        assertTrue(String.join(" ", row.getItemMeta().getLore()).contains("72"),
++                row.getItemMeta().getLore().toString());
++        assertEquals(0, adapter.menuCloses().size());
++    }
++
++    @Test
++    void theClaimGuardSurvivesPaging() throws Exception {
++        use(snapshot(46));
++        for (int i = 0; i < 46; i++) {
++            store.addUnclaimedSummonItems(player, id(i), 1);
++        }
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        menus.click(player, 53).join();
++        menus.click(player, 0).join();
++
++        assertEquals(List.of(1), adapter.giveCalls());
++        adapter.releaseGives();
++        assertEquals(45, owed().size());
++        assertTrue(owed().stream().noneMatch(row -> row.lootId().equals(id(0))));
++    }
++
++    @Test
++    void theClaimGuardSurvivesReopeningAndThenReleases() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        menu.open(player, () -> {
++        });
++        menus.click(player, 0).join();
++
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals(List.of(5), adapter.giveCalls());
++        adapter.releaseGives();
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(1, adapter.menuCloses().size());
++        assertEquals(List.of(new UnclaimedSummonItem("beta", 7, false)), owed());
++
++        menus.click(player, 0).join();
++        assertEquals(List.of(5, 7), adapter.giveCalls());
++    }
++
++    @Test
++    void takingTheOnlyRowOnPage2ClampsBackToPage1() throws Exception {
++        use(snapshot(46));
++        for (int i = 0; i < 46; i++) {
++            store.addUnclaimedSummonItems(player, id(i), 1);
++        }
++        open();
++        menus.click(player, 53).join();
++
++        menus.click(player, 0).join();
++
++        assertEquals(0, adapter.menuCloses().size());
++        Map<Integer, ItemStack> refreshed = adapter.menuUpdates().get(1).contents();
++        assertEquals(Material.NETHER_STAR, refreshed.get(0).getType());
++        assertEquals(Material.NETHER_STAR, refreshed.get(44).getType());
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, refreshed.get(45).getType());
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, refreshed.get(53).getType());
++        assertEquals(45, owed().size());
++    }
++
++    @Test
++    void aClaimCompletionAfterCloseDoesNotRefreshOrReopen() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        menus.close(player).join();
++        menu.open(player, () -> {
++        });
++        adapter.releaseGives();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals(1, adapter.menuCloses().size());
++    }
++
++    @Test
++    void aStaleCompletionCannotCloseANewerMenu() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        open();
++        adapter.holdGives();
++        AtomicInteger clicks = new AtomicInteger();
++
++        menus.click(player, 0).join();
++        menus.close(player).join();
++        MenuView other = new MenuView("Other", 1, Map.of(0,
++                new MenuIcon(new ItemStack(Material.DIAMOND), Optional.of(clicks::incrementAndGet), Optional.empty())));
++        menus.open(player, other).join();
++        adapter.releaseGives();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(1, adapter.menuCloses().size());
++        menus.click(player, 0).join();
++        assertEquals(1, clicks.get());
++    }
++
++    @Test
++    void aClaimCompletionAfterReloadDoesNotRefreshOrReopen() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.holdGives();
++
++        menus.click(player, 0).join();
++        menus.reload(config);
++        menu.open(player, () -> {
++        });
++        adapter.releaseGives();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals(1, adapter.menuCloses().size());
++    }
++
++    @Test
++    void aClaimCompletionAfterReplacementLeavesTheNewerMenuAlone() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 5);
++        store.addUnclaimedSummonItems(player, "beta", 7);
++        open();
++        adapter.holdGives();
++        AtomicInteger clicks = new AtomicInteger();
++
++        menus.click(player, 0).join();
++        MenuView other = new MenuView("Other", 1, Map.of(0,
++                new MenuIcon(new ItemStack(Material.DIAMOND), Optional.of(clicks::incrementAndGet), Optional.empty())));
++        menus.open(player, other).join();
++        adapter.releaseGives();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(1, adapter.menuCloses().size());
++        menus.click(player, 0).join();
++        assertEquals(1, clicks.get());
++    }
++
++    @Test
++    void aReplacementWhileTheOwedReadIsPendingWins() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++        adapter.holdAsync();
++        AtomicInteger clicks = new AtomicInteger();
++
++        menu.open(player, () -> {
++        });
++        MenuView other = new MenuView("Other", 1, Map.of(0,
++                new MenuIcon(new ItemStack(Material.DIAMOND), Optional.of(clicks::incrementAndGet), Optional.empty())));
++        menus.open(player, other).join();
++        assertEquals(1, adapter.menuOpens().size());
++
++        adapter.releaseAsync();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(1, adapter.menuOpens().size());
++        assertEquals(0, adapter.menuCloses().size());
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 2, false)), owed());
++        menus.click(player, 0).join();
++        assertEquals(1, clicks.get());
++    }
++
++    @Test
++    void aReloadWhileTheOwedReadIsPendingDoesNotInstallAStaleMenu() throws Exception {
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++        adapter.holdAsync();
++
++        menu.open(player, () -> {
++        });
++        menus.reload(config);
++        adapter.releaseAsync();
++
++        assertTrue(adapter.menuUpdates().isEmpty());
++        assertEquals(0, adapter.menuOpens().size());
++        assertEquals(0, adapter.menuCloses().size());
++        menus.click(player, 0).join();
++        assertEquals(0, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 2, false)), owed());
++    }
++
++    @Test
++    void aReloadBetweenTheMenuStateAndConfigReadCannotInstallAStaleMenu() throws Exception {
++        AtomicInteger reloads = new AtomicInteger();
++        use(snapshot("alpha"), () -> {
++            if (reloads.compareAndSet(0, 1)) {
++                menus.reload(config);
++            }
++            return config;
++        });
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++
++        menu.open(player, () -> {
++        });
++
++        assertEquals(0, adapter.menuOpens().size());
++        assertEquals(0, adapter.menuCloses().size());
++        assertTrue(adapter.menuUpdates().isEmpty());
++        menus.click(player, 0).join();
++        assertEquals(0, adapter.inventoryOf(player).count(new ItemStack(Material.NETHER_STAR)));
++        assertEquals(List.of(new UnclaimedSummonItem("alpha", 2, false)), owed());
++    }
++
++    @Test
++    void theMenuRendersTheSameSnapshotItRead() throws Exception {
++        ConfigSnapshot first = snapshot("alpha");
++        ConfigSnapshot second = snapshot("beta");
++        AtomicInteger reads = new AtomicInteger();
++        use(first, () -> reads.getAndIncrement() == 0 ? first : second);
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++
++        open();
++
++        assertEquals(Material.NETHER_STAR, contents().get(0).getType());
++        assertEquals(1, reads.get());
++    }
++
++    @Test
++    void openingTheMenuReadsTheConfigOnce() throws Exception {
++        AtomicInteger reads = new AtomicInteger();
++        use(snapshot("alpha"), () -> {
++            reads.incrementAndGet();
++            return config;
++        });
++        store.addUnclaimedSummonItems(player, "alpha", 2);
++
++        open();
++
++        assertEquals(1, reads.get());
++    }
++
++    private void open() {
++        AtomicInteger nothing = new AtomicInteger();
++        menu.open(player, nothing::incrementAndGet);
++        assertEquals(0, nothing.get());
++        assertEquals(1, adapter.menuOpens().size(), "the menu did not open");
++    }
++
++    private Map<Integer, ItemStack> contents() {
++        return adapter.menuOpens().get(0).contents();
++    }
++
++    private List<UnclaimedSummonItem> owed() {
++        try {
++            return store.unclaimedSummonItems(player, config);
++        } catch (Exception failure) {
++            throw new IllegalStateException(failure);
++        }
++    }
++
++    private void useRealSummonItems(ConfigSnapshot snapshot) {
++        config = snapshot;
++        ItemSourceRegistry sources = ItemSourceRegistry.create();
++        SummonItemMaker maker = new SummonItemMaker(sources);
++        MenuRenderer renderer = new MenuRenderer(sources, key -> config.message("", key), MenuWarnings.ignore);
++        menus = new MenuService(adapter, renderer);
++        claims = new UnclaimedSummonItems(adapter, () -> config, store, maker,
++                (what, cause) -> failures.add(what));
++        menu = new ClaimMenu(adapter, () -> config, claims, maker, menus, renderer,
++                (what, cause) -> failures.add(what));
++    }
++
++    private void use(ConfigSnapshot snapshot) {
++        use(snapshot, () -> config);
++    }
++
++    private void use(ConfigSnapshot snapshot, Supplier<ConfigSnapshot> supplier) {
++        use(snapshot, supplier, summonItems);
++    }
++
++    private void use(ConfigSnapshot snapshot, Supplier<ConfigSnapshot> supplier, SummonItemFactory factory) {
++        config = snapshot;
++        ItemSourceRegistry sources = ItemSourceRegistry.create();
++        MenuRenderer renderer = new MenuRenderer(sources, key -> config.message("", key), MenuWarnings.ignore);
++        menus = new MenuService(adapter, renderer);
++        claims = new UnclaimedSummonItems(adapter, supplier, store, factory,
++                (what, cause) -> failures.add(what));
++        menu = new ClaimMenu(adapter, supplier, claims, factory, menus, renderer,
++                (what, cause) -> failures.add(what));
++    }
++
++    private static ConfigSnapshot snapshot(int loots) {
++        String[] ids = new String[loots];
++        for (int i = 0; i < loots; i++) {
++            ids[i] = id(i);
++        }
++        return snapshot(ids);
++    }
++
++    private static String id(int index) {
++        return String.format("loot%02d", index);
++    }
++
++    private static ConfigSnapshot realSummonSnapshot() {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", resource("/languages/en.yml"))
++                .menu("claim", resource("/menus/claim.yml"));
++        sources.loot("broken", "display_name: 'broken'\nopen_mode: drop\nblock: barrel\nroll:\n"
++                + "  entries:\n    a:\n      item:\n        id: diamond\n");
++        sources.loot("alpha", "display_name: 'alpha'\nopen_mode: drop\nblock: barrel\n"
++                + "summon_item:\n  id: diamond\nroll:\n  entries:\n    a:\n      item:\n        id: diamond\n");
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static ConfigSnapshot snapshot(String... lootIds) {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", resource("/languages/en.yml"))
++                .menu("claim", resource("/menus/claim.yml"));
++        for (String lootId : lootIds) {
++            sources.loot(lootId, "display_name: '" + lootId + "'\nopen_mode: drop\nblock: barrel\nroll:\n"
++                    + "  entries:\n    a:\n      item:\n        id: diamond\n");
++        }
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static NameCatalog catalog() {
++        return new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return Optional.of(writtenId.contains(":") ? writtenId : "minecraft:" + writtenId);
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return true;
++            }
++        };
++    }
++
++    private static String resource(String path) {
++        try (InputStream in = ClaimMenuTest.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        } catch (IOException failure) {
++            throw new UncheckedIOException(failure);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimLanguageSnapshotProofTest.java b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimLanguageSnapshotProofTest.java
+new file mode 100644
+index 0000000..0ef255c
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimLanguageSnapshotProofTest.java
+@@ -0,0 +1,85 @@
++package me.rakkoon69.rakunloots.claim;
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.*;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.*;
++import me.rakkoon69.rakunloots.storage.*;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.nio.file.Path;
++import java.nio.charset.StandardCharsets;
++import java.util.*;
++import java.util.concurrent.atomic.*;
++import static org.junit.jupiter.api.Assertions.*;
++class Phase9ClaimLanguageSnapshotProofTest {
++ @TempDir Path folder;
++ @Test void pageLabelsUseTheSameSnapshotAsTheRowsWhenReloadInstallsNewConfigDuringRender() throws Exception {
++  StreamableServerMock.mock();
++  var adapter=new FakeServerAdapter(UUID.randomUUID()); var player=UUID.randomUUID(); adapter.addOnlinePlayer(player);
++  var store=SqliteStores.open(folder);
++  try {
++   var original=snapshot("OLD_NEXT"); var reloaded=snapshot("NEW_NEXT"); var config=new AtomicReference<>(original);
++   for(int i=0;i<46;i++) store.addUnclaimedSummonItems(player,"loot"+i,1);
++   var failures=new ArrayList<String>(); var changed=new AtomicBoolean();
++   SummonItemFactory realMaker=new me.rakkoon69.rakunloots.summonitem.SummonItemMaker(ItemSourceRegistry.create());
++   SummonItemFactory maker=loot->{if(changed.compareAndSet(false,true)) config.set(reloaded); return realMaker.create(loot);};
++   var claims=new UnclaimedSummonItems(adapter,config::get,store,maker,(what,cause)->failures.add(what));
++   var renderer=new MenuRenderer(ItemSourceRegistry.create(),key->config.get().message("",key),MenuWarnings.ignore);
++   var menus=new MenuService(adapter,renderer);
++   var menu=new ClaimMenu(adapter,config::get,claims,maker,menus,renderer,(what,cause)->failures.add(what));
++   // A reload installs the new config before its later module updates close menus. This interleaving changes
++   // that field during item rendering, before the service generation is turned over by menus.reload.
++   menu.open(player,()->fail("owed rows must open"));
++   adapter.globalScheduler().stepTicks(3);
++   assertEquals(1,adapter.menuOpens().size());
++   var next=adapter.menuOpens().get(0).contents().get(53);
++   assertEquals("OLD_NEXT",next.getItemMeta().getDisplayName(),"one operation must use one config for rows AND paging labels");
++   assertTrue(failures.isEmpty(),failures.toString());
++  } finally {store.close(); MockBukkit.unmock();}
++ }
++ @Test void anOlderQueuedRefreshCannotOverwriteANewerPageTurn() throws Exception {
++  StreamableServerMock.mock();
++  var delegate=new FakeServerAdapter(UUID.randomUUID()); var player=UUID.randomUUID(); delegate.addOnlinePlayer(player);
++  var store=SqliteStores.open(folder);
++  try {
++   var config=snapshot("NEXT",47); var pending=new ArrayList<Runnable>(); var holdNext=new AtomicBoolean();
++   // Paper updates called from async queue on main; a later update already on main runs immediately.
++   // This adapter seam holds the first physical update and permits the later owner's update to finish first.
++   me.rakkoon69.rakunloots.server.ServerAdapter adapter=(me.rakkoon69.rakunloots.server.ServerAdapter)java.lang.reflect.Proxy.newProxyInstance(
++    me.rakkoon69.rakunloots.server.ServerAdapter.class.getClassLoader(),new Class<?>[]{me.rakkoon69.rakunloots.server.ServerAdapter.class},(proxy,method,args)->{
++     if(method.getName().equals("updateMenu") && holdNext.compareAndSet(true,false)) {
++      var held=new java.util.concurrent.CompletableFuture<Void>();
++      pending.add(()->{try {((java.util.concurrent.CompletableFuture<?>)method.invoke(delegate,args)).whenComplete((value,error)->{if(error!=null)held.completeExceptionally(error);else held.complete(null);});}catch(Exception error){held.completeExceptionally(error);}});
++      return held;
++     }
++     try{return method.invoke(delegate,args);}catch(java.lang.reflect.InvocationTargetException error){throw error.getCause();}
++    });
++   for(int i=0;i<47;i++) store.addUnclaimedSummonItems(player,"loot"+i,1);
++   var sources=ItemSourceRegistry.create(); var maker=new me.rakkoon69.rakunloots.summonitem.SummonItemMaker(sources);
++   var failures=new ArrayList<String>(); var claims=new UnclaimedSummonItems(adapter,()->config,store,maker,(what,cause)->failures.add(what));
++   var renderer=new MenuRenderer(sources,key->config.message("",key),MenuWarnings.ignore); var menus=new MenuService(adapter,renderer);
++   var menu=new ClaimMenu(adapter,()->config,claims,maker,menus,renderer,(what,cause)->failures.add(what));
++   menu.open(player,()->fail("owed rows must open")); delegate.globalScheduler().stepTicks(3);
++   holdNext.set(true); menus.click(player,0).join(); delegate.globalScheduler().stepTicks(3);
++   assertEquals(1,pending.size(),"the async refresh is queued on the owner");
++   menus.click(player,53).join(); delegate.globalScheduler().stepTicks(3);
++   List.copyOf(pending).forEach(Runnable::run); delegate.globalScheduler().stepTicks(3);
++   var latest=delegate.menuUpdates().get(delegate.menuUpdates().size()-1).contents();
++   assertTrue(latest.get(0).getItemMeta().getDisplayName().contains("loot9"),
++    "the older queued page-1 update overwrote the newer page-2 turn: "+latest.get(0).getItemMeta().getDisplayName());
++   assertTrue(failures.isEmpty(),failures.toString());
++  } finally {store.close(); MockBukkit.unmock();}
++ }
++ static ConfigSnapshot snapshot(String nextName) throws Exception { return snapshot(nextName,46); }
++ static ConfigSnapshot snapshot(String nextName,int count) throws Exception {
++  var language=new String(Objects.requireNonNull(Phase9ClaimLanguageSnapshotProofTest.class.getResourceAsStream("/languages/en.yml")).readAllBytes(),StandardCharsets.UTF_8);
++  language=language.replace("menu_button_next_page_name: \"&a[Next page >]\"","menu_button_next_page_name: \""+nextName+"\"");
++  var sources=ConfigSources.builder().globals("language: en\n").worlds("{}\n").language("en",language);
++  for(int i=0;i<count;i++) sources.loot("loot"+i,"open_mode: drop\nblock: barrel\nsummon_item: {id: nether_star}\nroll:\n  entries:\n    a:\n      item: {id: diamond}\n");
++  var result=ConfigLoader.load(sources.build(),new NameCatalog(){public Optional<String> currentId(String id){return Optional.of(id.contains(":")?id:"minecraft:"+id);} public boolean soundExists(String key){return true;}});
++  assertEquals(count,result.loots().size()); return result;
++ }
++}
+\ No newline at end of file
+diff --git a/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimVisibleViewProofTest.java b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimVisibleViewProofTest.java
+new file mode 100644
+index 0000000..5ebb6f2
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9ClaimVisibleViewProofTest.java
+@@ -0,0 +1,63 @@
++package me.rakkoon69.rakunloots.claim;
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.*;
++import me.rakkoon69.rakunloots.server.ServerAdapter;
++import me.rakkoon69.rakunloots.storage.*;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import me.rakkoon69.rakunloots.summonitem.SummonItemMaker;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.nio.file.Path;
++import java.util.*;
++import java.util.concurrent.*;
++import java.util.concurrent.atomic.*;
++import static org.junit.jupiter.api.Assertions.*;
++class Phase9ClaimVisibleViewProofTest {
++ @TempDir Path folder;
++ @Test void aClickOnTheStillVisibleOldRowCannotClaimADifferentLoot() throws Exception {
++  StreamableServerMock.mock();
++  var delegate=new FakeServerAdapter(UUID.randomUUID()); var player=UUID.randomUUID(); delegate.addOnlinePlayer(player);
++  var store=SqliteStores.open(folder); var pending=new ArrayList<Runnable>(); var hold=new AtomicBoolean();
++  try {
++   var config=Phase9ClaimLanguageSnapshotProofTest.snapshot("NEXT");
++   ServerAdapter adapter=(ServerAdapter)java.lang.reflect.Proxy.newProxyInstance(ServerAdapter.class.getClassLoader(),new Class<?>[]{ServerAdapter.class},(proxy,method,args)->{
++    if(method.getName().equals("updateMenu") && hold.compareAndSet(true,false)) {
++     var result=new CompletableFuture<Void>();
++     // A physical update submitted from async is still waiting on the player/main thread.
++     pending.add(()->{try {((CompletableFuture<?>)method.invoke(delegate,args)).whenComplete((value,error)->{if(error==null)result.complete(null);else result.completeExceptionally(error);});}catch(Exception error){result.completeExceptionally(error);}});
++     return result;
++    }
++    try{return method.invoke(delegate,args);}catch(java.lang.reflect.InvocationTargetException error){throw error.getCause();}
++   });
++   store.addUnclaimedSummonItems(player,"loot0",2); store.addUnclaimedSummonItems(player,"loot1",3);
++   var sources=ItemSourceRegistry.create(); var maker=new SummonItemMaker(sources); var failures=new ArrayList<String>();
++   var claims=new UnclaimedSummonItems(adapter,()->config,store,maker,(what,cause)->failures.add(what));
++   var renderer=new MenuRenderer(sources,key->config.message("",key),MenuWarnings.ignore); var menus=new MenuService(adapter,renderer);
++   var menu=new ClaimMenu(adapter,()->config,claims,maker,menus,renderer,(what,cause)->failures.add(what));
++   menu.open(player,()->fail("owed rows must open")); delegate.globalScheduler().stepTicks(3);
++   assertTrue(delegate.menuOpens().get(0).contents().get(0).getItemMeta().getDisplayName().contains("loot0"));
++   hold.set(true); menus.click(player,0).join(); delegate.globalScheduler().stepTicks(3);
++   assertEquals(1,pending.size()); assertTrue(delegate.menuUpdates().isEmpty(),"the player still sees loot0, not loot1");
++   menus.click(player,0).join(); delegate.globalScheduler().stepTicks(3);
++   assertEquals(2,delegate.inventoryOf(player).countOfType(Material.NETHER_STAR),"clicking visible loot0 must not take loot1");
++   assertEquals(List.of(new UnclaimedSummonItem("loot1",3,false)),store.unclaimedSummonItems(player,config));
++   assertTrue(failures.isEmpty(),failures.toString());
++  } finally { List.copyOf(pending).forEach(Runnable::run); store.close(); MockBukkit.unmock(); }
++ }
++ @Test void aDeferredClickCannotRunTheNewIconActionAfterAnInPlaceRefresh() {
++  StreamableServerMock.mock();
++  try {
++   var adapter=new FakeServerAdapter(UUID.randomUUID()); var player=UUID.randomUUID(); adapter.addOnlinePlayer(player);
++   var menus=new MenuService(adapter); var oldClicks=new AtomicInteger(); var newClicks=new AtomicInteger();
++   var before=new MenuView("Before",1,Map.of(0,new MenuIcon(new ItemStack(Material.DIAMOND),Optional.of(oldClicks::incrementAndGet),Optional.empty())));
++   var after=new MenuView("After",1,Map.of(0,new MenuIcon(new ItemStack(Material.EMERALD),Optional.of(newClicks::incrementAndGet),Optional.empty())));
++   menus.open(player,before).join();
++   menus.clickLater(player,0).join(); assertEquals(0,oldClicks.get()); assertEquals(0,newClicks.get());
++   menus.refresh(player,after).join(); adapter.runNextTickActions();
++   assertEquals(0,newClicks.get(),"a click received for the old visible icon must not run the replacement action");
++  } finally {MockBukkit.unmock();}
++ }
++}
+\ No newline at end of file
+diff --git a/src/test/java/me/rakkoon69/rakunloots/claim/Phase9SingleClaimAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9SingleClaimAcceptanceTest.java
+new file mode 100644
+index 0000000..9b4db6e
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/claim/Phase9SingleClaimAcceptanceTest.java
+@@ -0,0 +1,75 @@
++package me.rakkoon69.rakunloots.claim;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.*;
++import me.rakkoon69.rakunloots.storage.*;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.*;
++import org.junit.jupiter.api.io.TempDir;
++import java.nio.file.Path;
++import java.util.*;
++import static org.junit.jupiter.api.Assertions.*;
++
++/** The single-row claim crosses the same SQLite and inventory boundary as a full claim. */
++@Timeout(10)
++class Phase9SingleClaimAcceptanceTest {
++    @TempDir Path folder;
++    private final List<String> failures=new ArrayList<>();
++    private LootBoxStore store;
++    private FakeServerAdapter adapter;
++    private ConfigSnapshot config;
++    private UnclaimedSummonItems claims;
++    private UUID player;
++
++    @BeforeEach void start() throws Exception {
++        StreamableServerMock.mock();
++        player=UUID.randomUUID();
++        adapter=new FakeServerAdapter(UUID.randomUUID());
++        adapter.addOnlinePlayer(player);
++        store=SqliteStores.open(folder);
++        // Only known vanilla ids occur in this storage/give fixture.
++        config=ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
++            .worlds("{}\n").language("en","claim_given: 'given {loot} {amount}'\nclaim_kept: 'kept {loot} {amount}'\nclaim_loot_missing: 'missing {loot}'\n")
++            .loot("one", "display_name: One\nopen_mode: drop\nblock: barrel\nroll:\n  entries:\n    a:\n      item:\n        id: diamond\n")
++            .loot("two", "display_name: Two\nopen_mode: drop\nblock: barrel\nroll:\n  entries:\n    a:\n      item:\n        id: diamond\n")
++            .build(), id -> Optional.of(id));
++        assertTrue(config.loot("one").isPresent(),"fixture loot one must load");
++        assertTrue(config.loot("two").isPresent(),"fixture loot two must load");
++        claims=new UnclaimedSummonItems(adapter,()->config,store,
++            loot -> new ItemStack(Material.COMPASS),
++            (what,cause)->failures.add(what+": "+cause));
++    }
++    @AfterEach void stop() throws Exception { store.close(); MockBukkit.unmock(); assertTrue(failures.isEmpty(),failures.toString()); }
++
++    @Test void readingPreservesStoredOrderAndMissingRowsWithoutChangingThem() throws Exception {
++        store.addUnclaimedSummonItems(player,"two",3);
++        store.addUnclaimedSummonItems(player,"gone",4);
++        store.addUnclaimedSummonItems(player,"one",5);
++        var before=store.unclaimedSummonItems(player,config);
++        assertEquals(before,claims.owed(player).get());
++        assertTrue(before.stream().anyMatch(row->row.lootId().equals("gone") && row.lootMissing()));
++        assertEquals(before,store.unclaimedSummonItems(player,config));
++    }
++    @Test void takingOneLootLeavesEveryOtherRowAndCommitsBeforeGiving() throws Exception {
++        store.addUnclaimedSummonItems(player,"one",5);
++        store.addUnclaimedSummonItems(player,"two",7);
++        List<List<UnclaimedSummonItem>> atGive=new ArrayList<>();
++        adapter.onGive(()->{
++            try { atGive.add(store.unclaimedSummonItems(player,config)); }
++            catch(Exception error) { throw new AssertionError(error); }
++        });
++        var result=claims.claim(player,"one").get();
++        assertEquals(5,result.given());
++        assertEquals(List.of(new UnclaimedSummonItem("two",7,false)),atGive.get(0));
++        assertEquals(atGive.get(0),claims.owed(player).get());
++        assertEquals(5,adapter.inventoryOf(player).count(new ItemStack(Material.COMPASS)));
++    }
++    @Test void aMissingLootCannotBeTakenAndStaysOwed() throws Exception {
++        store.addUnclaimedSummonItems(player,"gone",9);
++        claims.claim(player,"gone").get();
++        assertEquals(List.of(new UnclaimedSummonItem("gone",9,true)),claims.owed(player).get());
++        assertEquals(0,adapter.inventoryOf(player).count(new ItemStack(Material.COMPASS)));
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java b/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
+index 5aa83bd..cec6458 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
+@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
+ import me.rakkoon69.rakunloots.animation.AnimationRegistry;
+ import me.rakkoon69.rakunloots.animation.AnimationService;
+ import me.rakkoon69.rakunloots.animation.AnimationWarning;
++import me.rakkoon69.rakunloots.claim.ClaimMenu;
+ import me.rakkoon69.rakunloots.claim.UnclaimedSummonItems;
+ import me.rakkoon69.rakunloots.config.ConfigLoader;
+ import me.rakkoon69.rakunloots.config.ConfigSources;
+@@ -30,8 +31,10 @@ import me.rakkoon69.rakunloots.lootbox.SummonTarget;
+ import me.rakkoon69.rakunloots.lootbox.WorldBroadcasts;
+ import me.rakkoon69.rakunloots.lootbox.WorldTimers;
+ import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
+ import me.rakkoon69.rakunloots.menu.MenuService;
+ import me.rakkoon69.rakunloots.menu.MenuView;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
+ import me.rakkoon69.rakunloots.roll.RollWarning;
+ import me.rakkoon69.rakunloots.server.BlockPosition;
+ import me.rakkoon69.rakunloots.server.ChunkView;
+@@ -217,7 +220,10 @@ class AdminCommandsTest {
+         sources = new Sources();
+         CommandMessages messages = key -> config.get().message("", key);
+         registry = new CommandRegistry(sources, messages, debugLines::add);
+-        realMenus = new MenuService(adapter);
++        MenuRenderer menuRenderer = new MenuRenderer(ItemSourceRegistry.create(), messages::text, MenuWarnings.ignore);
++        realMenus = new MenuService(adapter, menuRenderer);
++        ClaimMenu claimMenu = new ClaimMenu(adapter, config::get, claims, maker, realMenus, menuRenderer,
++                (what, cause) -> failures.add(what));
+         registry.register(AdminCommands.root(snapshot.adminCommand(), new AdminCommands.Parts(
+                 () -> {
+                     loaderSaw.add("pending " + service.pendingCount(WORLD));
+@@ -237,7 +243,7 @@ class AdminCommandsTest {
+                     menusSaw.add(next);
+                     realMenus.reload(next);
+                 }, giveBack::give, new me.rakkoon69.rakunloots.log.WarningRecord())));
+-        registry.register(ClaimCommand.node(snapshot.claimCommand(), claims));
++        registry.register(ClaimCommand.node(snapshot.claimCommand(), claims, claimMenu));
+         admin = new FakeCommandSender("Admin", ALL);
+     }
+ 
+@@ -689,7 +695,7 @@ class AdminCommandsTest {
+         FakeCommandSender everyone = new FakeCommandSender("Steve", ClaimCommand.PERMISSION).asPlayer(STEVE);
+ 
+         assertEquals("claimsummon", config.get().claimCommand().name());
+-        registry.dispatch(everyone, "rklclaim");
++        registry.dispatch(everyone, "rklclaim all");
+ 
+         assertEquals(2, adapter.inventoryOf(STEVE).countOfType(Material.NETHER_STAR));
+         assertEquals(List.of(), owed(STEVE));
+@@ -699,7 +705,7 @@ class AdminCommandsTest {
+                 && message.text().contains("You took")), adapter.messages().toString());
+ 
+         store.addUnclaimedSummonItems(STEVE, "airdrops", 1);
+-        registry.dispatch(everyone, "claimsummon");
++        registry.dispatch(everyone, "claimsummon all");
+         assertEquals(3, adapter.inventoryOf(STEVE).countOfType(Material.NETHER_STAR));
+     }
+ 
+@@ -711,8 +717,11 @@ class AdminCommandsTest {
+         FakeCommandSender console = new FakeCommandSender("Console", ClaimCommand.PERMISSION);
+ 
+         registry.dispatch(console, "claimsummon");
++        registry.dispatch(console, "claimsummon all");
+ 
+-        assertEquals(List.of(PREFIX + " &cOnly a player can take summon items, because they go into an inventory."),
++        assertEquals(List.of(
++                PREFIX + " &cOnly a player can take summon items, because they go into an inventory.",
++                PREFIX + " &cOnly a player can take summon items, because they go into an inventory."),
+                 console.messages());
+     }
+ 
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/ClaimCommandTest.java b/src/test/java/me/rakkoon69/rakunloots/command/ClaimCommandTest.java
+new file mode 100644
+index 0000000..72c19c7
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/command/ClaimCommandTest.java
+@@ -0,0 +1,207 @@
++package me.rakkoon69.rakunloots.command;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.claim.ClaimMenu;
++import me.rakkoon69.rakunloots.claim.UnclaimedSummonItems;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.storage.LootBoxStore;
++import me.rakkoon69.rakunloots.storage.SqliteStores;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.storage.UnclaimedSummonItem;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import me.rakkoon69.rakunloots.summonitem.SummonItemMaker;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.UncheckedIOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class ClaimCommandTest {
++
++    private static final UUID WORLD = UUID.fromString("00000000-0000-0000-0000-00000000c1a1");
++
++    @TempDir
++    Path folder;
++
++    private FakeServerAdapter adapter;
++    private LootBoxStore store;
++    private ConfigSnapshot config;
++    private UnclaimedSummonItems claims;
++    private CommandRegistry registry;
++    private UUID player;
++    private FakeCommandSender steve;
++    private final List<String> failures = new ArrayList<>();
++
++    @BeforeEach
++    void setUp() throws Exception {
++        StreamableServerMock.mock();
++        adapter = new FakeServerAdapter(WORLD);
++        store = SqliteStores.open(folder);
++        config = shipped();
++        player = FakeCommandSources.STEVE_ID;
++        adapter.addOnlinePlayer(player);
++        steve = new FakeCommandSender("Steve", ClaimCommand.PERMISSION).asPlayer(player);
++        SummonItemMaker maker = new SummonItemMaker(ItemSourceRegistry.create());
++        claims = new UnclaimedSummonItems(adapter, () -> config, store, maker, (what, cause) -> failures.add(what));
++        MenuRenderer renderer = new MenuRenderer(ItemSourceRegistry.create(), key -> config.message("", key),
++                MenuWarnings.ignore);
++        MenuService menus = new MenuService(adapter, renderer);
++        ClaimMenu menu = new ClaimMenu(adapter, () -> config, claims, maker, menus, renderer,
++                (what, cause) -> failures.add(what));
++        registry = new CommandRegistry(new FakeCommandSources(), key -> config.message("", key), line -> {
++        });
++        registry.register(ClaimCommand.node(config.claimCommand(), claims, menu));
++    }
++
++    @AfterEach
++    void tearDown() throws Exception {
++        store.close();
++        MockBukkit.unmock();
++        assertTrue(failures.isEmpty(), failures.toString());
++    }
++
++    /**
++     * Acceptance: a player owed nothing gets claim_nothing and no menu.
++     */
++    @Test
++    void aPlayerOwedNothingGetsClaimNothingAndNoMenu() {
++        registry.dispatch(steve, "claimsummon");
++        adapter.globalScheduler().stepTicks(1);
++
++        assertEquals(List.of(message("claim_nothing")), steve.messages());
++        assertTrue(adapter.menuOpenCalls().isEmpty());
++    }
++
++    /**
++     * Acceptance: the claim command opens the menu when something is owed.
++     */
++    @Test
++    void aPlayerOwedSomethingGetsTheMenu() throws Exception {
++        store.addUnclaimedSummonItems(player, "airdrops", 2);
++
++        registry.dispatch(steve, "claimsummon");
++
++        assertEquals(1, adapter.menuOpens().size());
++        assertTrue(adapter.menuOpens().get(0).title().contains("2"), adapter.menuOpens().get(0).title());
++        assertEquals(List.of(), steve.messages());
++        assertEquals(0, adapter.inventoryOf(player).countOfType(Material.NETHER_STAR));
++        assertEquals(List.of(new UnclaimedSummonItem("airdrops", 2, false)), owed());
++    }
++
++    /**
++     * Acceptance: claim all keeps the direct claim the command had before.
++     */
++    @Test
++    void theAllChildGivesEverythingAtOnce() throws Exception {
++        store.addUnclaimedSummonItems(player, "airdrops", 2);
++
++        registry.dispatch(steve, "claimsummon all");
++
++        assertEquals(2, adapter.inventoryOf(player).countOfType(Material.NETHER_STAR));
++        assertEquals(List.of(), owed());
++        assertTrue(adapter.menuOpenCalls().isEmpty());
++    }
++
++    /**
++     * Acceptance: the root and all both refuse the console.
++     */
++    @Test
++    void theRootAndAllRefuseTheConsole() {
++        FakeCommandSender console = new FakeCommandSender("Console", ClaimCommand.PERMISSION);
++
++        registry.dispatch(console, "claimsummon");
++        registry.dispatch(console, "claimsummon all");
++
++        assertEquals(List.of(message("cmd_claim_needs_player"), message("cmd_claim_needs_player")),
++                console.messages());
++    }
++
++    @Test
++    void aPlayerWithoutThePermissionRunsNeither() throws Exception {
++        store.addUnclaimedSummonItems(player, "airdrops", 2);
++        FakeCommandSender alex = new FakeCommandSender("Steve").asPlayer(player);
++
++        registry.dispatch(alex, "claimsummon");
++        registry.dispatch(alex, "claimsummon all");
++
++        assertEquals(List.of(message("cmd_unknown"), message("cmd_unknown")), alex.messages());
++        assertTrue(adapter.menuOpenCalls().isEmpty());
++        assertEquals(0, adapter.inventoryOf(player).countOfType(Material.NETHER_STAR));
++        assertEquals(List.of(new UnclaimedSummonItem("airdrops", 2, false)), owed());
++    }
++
++    private List<UnclaimedSummonItem> owed() {
++        try {
++            return store.unclaimedSummonItems(player, config);
++        } catch (Exception failure) {
++            throw new IllegalStateException(failure);
++        }
++    }
++
++    private String message(String key) {
++        return config.message("", key).replace("{prefix}", config.message("", "prefix"));
++    }
++
++    private static ConfigSnapshot shipped() {
++        return ConfigLoader.load(ConfigSources.builder()
++                .globals(resource("/config.yml"))
++                .worlds(resource("/worlds.yml"))
++                .blocks(resource("/blocks.yml"))
++                .language("en", resource("/languages/en.yml"))
++                .loot("airdrops", resource("/loots/airdrops.yml"))
++                .menu("claim", resource("/menus/claim.yml"))
++                .build(), catalog());
++    }
++
++    private static NameCatalog catalog() {
++        return new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return Optional.of(writtenId.contains(":") ? writtenId : "minecraft:" + writtenId);
++            }
++
++            @Override
++            public Set<String> tagMembers(String namespacedTag) {
++                return Set.of("minecraft:tag_" + namespacedTag.replace(':', '_'));
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return true;
++            }
++        };
++    }
++
++    private static String resource(String path) {
++        try (InputStream in = ClaimCommandTest.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        } catch (IOException failure) {
++            throw new UncheckedIOException(failure);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+index 5cf9685..5a1899d 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
++++ b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+@@ -101,6 +101,9 @@ public final class FakeServerAdapter implements ServerAdapter {
+     public record MenuClose(UUID playerId, MenuHandle menu) {
+     }
+ 
++    private record HeldGive(UUID playerId, ItemStack item, int amount, CompletableFuture<Integer> result) {
++    }
++
+     /**
+      * One sound played through the adapter.
+      */
+@@ -213,6 +216,8 @@ public final class FakeServerAdapter implements ServerAdapter {
+     private boolean worldLoaded = true;
+     private final Map<UUID, FakePlayerInventory> playerInventories = new HashMap<>();
+     private final List<Integer> giveCalls = new CopyOnWriteArrayList<>();
++    private final List<HeldGive> heldGives = new ArrayList<>();
++    private boolean holdGives;
+     private Runnable onGive;
+ 
+     public FakeServerAdapter(UUID worldKey) {
+@@ -809,9 +814,31 @@ public final class FakeServerAdapter implements ServerAdapter {
+         if (!onlinePlayers.contains(playerId)) {
+             return CompletableFuture.completedFuture(0);
+         }
++        if (holdGives) {
++            CompletableFuture<Integer> held = new CompletableFuture<>();
++            heldGives.add(new HeldGive(playerId, item, amount, held));
++            return held;
++        }
+         return CompletableFuture.completedFuture(inventoryOf(playerId).give(item, amount));
+     }
+ 
++    /**
++     * Holds every give after the claim lowered storage, as a give waiting for the player's thread would.
++     */
++    public void holdGives() {
++        holdGives = true;
++    }
++
++    /**
++     * Lets every held give put its items in and completes it.
++     */
++    public void releaseGives() {
++        holdGives = false;
++        List<HeldGive> held = List.copyOf(heldGives);
++        heldGives.clear();
++        held.forEach(give -> give.result.complete(inventoryOf(give.playerId).give(give.item, give.amount)));
++    }
++
+     /**
+      * Makes a shared inventory, refusing what the real adapters refuse.
+      */
+@@ -1127,6 +1154,20 @@ public final class FakeServerAdapter implements ServerAdapter {
+         return async;
+     }
+ 
++    /**
++     * Holds every async task, as a read still waiting for the async scheduler would.
++     */
++    public void holdAsync() {
++        async.hold();
++    }
++
++    /**
++     * Runs every held async task at once and lets later ones run inline again.
++     */
++    public void releaseAsync() {
++        async.release();
++    }
++
+     private static long chunkKey(int chunkX, int chunkZ) {
+         return (chunkX & 0xffffffffL) | ((long) chunkZ << 32);
+     }
+@@ -1144,6 +1185,8 @@ public final class FakeServerAdapter implements ServerAdapter {
+         private final boolean inline;
+         private long tick;
+         private final List<Scheduled> pending = new ArrayList<>();
++        private boolean holdInline;
++        private final List<Runnable> heldInline = new ArrayList<>();
+ 
+         private FakeScheduler() {
+             this(false);
+@@ -1166,6 +1209,10 @@ public final class FakeServerAdapter implements ServerAdapter {
+         public TaskHandle run(Runnable task) {
+             runCalls++;
+             if (inline) {
++                if (holdInline) {
++                    heldInline.add(task);
++                    return () -> heldInline.remove(task);
++                }
+                 task.run();
+                 return () -> {
+                 };
+@@ -1188,6 +1235,17 @@ public final class FakeServerAdapter implements ServerAdapter {
+             return () -> scheduled.cancelled = true;
+         }
+ 
++        private void hold() {
++            holdInline = true;
++        }
++
++        private void release() {
++            holdInline = false;
++            List<Runnable> tasks = List.copyOf(heldInline);
++            heldInline.clear();
++            tasks.forEach(Runnable::run);
++        }
++
+         public void stepTicks(long ticks) {
+             for (long step = 0; step < ticks; step++) {
+                 tick++;

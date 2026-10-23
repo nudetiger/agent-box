@@ -1,0 +1,6 @@
+Further #107 verification found two correctness issues to repair independently of the pending ADR cost decision:
+
+- Reviewer **1.both.2:** A raw Roll with min0, maxInteger.MAX_VALUE overflows the count-range cardinality and its loop does not terminate. The capped count distribution is well-defined; fold the capped tail instead of iterating the written range.
+- Orchestrator **large-roll accuracy finding:** With500entries (250weight1,250weight2) and exactly250draws, marginal inclusion probabilities must sum to250. Saved f849b28 returns249.9999566113319, a4.33886681037e-5 error. If every marginal met the required1e-9 bound, the sum error could be no more than500e-9=5e-7. Thus at least one marginal violates the requirement, at ratio2. A scratch copy changing only grid size400->1600 restores the total to250.00000000001182. The retained implementation needs a grid-resolution/error strategy that also preserves the100entry50ms criterion; simply normalizing the probabilities would hide the defect.
+
+The reviewer also noted missing raw mixed-weight/special-entry oracle coverage (**1.both.3**); it will be extended without weakening sealed tests. No ticket is marked done. Independent menu-file work continues while the algorithm-cost ruling is pending.

@@ -1,0 +1,6 @@
+1: B. Config keeps list-replace semantics. The scan always uses the shipped default patterns plus whatever seal.weakening_patterns resolves to; document that the defaults cannot be removed through config.
+2: A. Cover === and == with single or double quotes, both operand orders not required.
+3: A. Literal substrings, matched case-sensitively.
+4: A. Only for specialists in seal.enforce_for.
+5: A. Skip .lykos/.
+6: A. Scan per active seal from its own seal commit, union the matches, exclude every active seal's sealed paths.

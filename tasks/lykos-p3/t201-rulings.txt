@@ -1,0 +1,5 @@
+1: The seal gate check runs at session end for every session on a branch with an active seal, including sessions whose only changes came through bash (today such a session may get no gate outcome). Hook it where the session's final outcome is decided, not only on the file-changing-tool path.
+2: The session's start commit is HEAD when the session boots; record it on the session. A seal whose seal commit is not an ancestor of it is rejected for an enforced specialist, whatever its creator field says.
+3: The green run uses a clean temporary checkout of HEAD (createTemporaryWorktree from lykos/seal/git.ts), never the working tree, and runs through the session's ProjectExecutor with cwd = that checkout.
+4: Block reasons are recorded in seal_events (kind "tampered" for changed sealed paths, "rejected" for a seal made in-session, "not collected"/"failed" detail for the green run) and appear in lykos show.
+5: The weaker-guarantee line in lykos show appears when the session's containment level was off or unavailable; never for a contained session.

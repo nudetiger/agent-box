@@ -1,0 +1,14 @@
+import org.gradle.api.tasks.testing.Test
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+
+gradle.allprojects { p ->
+    p.plugins.withId('java') {
+        p.tasks.withType(Test).configureEach { task ->
+            if (p == p.rootProject && task.name == 'foliaTest') {
+                task.javaLauncher.set(p.javaToolchains.launcherFor {
+                    languageVersion = JavaLanguageVersion.of(25)
+                })
+            }
+        }
+    }
+}

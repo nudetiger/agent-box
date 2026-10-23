@@ -505,6 +505,10 @@ always:
   - path: "docs/findings.md"
     reason: "Measured facts and standing rules; read the sections the area lists."
 
+# Traps for every task, whatever area it touches (lib/pack.mjs).
+traps:
+  - "A git worktree with node_modules linked (junction or symlink) to the main checkout: unlink node_modules (rm, never rm -r) before `git worktree remove --force`, or the removal empties the main checkout's node_modules (Lykos T195, 2026-10-20)."
+
 # AGENTS.md in this repo is a stale copy of CLAUDE.md (says local-only, Codex trailer). Workers are told to prefer CLAUDE.md.
 prefer_over_agents_md: "CLAUDE.md"
 

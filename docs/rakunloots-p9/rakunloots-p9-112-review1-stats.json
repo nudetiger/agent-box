@@ -1,0 +1,76 @@
+{
+  "query": "rakunloots/p9-112-loop-rv1-review-both-alt",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "8c40f739",
+    "ts": "2026-10-22T06:49:08Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-112-loop-rv1-review-both-alt",
+    "role": "review-both-alt",
+    "model": "deepseek/deepseek-flash-high",
+    "harness": "4e312604",
+    "mode": "review",
+    "parent": null,
+    "round": 1,
+    "task": "86cbf830",
+    "title": "Your job: review this change on both axes, spec and standards",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "3e054b1326",
+    "head": "3e054b1326",
+    "effort": null,
+    "seconds": {
+      "total": 1047,
+      "setup": 20,
+      "agent": 995,
+      "test": 0
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": -1,
+      "first_test": -1
+    },
+    "steps": 93,
+    "tools": 90,
+    "tool_s": 241,
+    "tokens": {
+      "input": 238398,
+      "output": 73029,
+      "reasoning": 0,
+      "cache_read": 7349760,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 0,
+    "diff": {
+      "files": 0,
+      "insertions": 0,
+      "deletions": 0
+    },
+    "verdict": "review",
+    "flags": [],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": null,
+    "steps_budget": null
+  },
+  "contextGaps": [],
+  "trust": "delegate.sh accept|reject rakunloots p9-112-loop-rv1-review-both-alt --why \"...\"",
+  "verdictLabel": null,
+  "flags": [],
+  "labels": [],
+  "reviews": [],
+  "outcome": null,
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

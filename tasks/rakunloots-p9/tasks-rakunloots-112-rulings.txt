@@ -1,0 +1,4 @@
+1: A. Only expensive content LootChance calculation is cached/off-thread. TimerChance is the cheap weight share required at list open by #111, and can also be used for info world lines. The task shorthand does not override that explicit ticket contract.
+2: A. Missing reference labels use source:id. An omitted/blank source is the vanilla source by CONTEXT and registry, so render vanilla:id (preserving the actual item id, including any id namespace). Do not change general engine warnings merely to implement this wiki display rule.
+3: A. Keep a nonblank menu_wiki_info_worlds header, then the nonblank no-worlds line when there are no eligible worlds, otherwise sorted per-world lines. Independently blank language values omit their own line as required.
+4: A. Weight-zero entries are hidden before item resolution; they cannot become visible barriers. This follows both roll semantics and the explicit hidden rule. Missing nonzero/always entries still show inert barriers.

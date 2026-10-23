@@ -1,0 +1,112 @@
+{
+  "query": "rakunloots/p9-107-complete",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "e195a28c",
+    "ts": "2026-10-20T20:21:37Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-107-complete",
+    "role": "implement",
+    "model": "gemini-3.8-flash-tiered",
+    "harness": "4e312604",
+    "mode": "implement",
+    "parent": null,
+    "round": 1,
+    "task": "8414f226",
+    "title": "Finish GitHub issue #107 from the recovered Gemini implementation already on thi",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "5c671a9fbd",
+    "head": "31aff3dbcb",
+    "effort": "high",
+    "seconds": {
+      "total": 5445,
+      "setup": 9,
+      "agent": 5400,
+      "test": 15
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 124,
+      "test": 0,
+      "first_test": 0
+    },
+    "steps": 112,
+    "tools": 109,
+    "tool_s": 314,
+    "tokens": {
+      "input": 1141981,
+      "output": 22016,
+      "reasoning": 49493,
+      "cache_read": 8625349,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 2,
+    "diff": {
+      "files": 11,
+      "insertions": 940,
+      "deletions": 5
+    },
+    "verdict": "timeout",
+    "flags": [
+      {
+        "flag": "LEFTOVERS",
+        "detail": "the worker left uncommitted changes"
+      }
+    ],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": null,
+    "steps_budget": 90
+  },
+  "contextGaps": [],
+  "trust": null,
+  "verdictLabel": {
+    "cause": "model_limit",
+    "source": "orchestrator",
+    "why": "Agent exceeded its90-minute deadline before committing/reporting; harness saved leftovers and the required gate passed. Not accepted as final: report absent and independent grouped-tail regression still fails. All work preserved for the authorized DeepSeekMax fallback.",
+    "worker": null,
+    "orchestrator": "model_limit"
+  },
+  "flags": [
+    {
+      "flag": "LEFTOVERS",
+      "detail": "the worker left uncommitted changes",
+      "needsReason": false,
+      "label": null
+    }
+  ],
+  "labels": [
+    {
+      "id": "0e639432",
+      "ts": "2026-10-20T20:47:27Z",
+      "refs": [
+        "e195a28c#verdict"
+      ],
+      "cause": "model_limit",
+      "source": "orchestrator",
+      "why": "Agent exceeded its90-minute deadline before committing/reporting; harness saved leftovers and the required gate passed. Not accepted as final: report absent and independent grouped-tail regression still fails. All work preserved for the authorized DeepSeekMax fallback."
+    }
+  ],
+  "reviews": [],
+  "outcome": {
+    "result": "rejected",
+    "cause": "model_limit",
+    "why": "Timed out without report; saved code continues in fallback, not lost.",
+    "ts": "2026-10-20T20:47:27Z"
+  },
+  "bench": [],
+  "needs": [],
+  "continuedBy": [
+    "p9-107-report"
+  ]
+}

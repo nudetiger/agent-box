@@ -1,0 +1,5 @@
+Review found a contract conflict in ADR 0018's exact-chance method. It prescribes forward removal for p_i<=1/2 and backward removal above1/2 for numerical stability, and also promises smaller-side O(min(k,n-k)) removal. For p_i>1/2 and k=1, the prescribed stable backward recurrence traverses approximately n coefficients, rather than the smaller side.
+
+The saved implementation at f849b28 follows the stable-direction rule and accurately describes that cost. The corrected sealed acceptance, independent large-group underflow regression, and full focused host gate pass (538 tests,0failures/errors/skips); its retained performance test still enforces100distinctweights/max50 under50ms after3warmups. This does not resolve the conflicting ADR promises.
+
+Per docs/cursor_mistakes/RULES.md, #107 is pending a ruling: correct the ADR cost claim to match the stable recurrence, or require a different smaller-side algorithm. The owner has been asked. Other independent phase9 work may continue; this ticket is not accepted or closed.

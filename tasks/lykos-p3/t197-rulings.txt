@@ -1,0 +1,5 @@
+1: "The seal commit is an ancestor of HEAD" is checked as: the seal's writer_commit is an ancestor of HEAD. A seal file copied onto another history gets a new commit that adds it, so the commit that adds it is always in HEAD's history; the writer commit is what proves the seal belongs here.
+2: The test command comparison uses seal.test_command from the config at HEAD (the committed .lykos/config.yaml, read with git show HEAD:.lykos/config.yaml, else the resolved config).
+3: A seal whose seal commit is reachable from seal.base is merged and not active (activeSeals already does this). Reuse activeSeals; do not add a second discovery.
+4: Deletion counts as pruning only when the deleting commit is a seal commit (it adds or modifies another .lykos/seals/<branch>.json with a valid signature under a key at merge-base). T200 will make create do this.
+5: verify never runs project code, so it never loads .lykos/config.yaml hooks or plugins; it reads config as data only.

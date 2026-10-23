@@ -1,0 +1,25 @@
+always:
+  - "AGENTS.md"
+  - "CONTEXT.md"
+  - "docs/cursor_mistakes/RULES.md"
+  - "docs/rewrite/phases.md"
+  - "docs/adr/0018-own-menus-and-exact-loot-chance.md"
+test_globs:
+  - "src/test/**"
+  - "src/foliaTest/**"
+test_file_command: 'bash ./gradlew --console=plain :compileTestJava :test {tests}'
+worker_skills: [ponytail, ponytail-review]
+areas:
+  - name: phase9
+    paths: ["src/**"]
+    docs:
+      - path: "docs/adr/0002-paper-and-spigot-adapters.md"
+        reason: "Server access boundary."
+      - path: "docs/adr/0003-config-messages-and-names.md"
+        reason: "Config and language contract."
+      - path: "docs/adr/0010-folia-adapter.md"
+        reason: "Folia scheduling."
+    tests:
+      command: "bash ./gradlew --console=plain :test"
+    traps:
+      - "Exactly one worker or reviewer may run at a time. Do not launch scout subagents."

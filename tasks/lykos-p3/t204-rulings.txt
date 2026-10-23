@@ -1,0 +1,5 @@
+1: Upheld vs rejected is decided by whether the disputed test file differs between the seal commit and HEAD after the child ends. The child's final text is the ruling either way.
+2: Kinds are exactly 'dispute upheld', 'dispute rejected', 'dispute escalated'. 'rejected' alone stays T201's in-session-seal rejection.
+3: The per-writer count is seal_events rows of kind 'dispute upheld' grouped by specialist; no new table.
+4: The writable child runs in the parent's workspace and branch, with the test-writer specialist, not read_only. A child session still cannot start a child of its own: when the implementer is itself a spawned child and the test writer cannot run, the dispute goes straight to the parent.
+5: The re-dispute count is per test (file + describe path + name) within the session.

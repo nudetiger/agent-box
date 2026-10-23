@@ -1,0 +1,6 @@
+1: A. Identity is file + full describe path + test name. Sibling tests with different names in one describe are fine; the same name twice under the same describe path in one file is the duplicate create refuses. (#21's "file plus full describe path" means the path down to and including the test.)
+2: A, refined. The seal commit of a seal file is the latest commit in merge-base(HEAD, seal.base)..HEAD that added or modified that file AND at which the file's signature verifies against a public key present at merge-base(HEAD, seal.base). A later commit that changes the file without a valid signature is not a seal commit; it is tampering, which T197's verify reports. Expose this as one function in lykos/seal/ that status, verify (T197) and the veto (T199) all call. Nothing is stored in the file to name its own commit.
+3: A. A seal is merged into seal.base when its seal commit is reachable from seal.base (git merge-base --is-ancestor). The branch label is never looked up.
+4: A. create [<commit>] refuses unless <commit> resolves to HEAD; the red run uses a clean temporary worktree of that commit and the seal commit is made on the caller's HEAD.
+5: A. session_id nullable TEXT with no foreign key, NULL when the creator is cli; the creator ('cli' or the session id) also goes in the row's detail or a creator column.
+6: A. No pruning in T195; T200 owns it.

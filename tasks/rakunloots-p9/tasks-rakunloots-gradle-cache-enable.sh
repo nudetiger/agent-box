@@ -1,0 +1,1 @@
+MSYS_NO_PATHCONV=1 podman exec agent-box-rakunloots-p9-107-impl bash -c 'printf "\norg.gradle.caching=true\norg.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8\n" >> /home/node/.gradle/gradle.properties'

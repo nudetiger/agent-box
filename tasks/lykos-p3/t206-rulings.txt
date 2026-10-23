@@ -1,0 +1,6 @@
+1: A. The server runs the red check at the run's realized containment level (from the outcome): contained when the run was, on the host when it was not. Signing and committing stay on the host.
+2: A. A refused seal is the writer's failure: outcome 'error', the refusal list (every offending test and why) in the result, no seal created.
+3: A. Extend SessionOutcome and the session child to report disputes and the disputed ending; the server forwards them. Do not rebuild them from ledger rows.
+4: A. disputed is not an error: isError stays false. Update docs/reference/mcp.md.
+5: A. Both fields are absent only when the repository has no seal file. With seal files but none applying to the run's branch: seal.status 'none', disputes [].
+6: B. On tampered, seal.paths lists only the sealed paths that changed (extend verify to expose them). created and intact list the seal's sealed_paths.

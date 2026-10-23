@@ -1,0 +1,3380 @@
+diff --git a/src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java b/src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java
+index 094a5b3..610fca5 100644
+--- a/src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java
++++ b/src/folia/java/me/rakkoon69/rakunloots/server/FoliaServerAdapter.java
+@@ -181,10 +181,16 @@ public final class FoliaServerAdapter implements ServerAdapter {
+     /**
+      * Runs the work in one task on the player's entity scheduler. The future completes on the thread that owns the
+      * player with what the work returned, or fails with what it threw. It completes with the left-out value when the
+-     * player left, and so their scheduler retired, before the task ran. It fails when the task cannot be scheduled.
++     * player left, and so their scheduler retired, before the task ran. It also completes with it when the plugin is
++     * already disabled, as during its own stop: Folia drops the callbacks of a disabled plugin, so waiting on one
++     * would never end. It fails when the task cannot be scheduled.
+      */
+     private <T> CompletableFuture<T> onEntity(Player player, Supplier<T> work, T leftOutValue) {
+         CompletableFuture<T> result = new CompletableFuture<>();
++        if (!plugin.isEnabled()) {
++            result.complete(leftOutValue);
++            return result;
++        }
+         Runnable leftOut = () -> result.complete(leftOutValue);
+         try {
+             boolean scheduled = player.getScheduler().execute(plugin, () -> {
+@@ -535,6 +541,87 @@ public final class FoliaServerAdapter implements ServerAdapter {
+         return CompletableFuture.allOf(closes.toArray(CompletableFuture[]::new));
+     }
+ 
++    @Override
++    public MenuHandle createMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++        return BukkitMenuInventory.create(plugin.getServer(), playerId, title, size, contents);
++    }
++
++    /**
++     * Looks the player up on the calling thread, which Folia allows, and opens the menu in a task on the player's
++     * entity scheduler. A player who leaves before it runs does not see it, and neither does one it was closed for
++     * first. The future completes on the thread that owns the player.
++     */
++    @Override
++    public CompletableFuture<Optional<MenuHandle>> openMenu(UUID playerId, MenuHandle menu) {
++        Objects.requireNonNull(playerId, "playerId");
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        Player player = plugin.getServer().getPlayer(playerId);
++        if (player == null) {
++            return CompletableFuture.completedFuture(Optional.empty());
++        }
++        return onEntity(player, () -> made.open(player) ? Optional.<MenuHandle>of(made) : Optional.<MenuHandle>empty(),
++                Optional.empty());
++    }
++
++    @Override
++    public CompletableFuture<Void> updateMenu(MenuHandle menu, Map<Integer, ItemStack> contents) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        Player player = plugin.getServer().getPlayer(made.playerId());
++        if (player == null) {
++            return CompletableFuture.completedFuture(null);
++        }
++        return onEntity(player, () -> {
++            made.replace(contents);
++            return null;
++        }, null);
++    }
++
++    @Override
++    public CompletableFuture<Void> closeMenu(MenuHandle menu) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        made.markClosed();
++        Player player = plugin.getServer().getPlayer(made.playerId());
++        if (player == null) {
++            return CompletableFuture.completedFuture(null);
++        }
++        return onEntity(player, () -> {
++            made.close(player);
++            return null;
++        }, null);
++    }
++
++    @Override
++    public CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(action, "action");
++        Player player = plugin.getServer().getPlayer(playerId);
++        if (player == null) {
++            return CompletableFuture.completedFuture(null);
++        }
++        return onEntity(player, () -> {
++            action.run();
++            return null;
++        }, null);
++    }
++
++    /**
++     * Plays the sound on the player's entity scheduler. The key is the server's own sound name, so it needs no enum
++     * lookup and no version adapter.
++     */
++    @Override
++    public CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(key, "key");
++        Player player = plugin.getServer().getPlayer(playerId);
++        if (player == null) {
++            return CompletableFuture.completedFuture(false);
++        }
++        return onEntity(player, () -> {
++            player.playSound(player.getLocation(), key, (float) volume, (float) pitch);
++            return true;
++        }, false);
++    }
++
+     /**
+      * Runs on the region scheduler for the chunk that holds the block. The world is looked up when each task is
+      * scheduled, and scheduling fails with {@link IllegalStateException} while it is not loaded.
+diff --git a/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeEntityScheduler.java b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeEntityScheduler.java
+index 22efd03..d6741a4 100644
+--- a/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeEntityScheduler.java
++++ b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeEntityScheduler.java
+@@ -36,7 +36,15 @@ final class FakeEntityScheduler implements EntityScheduler {
+         if (this.retired) {
+             return false;
+         }
+-        ticks.schedule(plugin, owner, task -> run.run(), Math.max(1, delay), 0, retired);
++        ticks.schedule(plugin, owner, task -> {
++            if (plugin.isEnabled()) {
++                run.run();
++            }
++        }, Math.max(1, delay), 0, retired == null ? null : () -> {
++            if (plugin.isEnabled()) {
++                retired.run();
++            }
++        });
+         return true;
+     }
+ 
+diff --git a/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeFoliaPlayer.java b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeFoliaPlayer.java
+index cd33460..87de585 100644
+--- a/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeFoliaPlayer.java
++++ b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FakeFoliaPlayer.java
+@@ -38,11 +38,18 @@ final class FakeFoliaPlayer {
+     record Message(String text, Optional<FakeFoliaTicks.Owner> owner) {
+     }
+ 
++    /**
++     * One sound played to the player, with the owner whose task played it.
++     */
++    record Sound(String key, float volume, float pitch, Optional<FakeFoliaTicks.Owner> owner) {
++    }
++
+     private final UUID id = UUID.randomUUID();
+     private final FakeEntityScheduler scheduler;
+     private final List<StateRead> reads = new CopyOnWriteArrayList<>();
+     private final List<StateRead> inventoryCalls = new CopyOnWriteArrayList<>();
+     private final List<Message> messages = new CopyOnWriteArrayList<>();
++    private final List<Sound> sounds = new CopyOnWriteArrayList<>();
+     private volatile Inventory top;
+     private final List<Optional<FakeFoliaTicks.Owner>> inventoryOwners = new CopyOnWriteArrayList<>();
+     private final ItemStack[] storage = new ItemStack[36];
+@@ -116,6 +123,14 @@ final class FakeFoliaPlayer {
+                         messages.add(new Message(text, FakeFoliaTicks.currentOwner()));
+                         yield null;
+                     }
++                    case "playSound/4" -> {
++                        if (!(args[1] instanceof String key) || !(args[2] instanceof Float volume)
++                                || !(args[3] instanceof Float pitch)) {
++                            yield FoliaFakes.UNHANDLED;
++                        }
++                        sounds.add(new Sound(key, volume, pitch, FakeFoliaTicks.currentOwner()));
++                        yield null;
++                    }
+                     default -> FoliaFakes.UNHANDLED;
+                 });
+     }
+@@ -216,6 +231,13 @@ final class FakeFoliaPlayer {
+         return List.copyOf(messages);
+     }
+ 
++    /**
++     * Each sound played, with the owner whose task played it.
++     */
++    List<Sound> sounds() {
++        return List.copyOf(sounds);
++    }
++
+     UUID id() {
+         return id;
+     }
+diff --git a/src/foliaTest/java/me/rakkoon69/rakunloots/server/FoliaMenuTest.java b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FoliaMenuTest.java
+new file mode 100644
+index 0000000..620814e
+--- /dev/null
++++ b/src/foliaTest/java/me/rakkoon69/rakunloots/server/FoliaMenuTest.java
+@@ -0,0 +1,176 @@
++package me.rakkoon69.rakunloots.server;
++
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class FoliaMenuTest {
++
++    private final FakeFoliaServer fakeServer = new FakeFoliaServer();
++    private final ServerAdapter adapter = new FoliaServerAdapter(fakeServer.plugin());
++
++    @AfterEach
++    void stop() {
++        fakeServer.shutdown();
++    }
++
++    private static ConfigSnapshot config() {
++        return ConfigLoader.load(ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", "menu_button_previous_page_name: \"prev\"\n"
++                        + "menu_button_previous_page_lore: \"{page}/{pages}\"\n"
++                        + "menu_button_next_page_name: \"next\"\n"
++                        + "menu_button_next_page_lore: \"{page}/{pages}\"\n")
++                .menu("claim", """
++                        rows: 3
++                        content_slots: ['1-8']
++                        filler: {id: gray_stained_glass_pane}
++                        buttons:
++                          claim_all:
++                            slot: 0
++                            item: {id: diamond}
++                            sound: {key: "minecraft:ui.button.click", volume: 0.7, pitch: 1.2}
++                        """)
++                .build(), new NameCatalog() {
++                    @Override
++                    public Optional<String> currentId(String id) {
++                        return Optional.of(id);
++                    }
++
++                    @Override
++                    public boolean soundExists(String key) {
++                        return "minecraft:ui.button.click".equals(key);
++                    }
++                });
++    }
++
++    @Test
++    void menuWorkRunsOnTheEntitySchedulerAndClosesOnStop() throws Exception {
++        UUID world = fakeServer.createWorld(0, 256);
++        UUID playerId = fakeServer.addPlayer(world, 1, 64, 1);
++        FakeFoliaPlayer player = fakeServer.player(playerId);
++        MenuService menus = new MenuService(adapter);
++        AtomicInteger clicks = new AtomicInteger();
++        ConfigSnapshot config = config();
++        MenuIcon icon = new MenuIcon(new ItemStack(Material.DIAMOND), Optional.of(clicks::incrementAndGet),
++                config.claimMenu().buttons().get("claim_all").sound());
++        MenuView view = new MenuView("Menu", 3, Map.of(0, icon));
++
++        CompletableFuture<Void> opened = menus.open(playerId, view);
++        fakeServer.runUntilDone(opened);
++        opened.join();
++
++        assertTrue(player.topInventory().getHolder() instanceof MenuHolder);
++        assertEquals(Optional.of(new FakeFoliaTicks.Entity(playerId)),
++                player.inventoryCalls().get(0).owner(), "the open ran on the player's entity scheduler");
++
++        CompletableFuture<Void> clicked = menus.click(playerId, 0);
++        fakeServer.runUntilDone(clicked);
++        clicked.join();
++        assertEquals(1, clicks.get());
++        assertEquals(1, player.sounds().size());
++        assertEquals("minecraft:ui.button.click", player.sounds().get(0).key());
++        assertEquals(0.7f, player.sounds().get(0).volume());
++        assertEquals(1.2f, player.sounds().get(0).pitch());
++        assertEquals(Optional.of(new FakeFoliaTicks.Entity(playerId)), player.sounds().get(0).owner());
++
++        CompletableFuture<Void> refreshed = menus.refresh(playerId, new MenuView("Menu", 3, Map.of(1,
++                new MenuIcon(new ItemStack(Material.EMERALD), Optional.empty(), Optional.empty()))));
++        fakeServer.runUntilDone(refreshed);
++        refreshed.join();
++        assertEquals(Material.EMERALD, player.topInventory().getItem(1).getType());
++
++        CompletableFuture<Void> closed = menus.closeAll();
++        fakeServer.runUntilDone(closed);
++        closed.join();
++        assertNull(player.topInventory());
++        assertTrue(player.inventoryCalls().stream()
++                .anyMatch(call -> call.method().equals("closeInventory")
++                        && call.owner().equals(Optional.of(new FakeFoliaTicks.Entity(playerId)))));
++        assertEquals(List.of(), fakeServer.bukkitSchedulerCalls(), "the Bukkit scheduler was never called");
++    }
++
++    /**
++     * At plugin stop Folia's entity scheduler drops callbacks for the disabled plugin. A menu close must still complete
++     * and retire the menu, rather than leave its cleanup future waiting for a task that can never run.
++     */
++    @Test
++    void aCloseAtPluginStopCompletesAndRetiresTheMenuWithoutTheDisabledScheduler() throws Exception {
++        UUID world = fakeServer.createWorld(0, 256);
++        UUID playerId = fakeServer.addPlayer(world, 1, 64, 1);
++        FakeFoliaPlayer player = fakeServer.player(playerId);
++        MenuService menus = new MenuService(adapter);
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.empty(), Optional.empty())));
++        CompletableFuture<Void> opened = menus.open(playerId, view);
++        fakeServer.runUntilDone(opened);
++        opened.join();
++        assertTrue(player.topInventory().getHolder() instanceof MenuHolder);
++
++        fakeServer.disablePlugin();
++        CompletableFuture<Void> closed = menus.closeAll();
++
++        assertTrue(closed.isDone(), "the close does not wait for the disabled scheduler");
++        assertFalse(closed.isCompletedExceptionally());
++        assertTrue(menus.refresh(playerId, view).isDone(), "the service retired the menu");
++        assertTrue(menus.click(playerId, 0).isDone(), "a click after stop has nothing to dispatch");
++    }
++
++    @Test
++    void aDeferredClickRunsOnTheEntitySchedulerAndNotInsideTheEvent() throws Exception {
++        UUID world = fakeServer.createWorld(0, 256);
++        UUID playerId = fakeServer.addPlayer(world, 1, 64, 1);
++        FakeFoliaPlayer player = fakeServer.player(playerId);
++        MenuService menus = new MenuService(adapter);
++        AtomicInteger clicks = new AtomicInteger();
++        CompletableFuture<Void> opened = menus.open(playerId, new MenuView("Menu", 3, Map.of(0,
++                new MenuIcon(new ItemStack(Material.DIAMOND), Optional.of(clicks::incrementAndGet),
++                        Optional.empty()))));
++        fakeServer.runUntilDone(opened);
++        opened.join();
++
++        CompletableFuture<Void> deferred = menus.clickLater(playerId, 0);
++        assertEquals(0, clicks.get());
++        fakeServer.tick();
++        deferred.join();
++
++        assertEquals(1, clicks.get());
++        assertEquals(List.of(), fakeServer.bukkitSchedulerCalls(), "the Bukkit scheduler was never called");
++    }
++
++    @Test
++    void aPlayerWhoLeftBeforeTheOpenLandsGetsNoMenu() throws Exception {
++        UUID world = fakeServer.createWorld(0, 256);
++        UUID playerId = fakeServer.addPlayer(world, 1, 64, 1);
++        fakeServer.removePlayer(playerId);
++        MenuService menus = new MenuService(adapter);
++
++        CompletableFuture<Void> opened = menus.open(playerId, new MenuView("Menu", 3, Map.of()));
++        fakeServer.runUntilDone(opened);
++        opened.join();
++
++        assertFalse(fakeServer.player(playerId) != null && fakeServer.player(playerId).topInventory() != null);
++        assertEquals(List.of(), fakeServer.bukkitSchedulerCalls());
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+index 034125c..18bf7ef 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
++++ b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+@@ -31,6 +31,9 @@ import me.rakkoon69.rakunloots.hologram.packet.PacketAdapters;
+ import me.rakkoon69.rakunloots.hologram.packet.PacketHologramProvider;
+ import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
+ import me.rakkoon69.rakunloots.log.WarningLog;
++import me.rakkoon69.rakunloots.menu.MenuListener;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
+ import me.rakkoon69.rakunloots.lootbox.LootBoxLifecycle;
+ import me.rakkoon69.rakunloots.lootbox.SummonService;
+ import me.rakkoon69.rakunloots.lootbox.WorldBroadcasts;
+@@ -92,6 +95,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+     private HologramViewerListener viewerListener;
+     private AnimationService animations;
+     private BoxVisualsService visuals;
++    private MenuService menus;
+     private BukkitCommandRegistrar registrar;
+ 
+     public RakunLootsPlugin() {
+@@ -150,6 +154,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+                     + "some visuals are off. Do not run it on a live server yet.");
+         }
+         ConfigSnapshot snapshot = loadConfig();
++        menus = new MenuService(adapter, new MenuRenderer(itemSources, key -> config.message("", key), log));
+ 
+         store = openStore(snapshot.storage());
+         try {
+@@ -254,6 +259,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+         register(new SummonChunkListener(summons));
+         register(new BoxVisualsListener(visuals));
+         register(new ClaimJoinListener(claims));
++        register(new MenuListener(menus));
+     }
+ 
+     private void register(Listener listener) {
+@@ -267,7 +273,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+         ConfigSnapshot snapshot = config;
+         registrar.register(AdminCommands.root(snapshot.adminCommand(), new AdminCommands.Parts(
+                 this::reloadConfigFiles, adapter, sources, lifecycle, summons, timers, holograms, animations, visuals,
+-                search::reload, giveBack::give, log.record())));
++                search::reload, menus::reload, giveBack::give, log.record())));
+         registrar.register(ClaimCommand.node(snapshot.claimCommand(), claims));
+     }
+ 
+@@ -332,6 +338,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+             registrar = null;
+         }
+         HandlerList.unregisterAll(this);
++        stop(menus == null ? null : () -> menus.closeAll());
+         stop(visuals == null ? null : visuals::stop);
+         stop(animations == null ? null : animations::stop);
+         stop(holograms == null ? null : holograms::stop);
+@@ -347,6 +354,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+             }
+         }
+         visuals = null;
++        menus = null;
+         animations = null;
+         holograms = null;
+         viewerListener = null;
+diff --git a/src/main/java/me/rakkoon69/rakunloots/command/AdminCommands.java b/src/main/java/me/rakkoon69/rakunloots/command/AdminCommands.java
+index 50fb4b6..9b7668a 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/command/AdminCommands.java
++++ b/src/main/java/me/rakkoon69/rakunloots/command/AdminCommands.java
+@@ -34,6 +34,7 @@ public final class AdminCommands {
+      *
+      * @param configLoader reads the config files and returns the new snapshot, for {@code reload}
+      * @param search        takes the reloaded config into the summon search
++     * @param menus         resets the menu generation and closes every menu, after a reload succeeds or fails late
+      * @param giver        gives summon items, for {@code give}
+      */
+     public record Parts(
+@@ -47,6 +48,7 @@ public final class AdminCommands {
+             AnimationService animations,
+             BoxVisualsService visuals,
+             Consumer<ConfigSnapshot> search,
++            Consumer<ConfigSnapshot> menus,
+             GiveCommand.Giver giver,
+             WarningRecord warnings
+     ) {
+@@ -58,7 +60,7 @@ public final class AdminCommands {
+                 .permissionBase(PERMISSION_BASE)
+                 .child(HelpCommand.node())
+                 .child(ReloadCommand.node(parts.configLoader(), parts.summons(), parts.lifecycle(), parts.timers(),
+-                        parts.holograms(), parts.animations(), parts.visuals(), parts.search()))
++                        parts.holograms(), parts.animations(), parts.visuals(), parts.search(), parts.menus()))
+                 .child(ListCommand.node(parts.sources()))
+                 .child(GiveCommand.node(parts.giver(), parts.sources()))
+                 .child(SummonCommand.node(parts.summons(), parts.adapter(), parts.sources()))
+diff --git a/src/main/java/me/rakkoon69/rakunloots/command/ReloadCommand.java b/src/main/java/me/rakkoon69/rakunloots/command/ReloadCommand.java
+index 8ad4ec6..84ecc3f 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/command/ReloadCommand.java
++++ b/src/main/java/me/rakkoon69/rakunloots/command/ReloadCommand.java
+@@ -15,7 +15,8 @@ import java.util.function.Supplier;
+ /**
+  * The {@code reload} node. It abandons every pending summon, which gives summon items back, then reads the config
+  * again and hands the new snapshot to the summon service, the lifecycle, the world timers, the hologram service, the
+- * animation service, the box visuals service, and the summon search, in that order. A config that cannot be read changes nothing but the abandoned summons.
++ * animation service, the box visuals service, and the summon search, in that order. A config that cannot be read
++ * changes nothing but the abandoned summons.
+  */
+ public final class ReloadCommand {
+ 
+@@ -33,11 +34,12 @@ public final class ReloadCommand {
+             HologramService holograms,
+             AnimationService animations,
+             BoxVisualsService visuals,
+-            Consumer<ConfigSnapshot> search
++            Consumer<ConfigSnapshot> search,
++            Consumer<ConfigSnapshot> menus
+     ) {
+         return CommandNode.builder("reload")
+                 .handler(invocation -> reload(invocation, configLoader, summons, lifecycle, timers, holograms,
+-                        animations, visuals, search))
++                        animations, visuals, search, menus))
+                 .build();
+     }
+ 
+@@ -50,12 +52,18 @@ public final class ReloadCommand {
+             HologramService holograms,
+             AnimationService animations,
+             BoxVisualsService visuals,
+-            Consumer<ConfigSnapshot> search
++            Consumer<ConfigSnapshot> search,
++            Consumer<ConfigSnapshot> menus
+     ) {
+         ConfigSnapshot snapshot;
+         try {
+             summons.stop();
+             snapshot = configLoader.get();
++        } catch (RuntimeException failure) {
++            invocation.reply("cmd_reload_failed", Map.of("reason", String.valueOf(failure.getMessage())));
++            return;
++        }
++        try {
+             summons.reload(snapshot);
+             lifecycle.reload(snapshot);
+             timers.reload(snapshot);
+@@ -64,11 +72,21 @@ public final class ReloadCommand {
+             visuals.reload(snapshot);
+             search.accept(snapshot);
+         } catch (RuntimeException failure) {
++            closeMenus(menus, snapshot);
+             invocation.reply("cmd_reload_failed", Map.of("reason", String.valueOf(failure.getMessage())));
+             return;
+         }
++        closeMenus(menus, snapshot);
+         invocation.reply("cmd_reload_done", Map.of(
+                 "loots", Integer.toString(snapshot.loots().size()),
+                 "warnings", Integer.toString(snapshot.warnings().size())));
+     }
++
++    private static void closeMenus(Consumer<ConfigSnapshot> menus, ConfigSnapshot snapshot) {
++        try {
++            menus.accept(snapshot);
++        } catch (RuntimeException ignored) {
++            // The reload's own failure is the one the admin needs to see.
++        }
++    }
+ }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java b/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
+index 0e82875..f964a18 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
+@@ -3,6 +3,7 @@ package me.rakkoon69.rakunloots.config;
+ import me.rakkoon69.rakunloots.animation.AnimationWarning;
+ import me.rakkoon69.rakunloots.hologram.HologramWarning;
+ import me.rakkoon69.rakunloots.lootbox.LifecycleWarning;
++import me.rakkoon69.rakunloots.menu.MenuWarning;
+ import me.rakkoon69.rakunloots.roll.RollWarning;
+ import me.rakkoon69.rakunloots.storage.LootBoxWarning;
+ import me.rakkoon69.rakunloots.visuals.VisualsWarning;
+@@ -58,7 +59,8 @@ public final class WarningKinds {
+                         Set.of()),
+                 new Group("ANIMATION", AnimationWarning.Kind.values(), Set.of(), Set.of()),
+                 new Group("HOLOGRAM", HologramWarning.Kind.values(), Set.of(), Set.of()),
+-                new Group("ROLL", RollWarning.Kind.values(), Set.of(), Set.of()));
++                new Group("ROLL", RollWarning.Kind.values(), Set.of(), Set.of()),
++                new Group("MENU", MenuWarning.Kind.values(), Set.of(), Set.of()));
+         Map<String, Integer> uses = new HashMap<>();
+         for (Group group : groups) {
+             for (Enum<?> constant : group.constants()) {
+diff --git a/src/main/java/me/rakkoon69/rakunloots/log/WarningLog.java b/src/main/java/me/rakkoon69/rakunloots/log/WarningLog.java
+index bc7e872..eb767c0 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/log/WarningLog.java
++++ b/src/main/java/me/rakkoon69/rakunloots/log/WarningLog.java
+@@ -9,6 +9,8 @@ import me.rakkoon69.rakunloots.hologram.HologramWarning;
+ import me.rakkoon69.rakunloots.items.ItemWarning;
+ import me.rakkoon69.rakunloots.lootbox.LifecycleWarning;
+ import me.rakkoon69.rakunloots.lootbox.LifecycleWarnings;
++import me.rakkoon69.rakunloots.menu.MenuWarning;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
+ import me.rakkoon69.rakunloots.roll.RollWarning;
+ import me.rakkoon69.rakunloots.storage.LootBoxWarning;
+ import me.rakkoon69.rakunloots.visuals.VisualsWarning;
+@@ -29,7 +31,7 @@ import java.util.logging.Logger;
+  * admits it. It is the one sink the lifecycle, the visuals, the animations, the holograms, and the config loads report
+  * to. Called from any thread; {@link Logger} is safe on any thread.
+  */
+-public final class WarningLog implements LifecycleWarnings, VisualsWarnings {
++public final class WarningLog implements LifecycleWarnings, VisualsWarnings, MenuWarnings {
+ 
+     private final Logger logger;
+     private final Supplier<WarningLevel> level;
+@@ -148,6 +150,16 @@ public final class WarningLog implements LifecycleWarnings, VisualsWarnings {
+                 warning.reasons().isEmpty() ? "" : "reasons=" + warning.reasons()), Optional.empty());
+     }
+ 
++    @Override
++    public void warn(MenuWarning warning) {
++        write(warning.kind(), Optional.of(warning.menuId()), ConfigWarning.Severity.HIGH,
++                fields(warning.kind(),
++                field("menu", Optional.of(warning.menuId())),
++                field("entry", Optional.of(warning.entry())),
++                field("source", Optional.ofNullable(warning.item().source())),
++                field("item", Optional.of(warning.item().id()))), Optional.empty());
++    }
++
+     /**
+      * Logs each warning of a config load.
+      */
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuIcon.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuIcon.java
+new file mode 100644
+index 0000000..93d2707
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuIcon.java
+@@ -0,0 +1,35 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.config.MenuSound;
++import org.bukkit.inventory.ItemStack;
++
++import java.util.Objects;
++import java.util.Optional;
++
++/**
++ * One clickable slot of a menu: its item, what a click does, and the sound that click plays.
++ */
++public final class MenuIcon {
++
++    private final ItemStack item;
++    private final Optional<Runnable> action;
++    private final Optional<MenuSound> sound;
++
++    public MenuIcon(ItemStack item, Optional<Runnable> action, Optional<MenuSound> sound) {
++        this.item = Objects.requireNonNull(item, "item").clone();
++        this.action = Objects.requireNonNull(action, "action");
++        this.sound = Objects.requireNonNull(sound, "sound");
++    }
++
++    public ItemStack item() {
++        return item.clone();
++    }
++
++    public Optional<Runnable> action() {
++        return action;
++    }
++
++    public Optional<MenuSound> sound() {
++        return sound;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuListener.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuListener.java
+new file mode 100644
+index 0000000..bdea7ee
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuListener.java
+@@ -0,0 +1,51 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.server.MenuHolder;
++import org.bukkit.event.EventHandler;
++import org.bukkit.event.EventPriority;
++import org.bukkit.event.Listener;
++import org.bukkit.event.inventory.InventoryClickEvent;
++import org.bukkit.event.inventory.InventoryCloseEvent;
++import org.bukkit.event.inventory.InventoryDragEvent;
++import org.bukkit.inventory.Inventory;
++
++import java.util.Objects;
++
++/**
++ * Claims every click and drag in a menu, and tells the service when a menu closes.
++ */
++public final class MenuListener implements Listener {
++
++    private final MenuService menus;
++
++    public MenuListener(MenuService menus) {
++        this.menus = Objects.requireNonNull(menus, "menus");
++    }
++
++    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
++    public void onClick(InventoryClickEvent event) {
++        Inventory top = event.getView().getTopInventory();
++        if (!(top.getHolder() instanceof MenuHolder)) {
++            return;
++        }
++        event.setCancelled(true);
++        int slot = event.getRawSlot();
++        if (slot >= 0 && slot < top.getSize()) {
++            menus.clickLater(event.getWhoClicked().getUniqueId(), slot);
++        }
++    }
++
++    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
++    public void onDrag(InventoryDragEvent event) {
++        if (event.getView().getTopInventory().getHolder() instanceof MenuHolder) {
++            event.setCancelled(true);
++        }
++    }
++
++    @EventHandler(priority = EventPriority.HIGHEST)
++    public void onClose(InventoryCloseEvent event) {
++        if (event.getInventory().getHolder() instanceof MenuHolder holder) {
++            menus.closed(event.getPlayer().getUniqueId(), holder.menuHandle());
++        }
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+new file mode 100644
+index 0000000..e27204a
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+@@ -0,0 +1,195 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.config.MenuButton;
++import me.rakkoon69.rakunloots.config.MenuPage;
++import me.rakkoon69.rakunloots.config.MenuSound;
++import me.rakkoon69.rakunloots.items.ItemReference;
++import me.rakkoon69.rakunloots.items.ItemResolveResult;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.lootbox.MessageText;
++import org.bukkit.ChatColor;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.Set;
++import java.util.function.Function;
++import java.util.function.IntConsumer;
++
++/**
++ * Turns one page of a menu file and its entries into a {@link MenuView}. Layout items resolve through the item
++ * sources; a miss draws a barrier and warns once for that menu entry until the next reload.
++ */
++public final class MenuRenderer {
++
++    private static final String PREVIOUS = "previous_page";
++    private static final String NEXT = "next_page";
++
++    private final ItemSourceRegistry items;
++    private final Function<String, String> language;
++    private final MenuWarnings warnings;
++    private final Set<String> warned = new HashSet<>();
++
++    public MenuRenderer(ItemSourceRegistry items, Function<String, String> language, MenuWarnings warnings) {
++        this.items = Objects.requireNonNull(items, "items");
++        this.language = Objects.requireNonNull(language, "language");
++        this.warnings = Objects.requireNonNull(warnings, "warnings");
++    }
++
++    public int pageCount(MenuPage layout, int entryCount) {
++        Objects.requireNonNull(layout, "layout");
++        if (entryCount < 0) {
++            throw new IllegalArgumentException("entryCount must not be negative");
++        }
++        int slots = layout.contentSlots().size();
++        if (entryCount == 0 || slots == 0) {
++            return 1;
++        }
++        return (entryCount + slots - 1) / slots;
++    }
++
++    public int clampPage(MenuPage layout, int entryCount, int requestedPage) {
++        int pages = pageCount(layout, entryCount);
++        return requestedPage < 0 || requestedPage >= pages ? pages - 1 : requestedPage;
++    }
++
++    public MenuView render(String menuId, String title, MenuPage layout, List<MenuIcon> entries, int requestedPage,
++                           IntConsumer goToPage) {
++        Objects.requireNonNull(menuId, "menuId");
++        Objects.requireNonNull(title, "title");
++        Objects.requireNonNull(layout, "layout");
++        Objects.requireNonNull(entries, "entries");
++        Objects.requireNonNull(goToPage, "goToPage");
++        List<MenuIcon> pageEntries = List.copyOf(entries);
++        pageEntries.forEach(entry -> Objects.requireNonNull(entry, "entry"));
++
++        int pages = pageCount(layout, pageEntries.size());
++        int page = clampPage(layout, pageEntries.size(), requestedPage);
++        MenuIcon filler = icon(menuId, "filler", layout.filler(), Optional.empty(), Optional.empty(), null, null,
++                pages, page);
++        Map<Integer, MenuIcon> icons = new LinkedHashMap<>();
++        for (int slot = 0; slot < layout.rows() * 9; slot++) {
++            icons.put(slot, filler);
++        }
++
++        List<Integer> contentSlots = layout.contentSlots();
++        contentSlots.forEach(icons::remove);
++        int first = page * contentSlots.size();
++        for (int index = 0; index < contentSlots.size(); index++) {
++            int entry = first + index;
++            if (entry >= pageEntries.size()) {
++                break;
++            }
++            icons.put(contentSlots.get(index), pageEntries.get(entry));
++        }
++
++        for (Map.Entry<String, MenuButton> button : layout.buttons().entrySet()) {
++            String name = button.getKey();
++            MenuButton value = button.getValue();
++            PageTarget target = target(name, page, pages);
++            if (target.hidden()) {
++                continue;
++            }
++            Optional<Runnable> action = target.page()
++                    .map(destination -> (Runnable) () -> goToPage.accept(destination));
++            String keyBase = switch (name) {
++                case PREVIOUS -> "menu_button_previous_page";
++                case NEXT -> "menu_button_next_page";
++                default -> null;
++            };
++            String displayName = keyBase == null ? null : pageText(keyBase + "_name", target.page().orElse(page), pages);
++            List<String> lore = keyBase == null ? null : pageLore(keyBase + "_lore", target.page().orElse(page), pages);
++            icons.put(value.slot(), icon(menuId, "button:" + name, value.item(), action, value.sound(),
++                    displayName, lore, pages, page));
++        }
++
++        return new MenuView(MessageText.color(title), layout.rows(), icons);
++    }
++
++    public synchronized void resetWarnings() {
++        warned.clear();
++    }
++
++    private record PageTarget(boolean hidden, Optional<Integer> page) {
++    }
++
++    private static PageTarget target(String name, int page, int pages) {
++        return switch (name) {
++            case PREVIOUS -> page > 0 ? new PageTarget(false, Optional.of(page - 1)) : new PageTarget(true, Optional.empty());
++            case NEXT -> page < pages - 1 ? new PageTarget(false, Optional.of(page + 1)) : new PageTarget(true, Optional.empty());
++            default -> new PageTarget(false, Optional.empty());
++        };
++    }
++
++    private MenuIcon icon(String menuId, String entry, ItemReference reference, Optional<Runnable> action,
++                          Optional<MenuSound> sound, String displayName, List<String> lore, int pages, int page) {
++        ItemResolveResult resolved = items.resolve(reference);
++        if (resolved.isMiss()) {
++            warnOnce(menuId, entry, reference);
++            ItemStack barrier = new ItemStack(Material.BARRIER);
++            ItemMeta meta = barrier.getItemMeta();
++            if (meta != null) {
++                meta.setDisplayName(ChatColor.RED + "Missing " + nameOf(reference));
++                meta.setLore(List.of(ChatColor.GRAY + "This menu item could not be loaded."));
++                barrier.setItemMeta(meta);
++            }
++            return new MenuIcon(barrier, action, sound);
++        }
++        ItemStack item = resolved.item().orElseThrow().clone();
++        if (displayName != null || lore != null) {
++            applyText(item, displayName, lore);
++        }
++        return new MenuIcon(item, action, sound);
++    }
++
++    private static void applyText(ItemStack item, String displayName, List<String> lore) {
++        ItemMeta meta = item.getItemMeta();
++        if (meta == null) {
++            return;
++        }
++        if (displayName != null) {
++            meta.setDisplayName(displayName);
++        }
++        if (lore != null) {
++            meta.setLore(lore);
++        }
++        item.setItemMeta(meta);
++    }
++
++    private String pageText(String key, int page, int pages) {
++        return MessageText.color(placeholders(language.apply(key), page, pages));
++    }
++
++    private List<String> pageLore(String key, int page, int pages) {
++        String text = pageText(key, page, pages);
++        List<String> lines = new ArrayList<>(List.of(text.split("\n", -1)));
++        return lines;
++    }
++
++    private static String placeholders(String text, int page, int pages) {
++        return text.replace("{page}", Integer.toString(page + 1)).replace("{pages}", Integer.toString(pages));
++    }
++
++    private void warnOnce(String menuId, String entry, ItemReference reference) {
++        String key = menuId + "\u0000" + entry;
++        synchronized (this) {
++            if (!warned.add(key)) {
++                return;
++            }
++        }
++        warnings.warn(MenuWarning.layoutItemMissing(menuId, entry, reference));
++    }
++
++    private static String nameOf(ItemReference reference) {
++        String source = reference.source();
++        String id = reference.id();
++        return source == null || source.isBlank() ? id : source + ":" + id;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+new file mode 100644
+index 0000000..c00e9d8
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+@@ -0,0 +1,266 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.MenuSound;
++import me.rakkoon69.rakunloots.server.MenuHandle;
++import me.rakkoon69.rakunloots.server.ServerAdapter;
++import org.bukkit.inventory.ItemStack;
++
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++
++/**
++ * The one owner of the menus a player has open. It tracks the handle each menu was opened as, so a close event for an
++ * old menu cannot retire its replacement, and retires an open that lands after its menu was closed or replaced.
++ */
++public final class MenuService {
++
++    private record Entry(MenuHandle handle, MenuView view) {
++    }
++
++    private static final class OpenAttempt {
++        private final MenuHandle old;
++        private final long epoch;
++        private final long generation;
++        private boolean oldClosed;
++
++        private OpenAttempt(MenuHandle old, long epoch, long generation) {
++            this.old = old;
++            this.epoch = epoch;
++            this.generation = generation;
++        }
++    }
++
++    private final ServerAdapter adapter;
++    private final MenuRenderer renderer;
++    private final Object lock = new Object();
++    private final Map<UUID, Entry> entries = new HashMap<>();
++    private final Map<UUID, OpenAttempt> openings = new HashMap<>();
++    private final Map<UUID, Long> epochs = new HashMap<>();
++    private long generation;
++
++    public MenuService(ServerAdapter adapter) {
++        this(adapter, null);
++    }
++
++    public MenuService(ServerAdapter adapter, MenuRenderer renderer) {
++        this.adapter = Objects.requireNonNull(adapter, "adapter");
++        this.renderer = renderer;
++    }
++
++    public CompletableFuture<Void> open(UUID playerId, MenuView view) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(view, "view");
++        Map<Integer, ItemStack> contents = contents(view);
++        OpenAttempt attempt;
++        MenuHandle made;
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            attempt = new OpenAttempt(current == null ? null : current.handle(), epochs.getOrDefault(playerId, 0L),
++                    generation);
++            openings.put(playerId, attempt);
++        }
++        try {
++            made = adapter.createMenu(playerId, view.title(), view.size(), contents);
++        } catch (RuntimeException failure) {
++            forget(playerId, attempt);
++            return CompletableFuture.failedFuture(failure);
++        }
++        return adapter.openMenu(playerId, made)
++                .handle((opened, failure) -> new Opened(opened, failure))
++                .thenCompose(opened -> {
++                    if (opened.failure() != null) {
++                        forget(playerId, attempt);
++                        return CompletableFuture.failedFuture(unwrap(opened.failure()));
++                    }
++                    if (opened.handle().isEmpty()) {
++                        forget(playerId, attempt);
++                        return CompletableFuture.completedFuture(null);
++                    }
++                    return land(playerId, view, attempt, opened.handle().orElseThrow());
++                });
++    }
++
++    private record Opened(Optional<MenuHandle> handle, Throwable failure) {
++    }
++
++    private CompletableFuture<Void> land(UUID playerId, MenuView view, OpenAttempt attempt, MenuHandle next) {
++        boolean installed;
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            boolean sameOld = current == null ? attempt.old == null : current.handle() == attempt.old;
++            installed = openings.get(playerId) == attempt
++                    && attempt.generation == generation
++                    && attempt.epoch == epochs.getOrDefault(playerId, 0L)
++                    && sameOld;
++            if (installed) {
++                openings.remove(playerId);
++                entries.put(playerId, new Entry(next, view));
++                epochs.merge(playerId, 1L, Long::sum);
++            }
++        }
++        MenuHandle close = !installed ? next : attempt.old;
++        return close(close);
++    }
++
++    private void forget(UUID playerId, OpenAttempt attempt) {
++        synchronized (lock) {
++            if (openings.get(playerId) == attempt) {
++                openings.remove(playerId);
++            }
++            Entry current = entries.get(playerId);
++            if (attempt.oldClosed && current != null && current.handle() == attempt.old) {
++                entries.remove(playerId);
++                epochs.merge(playerId, 1L, Long::sum);
++            }
++        }
++    }
++
++    public CompletableFuture<Void> refresh(UUID playerId, MenuView view) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(view, "view");
++        Entry current;
++        synchronized (lock) {
++            current = entries.get(playerId);
++            if (current == null) {
++                return CompletableFuture.completedFuture(null);
++            }
++            entries.put(playerId, new Entry(current.handle(), view));
++        }
++        return adapter.updateMenu(current.handle(), contents(view));
++    }
++
++    public CompletableFuture<Void> click(UUID playerId, int slot) {
++        return click(playerId, slot, null);
++    }
++
++    /**
++     * Runs a click on the player's thread on the next tick. The menu it was for is captured now, so a click that
++     * arrives after its menu was replaced or closed does nothing.
++     */
++    public CompletableFuture<Void> clickLater(UUID playerId, int slot) {
++        Objects.requireNonNull(playerId, "playerId");
++        MenuHandle expected;
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            if (current == null) {
++                return CompletableFuture.completedFuture(null);
++            }
++            expected = current.handle();
++        }
++        return adapter.runOnPlayerNextTick(playerId, () -> click(playerId, slot, expected));
++    }
++
++    private CompletableFuture<Void> click(UUID playerId, int slot, MenuHandle expected) {
++        Objects.requireNonNull(playerId, "playerId");
++        Entry current;
++        synchronized (lock) {
++            current = entries.get(playerId);
++            if (current != null && expected != null && current.handle() != expected) {
++                current = null;
++            }
++        }
++        if (current == null || slot < 0 || slot >= current.view().size()) {
++            return CompletableFuture.completedFuture(null);
++        }
++        MenuIcon icon = current.view().icons().get(slot);
++        if (icon == null || icon.action().isEmpty()) {
++            return CompletableFuture.completedFuture(null);
++        }
++        try {
++            icon.action().orElseThrow().run();
++        } catch (RuntimeException failure) {
++            return CompletableFuture.failedFuture(failure);
++        }
++        Optional<MenuSound> sound = icon.sound();
++        if (sound.isEmpty()) {
++            return CompletableFuture.completedFuture(null);
++        }
++        MenuSound played = sound.get();
++        return adapter.playSound(playerId, played.key(), played.volume(), played.pitch()).thenApply(heard -> null);
++    }
++
++    public void closed(UUID playerId, MenuHandle menu) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(menu, "menu");
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            if (current == null || current.handle() != menu) {
++                return;
++            }
++            OpenAttempt opening = openings.get(playerId);
++            if (opening != null && opening.old == menu) {
++                opening.oldClosed = true;
++                return;
++            }
++            entries.remove(playerId);
++            epochs.merge(playerId, 1L, Long::sum);
++        }
++    }
++
++    /**
++     * Closes one player's menu and cancels any open still waiting to be shown. Other players keep theirs.
++     */
++    public CompletableFuture<Void> close(UUID playerId) {
++        Objects.requireNonNull(playerId, "playerId");
++        Entry current;
++        OpenAttempt opening;
++        synchronized (lock) {
++            current = entries.remove(playerId);
++            opening = openings.remove(playerId);
++            epochs.merge(playerId, 1L, Long::sum);
++        }
++        MenuHandle menu = current != null ? current.handle() : opening == null ? null : opening.old;
++        return close(menu);
++    }
++
++    public CompletableFuture<Void> closeAll() {
++        List<Entry> closing;
++        synchronized (lock) {
++            closing = List.copyOf(entries.values());
++            entries.clear();
++            openings.clear();
++            generation++;
++            epochs.replaceAll((playerId, epoch) -> epoch + 1);
++        }
++        CompletableFuture<?>[] closes = closing.stream()
++                .map(entry -> close(entry.handle()))
++                .toArray(CompletableFuture[]::new);
++        return CompletableFuture.allOf(closes);
++    }
++
++    public void reload(ConfigSnapshot snapshot) {
++        Objects.requireNonNull(snapshot, "snapshot");
++        if (renderer != null) {
++            renderer.resetWarnings();
++        }
++        closeAll();
++    }
++
++    private CompletableFuture<Void> close(MenuHandle menu) {
++        if (menu == null) {
++            return CompletableFuture.completedFuture(null);
++        }
++        try {
++            return adapter.closeMenu(menu);
++        } catch (RuntimeException failure) {
++            return CompletableFuture.failedFuture(failure);
++        }
++    }
++
++    private static Map<Integer, ItemStack> contents(MenuView view) {
++        Map<Integer, ItemStack> contents = new HashMap<>();
++        view.icons().forEach((slot, icon) -> contents.put(slot, icon.item()));
++        return contents;
++    }
++
++    private static Throwable unwrap(Throwable failure) {
++        return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuView.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuView.java
+new file mode 100644
+index 0000000..63b7721
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuView.java
+@@ -0,0 +1,48 @@
++package me.rakkoon69.rakunloots.menu;
++
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Objects;
++
++/**
++ * A menu in plugin types: its title, its rows, and the icon on each slot.
++ */
++public final class MenuView {
++
++    private final String title;
++    private final int rows;
++    private final Map<Integer, MenuIcon> icons;
++
++    public MenuView(String title, int rows, Map<Integer, MenuIcon> icons) {
++        this.title = Objects.requireNonNull(title, "title");
++        if (rows < 1 || rows > 6) {
++            throw new IllegalArgumentException("rows must be from 1 to 6, not " + rows);
++        }
++        this.rows = rows;
++        Map<Integer, MenuIcon> copy = new LinkedHashMap<>(Objects.requireNonNull(icons, "icons"));
++        copy.forEach((slot, icon) -> {
++            Objects.requireNonNull(icon, "icon");
++            if (slot < 0 || slot >= rows * 9) {
++                throw new IllegalArgumentException("slot " + slot + " is outside " + (rows * 9) + " slots");
++            }
++        });
++        this.icons = Collections.unmodifiableMap(copy);
++    }
++
++    public String title() {
++        return title;
++    }
++
++    public int rows() {
++        return rows;
++    }
++
++    public int size() {
++        return rows * 9;
++    }
++
++    public Map<Integer, MenuIcon> icons() {
++        return icons;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarning.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarning.java
+new file mode 100644
+index 0000000..dd43f97
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarning.java
+@@ -0,0 +1,26 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++
++import java.util.Objects;
++
++/**
++ * A menu problem raised while drawing: today, a layout item that its source cannot resolve.
++ */
++public record MenuWarning(Kind kind, String menuId, String entry, ItemReference item) {
++
++    public MenuWarning {
++        Objects.requireNonNull(kind, "kind");
++        Objects.requireNonNull(menuId, "menuId");
++        Objects.requireNonNull(entry, "entry");
++        Objects.requireNonNull(item, "item");
++    }
++
++    public enum Kind {
++        MENU_LAYOUT_ITEM_MISSING
++    }
++
++    public static MenuWarning layoutItemMissing(String menuId, String entry, ItemReference item) {
++        return new MenuWarning(Kind.MENU_LAYOUT_ITEM_MISSING, menuId, entry, item);
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarnings.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarnings.java
+new file mode 100644
+index 0000000..3ab785c
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuWarnings.java
+@@ -0,0 +1,12 @@
++package me.rakkoon69.rakunloots.menu;
++
++/**
++ * Where the menu renderer reports a layout item it could not draw.
++ */
++public interface MenuWarnings {
++
++    void warn(MenuWarning warning);
++
++    MenuWarnings ignore = warning -> {
++    };
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/BukkitMenuInventory.java b/src/main/java/me/rakkoon69/rakunloots/server/BukkitMenuInventory.java
+new file mode 100644
+index 0000000..fd3cf7d
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/server/BukkitMenuInventory.java
+@@ -0,0 +1,180 @@
++package me.rakkoon69.rakunloots.server;
++
++import org.bukkit.Server;
++import org.bukkit.entity.Player;
++import org.bukkit.inventory.Inventory;
++import org.bukkit.inventory.ItemStack;
++import org.jetbrains.annotations.NotNull;
++
++import java.util.Map;
++import java.util.Objects;
++import java.util.TreeMap;
++import java.util.UUID;
++
++/**
++ * A menu backed by one Bukkit custom inventory. Its holder is a {@link MenuHolder}, never a shared inventory, so the
++ * menu listener can claim it and the loot box close path never sees it. Once closed, it is never shown again, so an
++ * open that was still on its way does nothing.
++ */
++final class BukkitMenuInventory implements MenuHandle, MenuHolder {
++
++    private final UUID playerId;
++    private final String title;
++    private final Inventory inventory;
++    private volatile boolean closed;
++
++    @SuppressWarnings("deprecation") // Paper deprecates the String title for components; Spigot has only this one.
++    private BukkitMenuInventory(Server server, UUID playerId, String title, int size) {
++        this.playerId = Objects.requireNonNull(playerId, "playerId");
++        this.title = Objects.requireNonNull(title, "title");
++        this.inventory = server.createInventory(this, size, title);
++    }
++
++    /**
++     * Makes the menu and fills it with copies of the stacks.
++     *
++     * @throws IllegalArgumentException when the size is not a chest size, or a slot is outside it
++     */
++    static BukkitMenuInventory create(Server server, UUID playerId, String title, int size,
++                                      Map<Integer, ItemStack> contents) {
++        Objects.requireNonNull(server, "server");
++        Objects.requireNonNull(title, "title");
++        Objects.requireNonNull(contents, "contents");
++        if (size < 9 || size > 54 || size % 9 != 0) {
++            throw new IllegalArgumentException("size must be a multiple of 9 from 9 to 54, not " + size);
++        }
++        contents.forEach((slot, stack) -> {
++            Objects.requireNonNull(stack, "stack");
++            if (slot < 0 || slot >= size) {
++                throw new IllegalArgumentException("slot " + slot + " is outside a size of " + size);
++            }
++        });
++        BukkitMenuInventory menu = new BukkitMenuInventory(server, playerId, title, size);
++        menu.replace(contents);
++        return menu;
++    }
++
++    /**
++     * The menu as one a server adapter made.
++     *
++     * @throws IllegalArgumentException when no server adapter made it
++     */
++    static BukkitMenuInventory of(MenuHandle menu) {
++        Objects.requireNonNull(menu, "menu");
++        if (!(menu instanceof BukkitMenuInventory made)) {
++            throw new IllegalArgumentException("not made by a server adapter: " + menu);
++        }
++        return made;
++    }
++
++    @Override
++    public UUID playerId() {
++        return playerId;
++    }
++
++    String title() {
++        return title;
++    }
++
++    int size() {
++        return inventory.getSize();
++    }
++
++    @Override
++    public MenuHandle menuHandle() {
++        return this;
++    }
++
++    /**
++     * The Bukkit inventory, so a close event can find its menu through the holder.
++     */
++    @Override
++    public @NotNull Inventory getInventory() {
++        return inventory;
++    }
++
++    /**
++     * Replaces every slot with copies of the given stacks, clearing the ones left out. Call it on the thread that
++     * owns the viewer.
++     *
++     * @throws IllegalArgumentException when a slot is outside the inventory, or a stack is null
++     */
++    void replace(Map<Integer, ItemStack> contents) {
++        Objects.requireNonNull(contents, "contents");
++        contents.forEach((slot, stack) -> {
++            Objects.requireNonNull(stack, "stack");
++            if (slot < 0 || slot >= inventory.getSize()) {
++                throw new IllegalArgumentException("slot " + slot + " is outside a size of " + inventory.getSize());
++            }
++        });
++        for (int slot = 0; slot < inventory.getSize(); slot++) {
++            ItemStack stack = contents.get(slot);
++            inventory.setItem(slot, stack == null ? null : stack.clone());
++        }
++    }
++
++    /**
++     * Shows the menu to the player. Call it on the thread that owns the player.
++     *
++     * @return whether the player sees it; false when the menu was closed before this ran, or another plugin
++     * cancelled the open
++     */
++    boolean open(Player player) {
++        if (closed) {
++            return false;
++        }
++        player.openInventory(inventory);
++        return player.getOpenInventory().getTopInventory() == inventory;
++    }
++
++    /**
++     * Closes the menu for good, so an open that has not run yet does nothing. Safe on any thread.
++     */
++    void markClosed() {
++        closed = true;
++    }
++
++    /**
++     * Closes the player's view while it still shows this menu. Call it on the thread that owns the player.
++     */
++    void close(Player player) {
++        closed = true;
++        if (player.getOpenInventory().getTopInventory() == inventory) {
++            player.closeInventory();
++        }
++    }
++
++    /**
++     * Shows the menu to an online player. Call it on the main thread, which owns every player on Paper and Spigot.
++     *
++     * @return whether the player sees it; false when the player is not online
++     */
++    boolean openOnMainThread(Server server, UUID playerId) {
++        Player player = server.getPlayer(playerId);
++        return player != null && open(player);
++    }
++
++    /**
++     * Closes the viewer's view while it still shows this menu. Call it on the main thread.
++     */
++    void closeOnMainThread(Server server, UUID playerId) {
++        Player player = server.getPlayer(playerId);
++        if (player != null) {
++            close(player);
++        }
++    }
++
++    /**
++     * A copy of each stack by slot, for the slots that hold one now.
++     */
++    Map<Integer, ItemStack> contents() {
++        Map<Integer, ItemStack> contents = new TreeMap<>();
++        for (int slot = 0; slot < inventory.getSize(); slot++) {
++            ItemStack stack = inventory.getItem(slot);
++            if (stack != null && !stack.getType().isAir()) {
++                contents.put(slot, stack.clone());
++            }
++        }
++        return contents;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/MenuHandle.java b/src/main/java/me/rakkoon69/rakunloots/server/MenuHandle.java
+new file mode 100644
+index 0000000..2929da9
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/server/MenuHandle.java
+@@ -0,0 +1,15 @@
++package me.rakkoon69.rakunloots.server;
++
++import java.util.UUID;
++
++/**
++ * One menu inventory made by a server adapter. The handle is the identity the menu service uses to tell a close
++ * event for an old menu from one for its replacement.
++ */
++public interface MenuHandle {
++
++    /**
++     * The player the menu was opened for.
++     */
++    UUID playerId();
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/MenuHolder.java b/src/main/java/me/rakkoon69/rakunloots/server/MenuHolder.java
+new file mode 100644
+index 0000000..86432af
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/server/MenuHolder.java
+@@ -0,0 +1,15 @@
++package me.rakkoon69.rakunloots.server;
++
++import org.bukkit.inventory.InventoryHolder;
++
++/**
++ * Marks a Bukkit inventory as a menu, so the one menu listener claims every click and drag in it. It is deliberately
++ * not a {@link SharedInventory}: a menu close never reaches the loot box lifecycle.
++ */
++public interface MenuHolder extends InventoryHolder {
++
++    /**
++     * The menu this holder belongs to.
++     */
++    MenuHandle menuHandle();
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/PaperServerAdapter.java b/src/main/java/me/rakkoon69/rakunloots/server/PaperServerAdapter.java
+index da3404c..f7de007 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/server/PaperServerAdapter.java
++++ b/src/main/java/me/rakkoon69/rakunloots/server/PaperServerAdapter.java
+@@ -348,6 +348,74 @@ public final class PaperServerAdapter implements ServerAdapter {
+         });
+     }
+ 
++    @Override
++    public MenuHandle createMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++        return BukkitMenuInventory.create(plugin.getServer(), playerId, title, size, contents);
++    }
++
++    /**
++     * Opens the menu in one main-thread task. The future completes on the main thread, with no handle when the player
++     * is not online or another plugin cancelled the open.
++     */
++    @Override
++    public CompletableFuture<Optional<MenuHandle>> openMenu(UUID playerId, MenuHandle menu) {
++        Objects.requireNonNull(playerId, "playerId");
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        return BukkitMainThread.supply(plugin, () -> made.openOnMainThread(plugin.getServer(), playerId)
++                ? Optional.<MenuHandle>of(made)
++                : Optional.<MenuHandle>empty());
++    }
++
++    @Override
++    public CompletableFuture<Void> updateMenu(MenuHandle menu, Map<Integer, ItemStack> contents) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        return BukkitMainThread.supply(plugin, () -> {
++            made.replace(contents);
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Void> closeMenu(MenuHandle menu) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        made.markClosed();
++        if (org.bukkit.Bukkit.isPrimaryThread()) {
++            made.closeOnMainThread(plugin.getServer(), made.playerId());
++            return CompletableFuture.completedFuture(null);
++        }
++        return BukkitMainThread.supply(plugin, () -> {
++            made.closeOnMainThread(plugin.getServer(), made.playerId());
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(action, "action");
++        return BukkitMainThread.supply(plugin, () -> {
++            if (plugin.getServer().getPlayer(playerId) == null) {
++                return null;
++            }
++            action.run();
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(key, "key");
++        return BukkitMainThread.supply(plugin, () -> {
++            Player player = plugin.getServer().getPlayer(playerId);
++            if (player == null) {
++                return false;
++            }
++            player.playSound(player.getLocation(), key, (float) volume, (float) pitch);
++            return true;
++        });
++    }
++
+     /**
+      * Runs on the main thread, which owns every world on this server.
+      */
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/ServerAdapter.java b/src/main/java/me/rakkoon69/rakunloots/server/ServerAdapter.java
+index 289122c..2406cef 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/server/ServerAdapter.java
++++ b/src/main/java/me/rakkoon69/rakunloots/server/ServerAdapter.java
+@@ -286,6 +286,68 @@ public interface ServerAdapter {
+      */
+     CompletableFuture<Void> closeSharedInventory(SharedInventory inventory, Set<UUID> viewers);
+ 
++    /**
++     * Makes one menu inventory for a player. Safe on any thread. It holds nothing of the world.
++     *
++     * @param playerId the player's UUID
++     * @param title    the title the player sees, in legacy color codes
++     * @param size     a multiple of 9, from 9 to 54
++     * @param contents a stack for each slot that holds one; they are copied
++     * @throws IllegalArgumentException when the size is not a chest size, or a slot is outside it
++     */
++    MenuHandle createMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents);
++
++    /**
++     * Shows a menu inventory to a player, on the thread that owns the player, and records the handle only when the
++     * player sees it. Never blocks the calling thread.
++     *
++     * @param playerId the player's UUID
++     * @param menu     a menu inventory a server adapter made
++     * @return the handle when the player sees it, or empty when the player is not online or the open was cancelled
++     * @throws IllegalArgumentException when no server adapter made the menu
++     */
++    CompletableFuture<Optional<MenuHandle>> openMenu(UUID playerId, MenuHandle menu);
++
++    /**
++     * Replaces a menu's contents in place, on the thread that owns the viewer. A closed menu is left closed. Never
++     * blocks the calling thread.
++     *
++     * @param menu     a menu inventory a server adapter made
++     * @param contents a stack for each slot that holds one; they are copied
++     * @throws IllegalArgumentException when no server adapter made the menu, or a slot is outside it
++     */
++    CompletableFuture<Void> updateMenu(MenuHandle menu, Map<Integer, ItemStack> contents);
++
++    /**
++     * Closes a menu for good and the viewer's view, on the thread that owns the viewer. The viewer is left alone when
++     * they opened another inventory since. Never blocks the calling thread.
++     *
++     * @param menu a menu inventory a server adapter made
++     * @throws IllegalArgumentException when no server adapter made the menu
++     */
++    CompletableFuture<Void> closeMenu(MenuHandle menu);
++
++    /**
++     * Runs work on the thread that owns a player, on a later tick than the call. A click handler uses it so a menu
++     * action never opens or closes an inventory inside the click event. Never blocks the calling thread.
++     *
++     * @param playerId the player's UUID
++     * @param action   the work to run
++     * @return when the work ran; failed with the work's failure, or empty when the player is not online
++     */
++    CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action);
++
++    /**
++     * Plays a sound to a player, on the thread that owns the player. Never blocks the calling thread.
++     *
++     * @param playerId the player's UUID
++     * @param key      a namespaced sound key
++     * @param volume   the volume
++     * @param pitch    the pitch
++     * @return whether the player heard it; false when the player is not online
++     */
++    CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch);
++
+     /**
+      * Runs tasks on the thread that owns a block of a world.
+      *
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/SpigotServerAdapter.java b/src/main/java/me/rakkoon69/rakunloots/server/SpigotServerAdapter.java
+index 15f3fb3..0ca3aff 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/server/SpigotServerAdapter.java
++++ b/src/main/java/me/rakkoon69/rakunloots/server/SpigotServerAdapter.java
+@@ -419,6 +419,74 @@ public final class SpigotServerAdapter implements ServerAdapter {
+         });
+     }
+ 
++    @Override
++    public MenuHandle createMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++        return BukkitMenuInventory.create(plugin.getServer(), playerId, title, size, contents);
++    }
++
++    /**
++     * Opens the menu in one main-thread task. The future completes on the main thread, with no handle when the player
++     * is not online or another plugin cancelled the open.
++     */
++    @Override
++    public CompletableFuture<Optional<MenuHandle>> openMenu(UUID playerId, MenuHandle menu) {
++        Objects.requireNonNull(playerId, "playerId");
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        return BukkitMainThread.supply(plugin, () -> made.openOnMainThread(plugin.getServer(), playerId)
++                ? Optional.<MenuHandle>of(made)
++                : Optional.<MenuHandle>empty());
++    }
++
++    @Override
++    public CompletableFuture<Void> updateMenu(MenuHandle menu, Map<Integer, ItemStack> contents) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        return BukkitMainThread.supply(plugin, () -> {
++            made.replace(contents);
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Void> closeMenu(MenuHandle menu) {
++        BukkitMenuInventory made = BukkitMenuInventory.of(menu);
++        made.markClosed();
++        if (org.bukkit.Bukkit.isPrimaryThread()) {
++            made.closeOnMainThread(plugin.getServer(), made.playerId());
++            return CompletableFuture.completedFuture(null);
++        }
++        return BukkitMainThread.supply(plugin, () -> {
++            made.closeOnMainThread(plugin.getServer(), made.playerId());
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(action, "action");
++        return BukkitMainThread.supply(plugin, () -> {
++            if (plugin.getServer().getPlayer(playerId) == null) {
++                return null;
++            }
++            action.run();
++            return null;
++        });
++    }
++
++    @Override
++    public CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(key, "key");
++        return BukkitMainThread.supply(plugin, () -> {
++            Player player = plugin.getServer().getPlayer(playerId);
++            if (player == null) {
++                return false;
++            }
++            player.playSound(player.getLocation(), key, (float) volume, (float) pitch);
++            return true;
++        });
++    }
++
+     /**
+      * Runs on the main thread, which owns every world on this server.
+      */
+diff --git a/src/main/resources/languages/en.yml b/src/main/resources/languages/en.yml
+index 11b1e0d..829ab78 100644
+--- a/src/main/resources/languages/en.yml
++++ b/src/main/resources/languages/en.yml
+@@ -169,3 +169,9 @@ claim_loot_missing: "{prefix} &e{amount} &7summon item(s) of &c{loot} &7stay wai
+ 
+ # Added to a file that is not valid YAML when the error is on a line with a brace. {line} is that line.
+ yaml_quote_hint: 'Line {line} holds a {. Put the whole value in quotes, for example key: "text {name}".'
++
++# Paging buttons.
++menu_button_previous_page_name: "&a[< Previous page]"
++menu_button_previous_page_lore: "&7Page {page} of {pages}"
++menu_button_next_page_name: "&a[Next page >]"
++menu_button_next_page_lore: "&7Page {page} of {pages}"
+diff --git a/src/main/resources/languages/vi.yml b/src/main/resources/languages/vi.yml
+index 6cbb5c8..f752618 100644
+--- a/src/main/resources/languages/vi.yml
++++ b/src/main/resources/languages/vi.yml
+@@ -168,3 +168,9 @@ claim_loot_missing: "{prefix} &e{amount} &7vat pham trieu hoi cua &c{loot} &7van
+ 
+ # Them vao tep khong phai YAML hop le khi loi nam tren dong co dau ngoac nhon. {line} la dong do.
+ yaml_quote_hint: 'Dong {line} co dau {. Dat ca gia tri trong dau ngoac kep, vi du key: "chu {name}".'
++
++# Nut chuyen trang.
++menu_button_previous_page_name: "&a[< Trang truoc]"
++menu_button_previous_page_lore: "&7Trang {page}/{pages}"
++menu_button_next_page_name: "&a[Trang sau >]"
++menu_button_next_page_lore: "&7Trang {page}/{pages}"
+diff --git a/src/main/resources/languages/zh.yml b/src/main/resources/languages/zh.yml
+index af37352..aaca99b 100644
+--- a/src/main/resources/languages/zh.yml
++++ b/src/main/resources/languages/zh.yml
+@@ -168,3 +168,9 @@ claim_loot_missing: "{prefix} &e{amount} &7个 &c{loot} &7的召唤物品仍在
+ 
+ # 当文件不是有效的 YAML 且出错的行含有花括号时附加。{line} 为该行的行号。
+ yaml_quote_hint: '第 {line} 行含有 {。请把整个值放在引号中，例如 key: "文字 {name}"。'
++
++# 翻页按钮。
++menu_button_previous_page_name: "&a[< 上一页]"
++menu_button_previous_page_lore: "&7第 {page}/{pages} 页"
++menu_button_next_page_name: "&a[下一页 >]"
++menu_button_next_page_lore: "&7第 {page}/{pages} 页"
+diff --git a/src/main/resources/warnings.yml b/src/main/resources/warnings.yml
+index cef1b8b..d7de886 100644
+--- a/src/main/resources/warnings.yml
++++ b/src/main/resources/warnings.yml
+@@ -126,3 +126,6 @@ NO_PROVIDER: high
+ # Loot rolls
+ MISSED_ENTRY: high
+ ITEM_WARNING: high
++
++# Menus
++MENU_LAYOUT_ITEM_MISSING: high
+diff --git a/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java b/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
+index 311cdcc..5db4100 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
+@@ -2,8 +2,12 @@ package me.rakkoon69.rakunloots;
+ 
+ import be.seeseemelk.mockbukkit.MockBukkit;
+ import be.seeseemelk.mockbukkit.ServerMock;
++import be.seeseemelk.mockbukkit.entity.PlayerMock;
+ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
+ import me.rakkoon69.rakunloots.config.StorageSettings;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
+ import me.rakkoon69.rakunloots.storage.FlushResult;
+ import me.rakkoon69.rakunloots.storage.LoadResult;
+ import me.rakkoon69.rakunloots.storage.LootBoxRecord;
+@@ -11,6 +15,8 @@ import me.rakkoon69.rakunloots.storage.LootBoxStore;
+ import me.rakkoon69.rakunloots.storage.LootBoxStoreException;
+ import me.rakkoon69.rakunloots.storage.StreamableServerMock;
+ import me.rakkoon69.rakunloots.storage.UnclaimedSummonItem;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
+ import org.bukkit.plugin.PluginDescriptionFile;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -209,6 +215,37 @@ class PluginEnableTest {
+         assertNull(server.getCommandMap().getCommand("claimsummon"));
+     }
+ 
++    /**
++     * Acceptance: disable closes a menu a player still has open before the plugin lets go of it.
++     */
++    @Test
++    void disablingClosesEveryOpenMenu() throws Exception {
++        enable();
++        PlayerMock player = server.addPlayer();
++        MenuService menus = (MenuService) field("menus");
++        java.util.concurrent.CompletableFuture<Void> opened = menus.open(player.getUniqueId(),
++                new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                        java.util.Optional.empty(), java.util.Optional.empty()))));
++        for (int tick = 0; tick < 50 && !opened.isDone(); tick++) {
++            server.getScheduler().performOneTick();
++        }
++        opened.join();
++        assertTrue(player.getOpenInventory().getTopInventory().getHolder()
++                instanceof me.rakkoon69.rakunloots.server.MenuHolder);
++
++        MockBukkit.getMock().getPluginManager().disablePlugin(plugin);
++
++        org.bukkit.inventory.Inventory top = player.getOpenInventory().getTopInventory();
++        assertTrue(top == null || !(top.getHolder() instanceof me.rakkoon69.rakunloots.server.MenuHolder),
++                "the menu was closed before the adapter left");
++    }
++
++    private Object field(String name) throws ReflectiveOperationException {
++        java.lang.reflect.Field field = RakunLootsPlugin.class.getDeclaredField(name);
++        field.setAccessible(true);
++        return field.get(plugin);
++    }
++
+     /**
+      * The shipped plugin.yml declares Folia support, keeps DecentHolograms soft, and has no command entries the
+      * command map replaces and none of the removed permissions.
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java b/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
+index 6eb8566..5aa83bd 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/command/AdminCommandsTest.java
+@@ -29,6 +29,9 @@ import me.rakkoon69.rakunloots.lootbox.SummonSource;
+ import me.rakkoon69.rakunloots.lootbox.SummonTarget;
+ import me.rakkoon69.rakunloots.lootbox.WorldBroadcasts;
+ import me.rakkoon69.rakunloots.lootbox.WorldTimers;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
+ import me.rakkoon69.rakunloots.roll.RollWarning;
+ import me.rakkoon69.rakunloots.server.BlockPosition;
+ import me.rakkoon69.rakunloots.server.ChunkView;
+@@ -64,6 +67,7 @@ import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
+ import java.util.Random;
++import java.util.Set;
+ import java.util.UUID;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.CopyOnWriteArrayList;
+@@ -144,6 +148,10 @@ class AdminCommandsTest {
+     private final List<VisualsWarning> visualsWarnings = new CopyOnWriteArrayList<>();
+     private final FakeGlowLibrary glow = new FakeGlowLibrary();
+     private final List<ConfigSnapshot> searchSaw = new CopyOnWriteArrayList<>();
++    private final List<ConfigSnapshot> menusSaw = new CopyOnWriteArrayList<>();
++    private final List<String> reloadOrder = new CopyOnWriteArrayList<>();
++    private MenuService realMenus;
++    private final AtomicReference<RuntimeException> searchFailure = new AtomicReference<>();
+     private SummonItemMaker maker;
+     private CommandRegistry registry;
+     private FakeCommandSender admin;
+@@ -209,6 +217,7 @@ class AdminCommandsTest {
+         sources = new Sources();
+         CommandMessages messages = key -> config.get().message("", key);
+         registry = new CommandRegistry(sources, messages, debugLines::add);
++        realMenus = new MenuService(adapter);
+         registry.register(AdminCommands.root(snapshot.adminCommand(), new AdminCommands.Parts(
+                 () -> {
+                     loaderSaw.add("pending " + service.pendingCount(WORLD));
+@@ -217,8 +226,17 @@ class AdminCommandsTest {
+                     }
+                     return reloaded.get();
+                 },
+-                adapter, sources, lifecycle, service, timers, holograms, animations, visuals, searchSaw::add,
+-                giveBack::give, new me.rakkoon69.rakunloots.log.WarningRecord())));
++                adapter, sources, lifecycle, service, timers, holograms, animations, visuals, next -> {
++                    if (searchFailure.get() != null) {
++                        throw searchFailure.get();
++                    }
++                    reloadOrder.add("search");
++                    searchSaw.add(next);
++                }, next -> {
++                    reloadOrder.add("menus");
++                    menusSaw.add(next);
++                    realMenus.reload(next);
++                }, giveBack::give, new me.rakkoon69.rakunloots.log.WarningRecord())));
+         registry.register(ClaimCommand.node(snapshot.claimCommand(), claims));
+         admin = new FakeCommandSender("Admin", ALL);
+     }
+@@ -601,6 +619,66 @@ class AdminCommandsTest {
+         assertEquals(List.of(next), searchSaw);
+     }
+ 
++    /**
++     * Acceptance: a successful reload hands the new config to the search before it retires the menus.
++     */
++    @Test
++    void reloadClosesMenusAfterTheSearchTakesTheNewConfig() throws Exception {
++        ConfigSnapshot next = ShippedHologramConfig.load("en", Map.of("crate", CRATE));
++        reloaded.set(next);
++
++        run(admin, "rkl reload");
++
++        assertEquals(List.of(next), menusSaw);
++        assertEquals(List.of("search", "menus"), reloadOrder);
++    }
++
++    /**
++     * A reload through the command hands the new config to the search, then the real menu service closes every menu
++     * that player opened. The menu service is the one the plugin wires, not a recorder.
++     */
++    @Test
++    void reloadClosesEveryRealMenuAfterTheSearchTakesTheNewConfig() throws Exception {
++        ConfigSnapshot next = ShippedHologramConfig.load("en", Map.of("crate", CRATE));
++        reloaded.set(next);
++        UUID alex = UUID.randomUUID();
++        adapter.addOnlinePlayer(alex);
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.empty(), Optional.empty())));
++        realMenus.open(STEVE, view).join();
++        realMenus.open(alex, view).join();
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals(List.of(), adapter.menuCloses());
++
++        run(admin, "rkl reload");
++
++        assertEquals(List.of(next), searchSaw, "the search saw the new config");
++        assertEquals(List.of(next), menusSaw, "the menu service saw the new config");
++        assertEquals(List.of("search", "menus"), reloadOrder, "the menus closed after the search took it");
++        assertEquals(Set.of(STEVE, alex), adapter.menuCloses().stream()
++                .map(close -> close.playerId()).collect(java.util.stream.Collectors.toSet()),
++                "every real open menu was closed");
++        assertTrue(adapter.menuCloses().stream().allMatch(close ->
++                close.menu() instanceof FakeServerAdapter.FakeMenu menu && menu.closed()));
++    }
++
++    /**
++     * Acceptance: when a later module fails, the menu generation still turns over and every menu closes, so nothing
++     * keeps drawing from the old layout.
++     */
++    @Test
++    void aLaterReloadFailureStillClosesMenus() throws Exception {
++        ConfigSnapshot next = ShippedHologramConfig.load("en", Map.of("crate", CRATE));
++        reloaded.set(next);
++        searchFailure.set(new IllegalStateException("search broke"));
++
++        String shown = String.join("\n", run(admin, "rkl reload"));
++
++        assertTrue(shown.contains("search broke"), shown);
++        assertEquals(List.of(next), menusSaw);
++        assertEquals("menus", reloadOrder.get(reloadOrder.size() - 1));
++    }
++
+     /**
+      * Acceptance: the claim command registers under its {@code config.yml} name and aliases, and its default
+      * permission is everyone's. A player takes what they are owed.
+@@ -683,6 +761,7 @@ class AdminCommandsTest {
+ 
+         assertTrue(shown.contains("languages/en.yml"), shown);
+         assertTrue(shown.contains("Put the whole value in quotes"), shown);
++        assertEquals(List.of(), menusSaw, "a config that never loaded leaves the open menus alone");
+     }
+ 
+     /**
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/WarningKindsTest.java b/src/test/java/me/rakkoon69/rakunloots/config/WarningKindsTest.java
+index d3328ae..6379e8b 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/config/WarningKindsTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/config/WarningKindsTest.java
+@@ -3,6 +3,7 @@ package me.rakkoon69.rakunloots.config;
+ import me.rakkoon69.rakunloots.animation.AnimationWarning;
+ import me.rakkoon69.rakunloots.hologram.HologramWarning;
+ import me.rakkoon69.rakunloots.lootbox.LifecycleWarning;
++import me.rakkoon69.rakunloots.menu.MenuWarning;
+ import me.rakkoon69.rakunloots.roll.RollWarning;
+ import me.rakkoon69.rakunloots.storage.LootBoxWarning;
+ import me.rakkoon69.rakunloots.visuals.VisualsWarning;
+@@ -24,7 +25,7 @@ class WarningKindsTest {
+     private static final List<Enum<?>[]> ENUMS = List.of(
+             ConfigWarning.Kind.values(), LifecycleWarning.Kind.values(), LootBoxWarning.Kind.values(),
+             VisualsWarning.Kind.values(), AnimationWarning.Kind.values(), HologramWarning.Kind.values(),
+-            RollWarning.Kind.values());
++            RollWarning.Kind.values(), MenuWarning.Kind.values());
+ 
+     /**
+      * Acceptance: every kind of every module is registered, each under its own name.
+@@ -72,5 +73,7 @@ class WarningKindsTest {
+         assertEquals(ConfigWarning.Severity.SEVERE, WarningKinds.of(ConfigWarning.Kind.GROUP_CYCLE).defaultSeverity());
+         // A tag no supported version knows is a typo, raised high (#104).
+         assertEquals(ConfigWarning.Severity.HIGH, WarningKinds.of(ConfigWarning.Kind.UNKNOWN_TAG).defaultSeverity());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                WarningKinds.of(MenuWarning.Kind.MENU_LAYOUT_ITEM_MISSING).defaultSeverity());
+     }
+ }
+diff --git a/src/test/java/me/rakkoon69/rakunloots/hologram/packet/PlayerWorlds.java b/src/test/java/me/rakkoon69/rakunloots/hologram/packet/PlayerWorlds.java
+index 3edd1e7..1eef0ae 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/hologram/packet/PlayerWorlds.java
++++ b/src/test/java/me/rakkoon69/rakunloots/hologram/packet/PlayerWorlds.java
+@@ -198,6 +198,39 @@ final class PlayerWorlds implements ServerAdapter {
+         throw unused();
+     }
+ 
++    @Override
++    public me.rakkoon69.rakunloots.server.MenuHandle createMenu(UUID playerId, String title, int size,
++                                                               Map<Integer, ItemStack> contents) {
++        throw unused();
++    }
++
++    @Override
++    public CompletableFuture<Optional<me.rakkoon69.rakunloots.server.MenuHandle>> openMenu(
++            UUID playerId, me.rakkoon69.rakunloots.server.MenuHandle menu) {
++        throw unused();
++    }
++
++    @Override
++    public CompletableFuture<Void> updateMenu(me.rakkoon69.rakunloots.server.MenuHandle menu,
++                                              Map<Integer, ItemStack> contents) {
++        throw unused();
++    }
++
++    @Override
++    public CompletableFuture<Void> closeMenu(me.rakkoon69.rakunloots.server.MenuHandle menu) {
++        throw unused();
++    }
++
++    @Override
++    public CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action) {
++        throw unused();
++    }
++
++    @Override
++    public CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch) {
++        throw unused();
++    }
++
+     @Override
+     public TaskScheduler atLocation(UUID worldKey, int blockX, int blockZ) {
+         throw unused();
+diff --git a/src/test/java/me/rakkoon69/rakunloots/lootbox/LootBoxInteractionListenerTest.java b/src/test/java/me/rakkoon69/rakunloots/lootbox/LootBoxInteractionListenerTest.java
+index 91b1463..ca4504f 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/lootbox/LootBoxInteractionListenerTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/lootbox/LootBoxInteractionListenerTest.java
+@@ -5,7 +5,13 @@ import be.seeseemelk.mockbukkit.WorldMock;
+ import be.seeseemelk.mockbukkit.entity.PlayerMock;
+ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
+ import me.rakkoon69.rakunloots.lootbox.listener.LootBoxInteractionListener;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuListener;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
+ import me.rakkoon69.rakunloots.server.BlockPosition;
++import me.rakkoon69.rakunloots.server.MenuHolder;
++import me.rakkoon69.rakunloots.server.PaperServerAdapter;
+ import me.rakkoon69.rakunloots.storage.LootBoxStore;
+ import me.rakkoon69.rakunloots.storage.StreamableServerMock;
+ import me.rakkoon69.rakunloots.storage.SummonKind;
+@@ -41,6 +47,7 @@ import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
+ import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
+ 
+ import static me.rakkoon69.rakunloots.lootbox.LifecycleFixture.GROUND_Y;
+ import static me.rakkoon69.rakunloots.lootbox.LifecycleFixture.WORLD;
+@@ -401,6 +408,38 @@ class LootBoxInteractionListenerTest {
+         assertEquals("minecraft:air", fixture.adapter.blockAt(box.position()));
+     }
+ 
++    /**
++     * A menu close passes through both listeners while a loot box shared inventory is open for the same player. The
++     * menu listener claims the menu, and the loot box listener leaves it alone: the lifecycle is never told the shared
++     * inventory closed, so an emptied box would have ended if it had been.
++     */
++    @Test
++    void aMenuClosePassesBothListenersWithoutClosingTheLootBoxInventory() {
++        LootBox box = summon("chest_crate", 2, 2, Optional.of(owner.getUniqueId()));
++        click(owner, box, EquipmentSlot.HAND);
++        FakeSharedInventory shared = fixture.adapter.inventoryOpens().get(0).inventory();
++        shared.contents().keySet().forEach(slot -> shared.take(owner.getUniqueId(), slot));
++
++        MenuService menus = new MenuService(new PaperServerAdapter(plugin));
++        server.getPluginManager().registerEvents(new MenuListener(menus), plugin);
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.empty(), Optional.empty())));
++        CompletableFuture<Void> opened = menus.open(owner.getUniqueId(), view);
++        for (int tick = 0; tick < 50 && !opened.isDone(); tick++) {
++            server.getScheduler().performOneTick();
++        }
++        assertTrue(opened.isDone(), "the menu opened on the main thread");
++        opened.join();
++        assertTrue(owner.getOpenInventory().getTopInventory().getHolder() instanceof MenuHolder);
++
++        owner.closeInventory();
++
++        assertTrue(lifecycle.boxAt(WORLD, box.position()).isPresent(),
++                "the menu close did not reach the loot box lifecycle");
++        assertEquals("minecraft:chest", fixture.adapter.blockAt(box.position()),
++                "the emptied box stayed until its shared inventory closes");
++    }
++
+     /**
+      * Two boxes in the blast, a locked airdrop and an unlocked fragile box, plus a box whose block another plugin
+      * replaced and the ground under all three.
+diff --git a/src/test/java/me/rakkoon69/rakunloots/menu/MenuListenerTest.java b/src/test/java/me/rakkoon69/rakunloots/menu/MenuListenerTest.java
+new file mode 100644
+index 0000000..6c988b6
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/menu/MenuListenerTest.java
+@@ -0,0 +1,180 @@
++package me.rakkoon69.rakunloots.menu;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import be.seeseemelk.mockbukkit.ServerMock;
++import be.seeseemelk.mockbukkit.WorldMock;
++import be.seeseemelk.mockbukkit.entity.PlayerMock;
++import me.rakkoon69.rakunloots.server.PaperServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.event.inventory.ClickType;
++import org.bukkit.event.inventory.InventoryAction;
++import org.bukkit.event.inventory.InventoryClickEvent;
++import org.bukkit.event.inventory.InventoryDragEvent;
++import org.bukkit.event.inventory.InventoryType;
++import org.bukkit.inventory.Inventory;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.plugin.PluginDescriptionFile;
++import org.bukkit.plugin.java.JavaPlugin;
++import org.bukkit.plugin.java.JavaPluginLoader;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.io.File;
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class MenuListenerTest {
++
++    private ServerMock server;
++    private PlayerMock player;
++    private MenuService menus;
++    private final AtomicInteger clicks = new AtomicInteger();
++
++    @BeforeEach
++    void start() {
++        server = MockBukkit.mock();
++        server.addWorld(new WorldMock(Material.GRASS_BLOCK, 0, 256, 63));
++        JavaPlugin plugin = MockBukkit.loadWith(MenuTestPlugin.class,
++                new PluginDescriptionFile("MenuTest", "1.0", MenuTestPlugin.class.getName()));
++        menus = new MenuService(new PaperServerAdapter(plugin));
++        server.getPluginManager().registerEvents(new MenuListener(menus), plugin);
++        player = server.addPlayer();
++    }
++
++    @AfterEach
++    void stop() {
++        MockBukkit.unmock();
++    }
++
++    private void openMenu() {
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.of(clicks::incrementAndGet), Optional.empty())));
++        CompletableFuture<Void> opened = menus.open(player.getUniqueId(), view);
++        tickUntil(opened);
++        opened.join();
++        assertEquals(27, player.getOpenInventory().getTopInventory().getSize());
++        assertTrue(player.getOpenInventory().getTopInventory().getHolder() instanceof me.rakkoon69.rakunloots.server.MenuHolder);
++    }
++
++    private void tickUntil(CompletableFuture<?> future) {
++        for (int tick = 0; tick < 50 && !future.isDone(); tick++) {
++            server.getScheduler().performOneTick();
++        }
++        assertTrue(future.isDone(), "the menu work ran on the main thread");
++    }
++
++    private InventoryClickEvent click(int rawSlot, ClickType type, InventoryAction action, InventoryType.SlotType slotType) {
++        InventoryClickEvent event = new InventoryClickEvent(player.getOpenInventory(), slotType, rawSlot, type, action);
++        server.getPluginManager().callEvent(event);
++        return event;
++    }
++
++    @Test
++    void everyClickInAMenuIsCancelledAndOnlyTopClicksReachTheMenu() {
++        openMenu();
++
++        assertTrue(click(0, ClickType.LEFT, InventoryAction.PICKUP_ALL, InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(0, ClickType.SHIFT_LEFT, InventoryAction.MOVE_TO_OTHER_INVENTORY,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(0, ClickType.NUMBER_KEY, InventoryAction.HOTBAR_SWAP,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(0, ClickType.DOUBLE_CLICK, InventoryAction.COLLECT_TO_CURSOR,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(0, ClickType.DROP, InventoryAction.DROP_ONE_SLOT,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(0, ClickType.SWAP_OFFHAND, InventoryAction.HOTBAR_SWAP,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertTrue(click(36, ClickType.LEFT, InventoryAction.PICKUP_ALL,
++                InventoryType.SlotType.CONTAINER).isCancelled());
++        assertEquals(0, clicks.get(), "the actions wait for the next tick");
++        server.getScheduler().performOneTick();
++        assertEquals(6, clicks.get(), "the top slot dispatched every click; the bottom click did not");
++    }
++
++    @Test
++    void aClickActionRunsOnTheNextTickNotInsideTheEvent() {
++        AtomicInteger actions = new AtomicInteger();
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.of(() -> {
++                    actions.incrementAndGet();
++                    player.closeInventory();
++                }), Optional.empty())));
++        CompletableFuture<Void> opened = menus.open(player.getUniqueId(), view);
++        tickUntil(opened);
++        opened.join();
++
++        assertTrue(click(0, ClickType.LEFT, InventoryAction.PICKUP_ALL, InventoryType.SlotType.CONTAINER).isCancelled());
++        assertEquals(0, actions.get(), "the action waits for the next tick, when the event is over");
++        assertTrue(player.getOpenInventory().getTopInventory().getHolder()
++                instanceof me.rakkoon69.rakunloots.server.MenuHolder);
++
++        server.getScheduler().performOneTick();
++        assertEquals(1, actions.get());
++    }
++
++    @Test
++    void aDeferredClickDoesNothingAfterTheMenuClosed() {
++        AtomicInteger actions = new AtomicInteger();
++        MenuView view = new MenuView("Menu", 3, Map.of(0, new MenuIcon(new ItemStack(Material.DIAMOND),
++                Optional.of(actions::incrementAndGet), Optional.empty())));
++        CompletableFuture<Void> opened = menus.open(player.getUniqueId(), view);
++        tickUntil(opened);
++        opened.join();
++
++        click(0, ClickType.LEFT, InventoryAction.PICKUP_ALL, InventoryType.SlotType.CONTAINER);
++        menus.closeAll().join();
++        server.getScheduler().performOneTick();
++
++        assertEquals(0, actions.get(), "the click was for a menu that had gone");
++    }
++
++    @Test
++    void everyDragOverAMenuIsCancelled() {
++        openMenu();
++        ItemStack cursor = new ItemStack(Material.DIAMOND);
++
++        InventoryDragEvent top = new InventoryDragEvent(player.getOpenInventory(), cursor, cursor, true,
++                Map.of(0, new ItemStack(Material.DIAMOND)));
++        server.getPluginManager().callEvent(top);
++        assertTrue(top.isCancelled());
++
++        InventoryDragEvent bottom = new InventoryDragEvent(player.getOpenInventory(), cursor, cursor, true,
++                Map.of(27, new ItemStack(Material.DIAMOND)));
++        server.getPluginManager().callEvent(bottom);
++        assertTrue(bottom.isCancelled(), "the menu is still open, so nothing in the player inventory moves");
++    }
++
++    @Test
++    void aPlainInventoryIsNotClaimed() {
++        Inventory plain = server.createInventory(null, 27);
++        player.openInventory(plain);
++        InventoryClickEvent event = new InventoryClickEvent(player.getOpenInventory(), InventoryType.SlotType.CONTAINER,
++                0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
++        server.getPluginManager().callEvent(event);
++
++        assertFalse(event.isCancelled());
++    }
++
++    @Test
++    void aMenuCloseRetiresTheMenuThroughItsHolder() {
++        openMenu();
++        player.closeInventory();
++
++        menus.click(player.getUniqueId(), 0).join();
++        assertEquals(0, clicks.get(), "the closed menu no longer dispatches");
++    }
++
++    public static final class MenuTestPlugin extends JavaPlugin {
++        public MenuTestPlugin(JavaPluginLoader loader, PluginDescriptionFile description, File dataFolder, File file) {
++            super(loader, description, dataFolder, file);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/menu/MenuRendererTest.java b/src/test/java/me/rakkoon69/rakunloots/menu/MenuRendererTest.java
+new file mode 100644
+index 0000000..c5398ee
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/menu/MenuRendererTest.java
+@@ -0,0 +1,299 @@
++package me.rakkoon69.rakunloots.menu;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class MenuRendererTest {
++
++    @BeforeEach
++    void start() {
++        MockBukkit.mock();
++    }
++
++    @AfterEach
++    void stop() {
++        MockBukkit.unmock();
++    }
++
++    private static final String MENU = """
++            rows: 3
++            content_slots: ['0-9']
++            filler: {id: gray_stained_glass_pane}
++            buttons:
++              previous_page:
++                slot: 18
++                item: {id: arrow}
++              next_page:
++                slot: 26
++                item: {id: arrow}
++            """;
++
++    private static final NameCatalog CATALOG = new NameCatalog() {
++        @Override
++        public Optional<String> currentId(String id) {
++            return Optional.of(id);
++        }
++
++        @Override
++        public boolean soundExists(String key) {
++            return "minecraft:ui.button.click".equals(key);
++        }
++    };
++
++    private static String resource(String path) throws IOException {
++        try (InputStream in = MenuRendererTest.class.getResourceAsStream("/" + path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        }
++    }
++
++    private static ConfigSnapshot config(String menu) throws IOException {
++        return ConfigLoader.load(ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", resource("languages/en.yml"))
++                .menu("claim", menu)
++                .build(), CATALOG);
++    }
++
++    private static MenuRenderer renderer(ConfigSnapshot config) {
++        return new MenuRenderer(ItemSourceRegistry.create(), key -> config.message("", key), MenuWarnings.ignore);
++    }
++
++    private static List<MenuIcon> entries(int count) {
++        List<MenuIcon> entries = new ArrayList<>();
++        for (int index = 0; index < count; index++) {
++            entries.add(new MenuIcon(new ItemStack(Material.PAPER), Optional.empty(), Optional.empty()));
++        }
++        return entries;
++    }
++
++    private static MenuView page(MenuRenderer renderer, ConfigSnapshot config, int count, int requested) {
++        return page(renderer, config, count, requested, page -> {
++        });
++    }
++
++    private static MenuView page(MenuRenderer renderer, ConfigSnapshot config, int count, int requested,
++                                 java.util.function.IntConsumer goToPage) {
++        return renderer.render("claim", "Claims", config.claimMenu(), entries(count), requested, goToPage);
++    }
++
++    private static void assertFiller(MenuView view, int slot) {
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, view.icons().get(slot).item().getType(), "slot " + slot);
++    }
++
++    private static void assertEmpty(MenuView view, int slot) {
++        assertNull(view.icons().get(slot), "slot " + slot);
++    }
++
++    private static void assertArrow(MenuView view, int slot) {
++        assertEquals(Material.ARROW, view.icons().get(slot).item().getType(), "slot " + slot);
++    }
++
++    @Test
++    void zeroEntriesIsOneEmptyPage() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++        MenuView view = page(renderer, config, 0, 0);
++
++        assertEquals(1, renderer.pageCount(config.claimMenu(), 0));
++        for (int slot = 0; slot < 10; slot++) {
++            assertEmpty(view, slot);
++        }
++        assertFiller(view, 18);
++        assertFiller(view, 26);
++        assertEquals(27, view.size());
++    }
++
++    @Test
++    void tenEntriesFitOnOnePageWithNoPageButtons() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++        MenuView view = page(renderer, config, 10, 0);
++
++        assertEquals(1, renderer.pageCount(config.claimMenu(), 10));
++        for (int slot = 0; slot < 10; slot++) {
++            assertEquals(Material.PAPER, view.icons().get(slot).item().getType(), "slot " + slot);
++        }
++        assertFiller(view, 18);
++        assertFiller(view, 26);
++    }
++
++    @Test
++    void elevenEntriesNeedTwoPages() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++        MenuView first = page(renderer, config, 11, 0);
++
++        assertEquals(2, renderer.pageCount(config.claimMenu(), 11));
++        assertEquals(Material.PAPER, first.icons().get(9).item().getType());
++        assertFiller(first, 18);
++        assertArrow(first, 26);
++        assertEquals("§a[Next page >]", first.icons().get(26).item().getItemMeta().getDisplayName());
++        assertEquals("§7Page 2 of 2", first.icons().get(26).item().getItemMeta().getLore().get(0));
++
++        MenuView second = page(renderer, config, 11, 1);
++        assertEquals(Material.PAPER, second.icons().get(0).item().getType());
++        for (int slot = 1; slot < 10; slot++) {
++            assertEmpty(second, slot);
++        }
++        assertArrow(second, 18);
++        assertEquals("§a[< Previous page]", second.icons().get(18).item().getItemMeta().getDisplayName());
++        assertEquals("§7Page 1 of 2", second.icons().get(18).item().getItemMeta().getLore().get(0));
++        assertFiller(second, 26);
++    }
++
++    @Test
++    void twentyFiveEntriesHaveThreePagesWithTrailingEmptyContentSlots() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++
++        assertEquals(3, renderer.pageCount(config.claimMenu(), 25));
++        MenuView middle = page(renderer, config, 25, 1);
++        for (int slot = 0; slot < 10; slot++) {
++            assertEquals(Material.PAPER, middle.icons().get(slot).item().getType(), "slot " + slot);
++        }
++        assertArrow(middle, 18);
++        assertArrow(middle, 26);
++
++        MenuView last = page(renderer, config, 25, 2);
++        for (int slot = 0; slot < 5; slot++) {
++            assertEquals(Material.PAPER, last.icons().get(slot).item().getType(), "slot " + slot);
++        }
++        for (int slot = 5; slot < 10; slot++) {
++            assertEmpty(last, slot);
++        }
++        assertArrow(last, 18);
++        assertFiller(last, 26);
++    }
++
++    @Test
++    void outOfRangeAndNegativePagesClampToTheLastPage() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++
++        for (int requested : List.of(-1, 3, 99)) {
++            MenuView view = page(renderer, config, 25, requested);
++            assertEquals(Material.PAPER, view.icons().get(4).item().getType(), "requested " + requested);
++            assertEmpty(view, 5);
++            assertArrow(view, 18);
++            assertFiller(view, 26);
++        }
++    }
++
++    @Test
++    void pageButtonRunsTheCallbackWithTheDestinationPage() {
++        ConfigSnapshot config = assertDoesNotThrowLoad(MENU);
++        MenuRenderer renderer = renderer(config);
++        AtomicInteger destination = new AtomicInteger(-1);
++
++        MenuView first = page(renderer, config, 11, 0, destination::set);
++        first.icons().get(26).action().orElseThrow().run();
++        assertEquals(1, destination.get());
++
++        MenuView second = page(renderer, config, 11, 1, destination::set);
++        second.icons().get(18).action().orElseThrow().run();
++        assertEquals(0, destination.get());
++    }
++
++    @Test
++    void aMissingLayoutItemDrawsABarrierAndWarnsOncePerReload() {
++        ConfigSnapshot config = assertDoesNotThrowLoad("""
++                rows: 3
++                content_slots: ['0-9']
++                filler: {source: ghost, id: diamond}
++                buttons:
++                  next_page:
++                    slot: 26
++                    item: {source: ghost, id: arrow}
++                """);
++        List<MenuWarning> warnings = new ArrayList<>();
++        FakeServerAdapter adapter = new FakeServerAdapter(java.util.UUID.randomUUID());
++        MenuRenderer renderer = new MenuRenderer(ItemSourceRegistry.create(), key -> config.message("", key),
++                warnings::add);
++        MenuService menus = new MenuService(adapter, renderer);
++
++        MenuView first = page(renderer, config, 11, 0);
++        MenuView second = page(renderer, config, 11, 0);
++        assertEquals(Material.BARRIER, first.icons().get(10).item().getType());
++        assertEquals(Material.BARRIER, second.icons().get(26).item().getType());
++        assertEquals(2, warnings.size(), warnings.toString());
++        assertEquals(List.of("filler", "button:next_page"),
++                warnings.stream().map(MenuWarning::entry).toList());
++
++        menus.reload(config);
++        page(renderer, config, 11, 0);
++        assertEquals(4, warnings.size(), warnings.toString());
++        assertTrue(warnings.stream().allMatch(warning -> warning.kind() == MenuWarning.Kind.MENU_LAYOUT_ITEM_MISSING));
++        assertFalse(warnings.get(0).item().id().isBlank());
++    }
++
++    @Test
++    void theShippedClaimLayoutRendersItsRealItemsAndButtons() throws IOException {
++        ConfigSnapshot config = ConfigLoader.load(ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", resource("languages/en.yml"))
++                .menu("claim", resource("menus/claim.yml"))
++                .menu("wiki", resource("menus/wiki.yml"))
++                .build(), CATALOG);
++        MenuRenderer renderer = renderer(config);
++        MenuView view = renderer.render("claim", "Claims", config.claimMenu(), entries(46), 0, page -> {
++        });
++
++        assertEquals(Material.PAPER, view.icons().get(0).item().getType());
++        assertEquals(Material.PAPER, view.icons().get(44).item().getType());
++        assertEquals(Material.GRAY_STAINED_GLASS_PANE, view.icons().get(45).item().getType());
++        assertEquals(Material.CHEST_MINECART, view.icons().get(49).item().getType());
++        assertEquals(Material.ARROW, view.icons().get(53).item().getType());
++        assertEquals("§a[Next page >]", view.icons().get(53).item().getItemMeta().getDisplayName());
++    }
++
++    @Test
++    void pagingLanguageTextIsTranslatedAndColored() throws IOException {
++        ConfigSnapshot config = ConfigLoader.load(ConfigSources.builder()
++                .globals("language: vi\n")
++                .worlds("{}\n")
++                .language("vi", resource("languages/vi.yml"))
++                .menu("claim", MENU)
++                .build(), CATALOG);
++        MenuRenderer renderer = renderer(config);
++        MenuView view = page(renderer, config, 11, 0);
++
++        assertEquals("§a[Trang sau >]", view.icons().get(26).item().getItemMeta().getDisplayName());
++        assertEquals("§7Trang 2/2", view.icons().get(26).item().getItemMeta().getLore().get(0));
++    }
++
++    private static ConfigSnapshot assertDoesNotThrowLoad(String menu) {
++        try {
++            return config(menu);
++        } catch (IOException failure) {
++            throw new AssertionError(failure);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/menu/MenuServiceTest.java b/src/test/java/me/rakkoon69/rakunloots/menu/MenuServiceTest.java
+new file mode 100644
+index 0000000..04e1335
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/menu/MenuServiceTest.java
+@@ -0,0 +1,242 @@
++package me.rakkoon69.rakunloots.menu;
++
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class MenuServiceTest {
++
++    private final UUID player = UUID.fromString("00000000-0000-0000-0000-0000000000aa");
++    private final FakeServerAdapter adapter = new FakeServerAdapter(UUID.randomUUID());
++    private final MenuService menus = new MenuService(adapter);
++
++    private static MenuView view(String title, Material material) {
++        return new MenuView(title, 3, Map.of(0, new MenuIcon(new ItemStack(material), Optional.empty(),
++                Optional.empty())));
++    }
++
++    private static MenuView actionView(String title, Material material, AtomicInteger clicks) {
++        return new MenuView(title, 3, Map.of(0, new MenuIcon(new ItemStack(material),
++                Optional.of(clicks::incrementAndGet), Optional.empty())));
++    }
++
++    @Test
++    void anOfflinePlayerGetsNoMenu() {
++        menus.open(player, view("Menu", Material.DIAMOND)).join();
++
++        assertEquals(0, adapter.menuOpens().size());
++    }
++
++    @Test
++    void aReplacementIsNotOpenedUntilTheAdapterShowsItAndThenClosesTheOldMenu() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger oldClicks = new AtomicInteger();
++        AtomicInteger newClicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, oldClicks)).join();
++
++        adapter.holdMenuOpens();
++        CompletableFuture<Void> replacing = menus.open(player, actionView("New", Material.EMERALD, newClicks));
++        assertFalse(replacing.isDone());
++        assertEquals(1, adapter.menuOpens().size(), "the old menu is still the one shown");
++        assertEquals(0, adapter.menuCloses().size(), "the old menu stays until the new one is shown");
++
++        adapter.releaseMenuOpens();
++        replacing.join();
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals(1, adapter.menuCloses().size());
++        menus.click(player, 0).join();
++        assertEquals(0, oldClicks.get(), "the old action is retired");
++        assertEquals(1, newClicks.get(), "the new action is live");
++    }
++
++    @Test
++    void aFailedReplacementLeavesTheOldMenuAlone() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger clicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, clicks)).join();
++        adapter.failMenuOpens();
++
++        CompletionException failure = assertThrows(CompletionException.class,
++                () -> menus.open(player, view("New", Material.EMERALD)).join());
++        assertTrue(failure.getCause() instanceof IllegalStateException);
++
++        assertEquals(1, adapter.menuOpens().size());
++        assertEquals(0, adapter.menuCloses().size());
++        menus.click(player, 0).join();
++        assertEquals(1, clicks.get(), "the old menu still works");
++    }
++
++    @Test
++    void anOldCloseEventCannotRetireItsReplacement() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger oldClicks = new AtomicInteger();
++        AtomicInteger newClicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, oldClicks)).join();
++        menus.open(player, actionView("New", Material.EMERALD, newClicks)).join();
++        var oldHandle = adapter.menuCloses().get(0).menu();
++
++        menus.closed(player, oldHandle);
++        menus.click(player, 0).join();
++
++        assertEquals(1, newClicks.get(), "the new menu is still active");
++        assertEquals(0, oldClicks.get());
++    }
++
++    @Test
++    void anOpenThatLandsAfterCloseAllIsClosedAndRetired() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger clicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, clicks)).join();
++        adapter.holdMenuOpens();
++        CompletableFuture<Void> late = menus.open(player, actionView("Late", Material.EMERALD, clicks));
++
++        menus.closeAll().join();
++        assertEquals(1, adapter.menuCloses().size(), "the menu open at reload is closed");
++        adapter.releaseMenuOpens();
++        late.join();
++
++        assertEquals(2, adapter.menuCloses().size(), "the late open is closed instead of tracked");
++        menus.click(player, 0).join();
++        assertEquals(0, clicks.get());
++    }
++
++    @Test
++    void refreshUpdatesTheSameMenuInPlace() {
++        adapter.addOnlinePlayer(player);
++        menus.open(player, view("Menu", Material.DIAMOND)).join();
++        menus.refresh(player, new MenuView("Menu", 3, Map.of(1,
++                new MenuIcon(new ItemStack(Material.EMERALD), Optional.empty(), Optional.empty())))).join();
++
++        assertEquals(1, adapter.menuOpens().size());
++        assertEquals(1, adapter.menuUpdates().size());
++        assertEquals(Material.EMERALD, adapter.menuUpdates().get(0).contents().get(1).getType());
++        assertEquals(player, adapter.menuUpdates().get(0).playerId());
++    }
++
++    @Test
++    void aMenuIconWithoutAnActionDoesNothingAndPlaysNoSound() {
++        adapter.addOnlinePlayer(player);
++        var sound = ConfigLoader.load(ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", "text: test\n")
++                .menu("claim", """
++                        rows: 3
++                        content_slots: ['1-8']
++                        filler: {id: stone}
++                        buttons:
++                          claim_all:
++                            slot: 0
++                            item: {id: diamond}
++                            sound: {key: "minecraft:ui.button.click", volume: 1.0, pitch: 1.0}
++                        """)
++                .build(), new NameCatalog() {
++                    @Override
++                    public Optional<String> currentId(String id) {
++                        return Optional.of(id);
++                    }
++
++                    @Override
++                    public boolean soundExists(String key) {
++                        return "minecraft:ui.button.click".equals(key);
++                    }
++                }).claimMenu().buttons().get("claim_all").sound().orElseThrow();
++        menus.open(player, new MenuView("Menu", 3, Map.of(0,
++                new MenuIcon(new ItemStack(Material.DIAMOND), Optional.empty(), Optional.of(sound))))).join();
++
++        menus.click(player, 0).join();
++
++        assertEquals(0, adapter.sounds().size(), "a slot with no action is inert even with a sound");
++    }
++
++    @Test
++    void aDeferredClickDoesNothingAfterItsMenuWasReplaced() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger oldClicks = new AtomicInteger();
++        AtomicInteger newClicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, oldClicks)).join();
++        menus.clickLater(player, 0);
++        menus.open(player, actionView("New", Material.EMERALD, newClicks)).join();
++
++        adapter.runNextTickActions();
++
++        assertEquals(0, oldClicks.get());
++        assertEquals(0, newClicks.get(), "the deferred click does not move to the replacement");
++        menus.click(player, 0).join();
++        assertEquals(1, newClicks.get());
++    }
++
++    @Test
++    void aDeferredClickDoesNothingAfterCloseAll() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger clicks = new AtomicInteger();
++        menus.open(player, actionView("Menu", Material.DIAMOND, clicks)).join();
++        menus.clickLater(player, 0);
++        menus.closeAll().join();
++
++        adapter.runNextTickActions();
++
++        assertEquals(0, clicks.get());
++    }
++
++    @Test
++    void closeRetiresOnlyThatPlayersMenu() {
++        UUID other = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
++        adapter.addOnlinePlayer(player);
++        adapter.addOnlinePlayer(other);
++        menus.open(player, view("Mine", Material.DIAMOND)).join();
++        menus.open(other, view("Theirs", Material.EMERALD)).join();
++
++        menus.close(player).join();
++
++        assertEquals(1, adapter.menuCloses().size());
++        assertEquals(player, adapter.menuCloses().get(0).menu().playerId());
++        menus.refresh(player, view("Mine", Material.STONE)).join();
++        assertEquals(0, adapter.menuUpdates().size(), "the closed menu takes no refresh");
++        menus.refresh(other, view("Theirs", Material.STONE)).join();
++        assertEquals(1, adapter.menuUpdates().size(), "the other player's menu is untouched");
++        assertEquals(other, adapter.menuUpdates().get(0).playerId());
++    }
++
++    @Test
++    void closeCancelsAPendingReplacement() {
++        adapter.addOnlinePlayer(player);
++        AtomicInteger oldClicks = new AtomicInteger();
++        AtomicInteger newClicks = new AtomicInteger();
++        menus.open(player, actionView("Old", Material.DIAMOND, oldClicks)).join();
++        adapter.holdMenuOpens();
++        CompletableFuture<Void> replacing = menus.open(player, actionView("New", Material.EMERALD, newClicks));
++
++        menus.close(player).join();
++        assertEquals(1, adapter.menuCloses().size(), "the shown menu is closed");
++        adapter.releaseMenuOpens();
++        replacing.join();
++
++        assertEquals(2, adapter.menuCloses().size(), "the late replacement is closed, not tracked");
++        menus.click(player, 0).join();
++        assertEquals(0, oldClicks.get());
++        assertEquals(0, newClicks.get());
++    }
++
++    @Test
++    void closeAllIsSafeWhenNothingIsOpen() {
++        menus.closeAll().join();
++        assertEquals(0, adapter.menuCloses().size());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/menu/Phase9MenuEngineAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/menu/Phase9MenuEngineAcceptanceTest.java
+new file mode 100644
+index 0000000..8dc2334
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/menu/Phase9MenuEngineAcceptanceTest.java
+@@ -0,0 +1,97 @@
++package me.rakkoon69.rakunloots.menu;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.*;
++import java.util.concurrent.atomic.AtomicInteger;
++import static org.junit.jupiter.api.Assertions.*;
++
++/** Issue #109 acceptance through the menu service and the recording server adapter.
++ * Known fixture item/sound ids are accepted to isolate dispatch from name-catalog validation.
++ */
++class Phase9MenuEngineAcceptanceTest {
++    private static final NameCatalog CATALOG = new NameCatalog() {
++        @Override
++        public Optional<String> currentId(String id) {
++            return Optional.of(id);
++        }
++
++        @Override
++        public boolean soundExists(String key) {
++            return "minecraft:ui.button.click".equals(key);
++        }
++    };
++    private FakeServerAdapter adapter;
++    private MenuService menus;
++    private final UUID player = UUID.fromString("00000000-0000-0000-0000-000000000109");
++
++    @BeforeEach void start() {
++        MockBukkit.mock();
++        adapter = new FakeServerAdapter(UUID.randomUUID());
++        adapter.addOnlinePlayer(player);
++        menus = new MenuService(adapter);
++    }
++
++    @AfterEach void stop() { MockBukkit.unmock(); }
++
++    @Test void shippedLayoutOpensAndDispatchesActionsAndSounds() throws Exception {
++        String shipped;
++        try(InputStream in=getClass().getResourceAsStream("/menus/claim.yml")) {
++            assertNotNull(in);
++            shipped=new String(in.readAllBytes(),StandardCharsets.UTF_8);
++        }
++        var config=ConfigLoader.load(ConfigSources.builder().globals("language: en\n").worlds("{}\n").language("en","text: test\n").menu("claim",shipped).build(),CATALOG);
++        AtomicInteger clicks=new AtomicInteger();
++        var icon=new MenuIcon(new ItemStack(Material.DIAMOND),Optional.of(clicks::incrementAndGet),config.claimMenu().buttons().get("claim_all").sound());
++        var view=new MenuView("Claims",config.claimMenu().rows(),Map.of(0,icon));
++        menus.open(player,view).join();
++        assertEquals(1,adapter.menuOpens().size());
++        assertEquals("Claims",adapter.menuOpens().get(0).title());
++        assertEquals(54,adapter.menuOpens().get(0).size());
++        assertEquals(Material.DIAMOND,adapter.menuOpens().get(0).contents().get(0).getType());
++        menus.click(player,0).join();
++        assertEquals(1,clicks.get());
++        assertEquals("minecraft:ui.button.click",adapter.sounds().get(0).key());
++        menus.click(player,8).join();
++        assertEquals(1,clicks.get());
++        assertEquals(1,adapter.sounds().size());
++    }
++
++    @Test void refreshStaysInPlaceAndCloseAllRetiresEveryMenu() {
++        var inert=new MenuIcon(new ItemStack(Material.EMERALD),Optional.empty(),Optional.empty());
++        menus.open(player,new MenuView("Menu",3,Map.of())).join();
++        menus.refresh(player,new MenuView("Menu",3,Map.of(1,inert))).join();
++        assertEquals(1,adapter.menuOpens().size());
++        assertEquals(1,adapter.menuUpdates().size());
++        assertEquals(Material.EMERALD,adapter.menuUpdates().get(0).contents().get(1).getType());
++        AtomicInteger clicks=new AtomicInteger();
++        var action=new MenuIcon(new ItemStack(Material.DIAMOND),Optional.of(clicks::incrementAndGet),Optional.empty());
++        menus.open(player,new MenuView("Replacement",2,Map.of(0,action))).join();
++        menus.click(player,0).join();
++        assertEquals(1,clicks.get());
++        UUID other=UUID.randomUUID();
++        adapter.addOnlinePlayer(other);
++        menus.open(other,new MenuView("Other",1,Map.of(0,action))).join();
++        int closes=adapter.menuCloses().size();
++        menus.closeAll().join();
++        assertEquals(closes+2,adapter.menuCloses().size());
++        menus.click(player,0).join();
++        menus.click(other,0).join();
++        assertEquals(1,clicks.get());
++    }
++
++    @Test void offlinePlayerGetsNoMenu() {
++        menus.open(UUID.randomUUID(),new MenuView("Offline",1,Map.of())).join();
++        assertTrue(adapter.menuOpens().isEmpty());
++    }
++}
+\ No newline at end of file
+diff --git a/src/test/java/me/rakkoon69/rakunloots/server/MenuAdapterContract.java b/src/test/java/me/rakkoon69/rakunloots/server/MenuAdapterContract.java
+new file mode 100644
+index 0000000..808f9c6
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/server/MenuAdapterContract.java
+@@ -0,0 +1,112 @@
++package me.rakkoon69.rakunloots.server;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.plugin.Plugin;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * The menu half of the server adapter, through MockBukkit: create, open on the next tick, update in place, close, play
++ * a sound, and defer player work.
++ */
++abstract class MenuAdapterContract {
++
++    MockBukkitWorlds fakeServer;
++    ServerAdapter adapter;
++    RecordingPlayer player;
++    UUID playerId;
++
++    abstract ServerAdapter newAdapter(Plugin plugin);
++
++    @BeforeEach
++    void start() {
++        fakeServer = MockBukkitWorlds.start();
++        adapter = newAdapter(fakeServer.plugin());
++        UUID world = fakeServer.createWorld(0, 256);
++        playerId = fakeServer.addPlayer(world, 1, 64, 1);
++        player = fakeServer.player(playerId);
++    }
++
++    @AfterEach
++    void stop() {
++        MockBukkit.unmock();
++    }
++
++    @Test
++    void aMenuOpensOnTheNextMainThreadTickAndUpdatesInPlace() throws Exception {
++        MenuHandle menu = adapter.createMenu(playerId, "Menu", 27,
++                Map.of(0, new ItemStack(Material.DIAMOND)));
++        CompletableFuture<Optional<MenuHandle>> opening = adapter.openMenu(playerId, menu);
++        assertFalse(opening.isDone(), "the open waits for the main thread");
++
++        assertEquals(Optional.of(menu), fakeServer.runUntilDone(opening));
++        assertTrue(player.getOpenInventory().getTopInventory().getHolder() instanceof MenuHolder);
++        assertEquals(Material.DIAMOND, player.getOpenInventory().getTopInventory().getItem(0).getType());
++
++        CompletableFuture<Void> updating = adapter.updateMenu(menu,
++                Map.of(1, new ItemStack(Material.EMERALD)));
++        fakeServer.runUntilDone(updating);
++        updating.join();
++        assertEquals(Material.EMERALD, player.getOpenInventory().getTopInventory().getItem(1).getType());
++        assertEquals(null, player.getOpenInventory().getTopInventory().getItem(0));
++    }
++
++    @Test
++    void aClosedMenuLeavesTheViewAndAPlayerWhoLeftGetsNoMenu() throws Exception {
++        MenuHandle menu = adapter.createMenu(playerId, "Menu", 27, Map.of());
++        fakeServer.runUntilDone(adapter.openMenu(playerId, menu)).orElseThrow();
++
++        CompletableFuture<Void> closing = adapter.closeMenu(menu);
++        fakeServer.runUntilDone(closing);
++        closing.join();
++        assertTrue(player.getOpenInventory().getTopInventory() == null
++                || !(player.getOpenInventory().getTopInventory().getHolder() instanceof MenuHolder));
++
++        CompletableFuture<Optional<MenuHandle>> offline =
++                adapter.openMenu(UUID.randomUUID(), adapter.createMenu(UUID.randomUUID(), "Gone", 9, Map.of()));
++        fakeServer.runUntilDone(offline);
++        assertEquals(Optional.empty(), offline.join());
++    }
++
++    @Test
++    void createMenuRefusesASizeThatIsNotAChestAndAClosedOpenIsRefused() throws Exception {
++        assertThrows(IllegalArgumentException.class,
++                () -> adapter.createMenu(playerId, "Bad", 10, Map.of()));
++        assertThrows(IllegalArgumentException.class,
++                () -> adapter.createMenu(playerId, "Bad", 27, Map.of(27, new ItemStack(Material.DIAMOND))));
++        MenuHandle menu = adapter.createMenu(playerId, "Menu", 27, Map.of());
++        player.refuseInventoryOpens();
++        fakeServer.runUntilDone(adapter.openMenu(playerId, menu));
++        assertFalse(player.getOpenInventory().getTopInventory() != null
++                && player.getOpenInventory().getTopInventory().getHolder() instanceof MenuHolder);
++    }
++
++    @Test
++    void aSoundIsPlayedOnTheMainThreadAndPlayerWorkIsDeferred() throws Exception {
++        CompletableFuture<Boolean> sound = adapter.playSound(playerId, "minecraft:ui.button.click", 1.0, 1.0);
++        assertTrue(fakeServer.runUntilDone(sound));
++
++        AtomicInteger ran = new AtomicInteger();
++        CompletableFuture<Void> deferred = adapter.runOnPlayerNextTick(playerId, ran::incrementAndGet);
++        assertEquals(0, ran.get(), "the work waits for the next tick");
++        fakeServer.runUntilDone(deferred);
++        deferred.join();
++        assertEquals(1, ran.get());
++        assertEquals(0, fakeServer.server().getScheduler().runs().stream()
++                .filter(run -> !run.mainThread()).count());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/server/PaperMenuAdapterTest.java b/src/test/java/me/rakkoon69/rakunloots/server/PaperMenuAdapterTest.java
+new file mode 100644
+index 0000000..dbab5ca
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/server/PaperMenuAdapterTest.java
+@@ -0,0 +1,11 @@
++package me.rakkoon69.rakunloots.server;
++
++import org.bukkit.plugin.Plugin;
++
++class PaperMenuAdapterTest extends MenuAdapterContract {
++
++    @Override
++    ServerAdapter newAdapter(Plugin plugin) {
++        return new PaperServerAdapter(plugin);
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/server/SpigotMenuAdapterTest.java b/src/test/java/me/rakkoon69/rakunloots/server/SpigotMenuAdapterTest.java
+new file mode 100644
+index 0000000..9bbe4e8
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/server/SpigotMenuAdapterTest.java
+@@ -0,0 +1,11 @@
++package me.rakkoon69.rakunloots.server;
++
++import org.bukkit.plugin.Plugin;
++
++class SpigotMenuAdapterTest extends MenuAdapterContract {
++
++    @Override
++    ServerAdapter newAdapter(Plugin plugin) {
++        return new SpigotServerAdapter(plugin);
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+index 5da26c6..5cf9685 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
++++ b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+@@ -2,6 +2,7 @@ package me.rakkoon69.rakunloots.summon;
+ 
+ import me.rakkoon69.rakunloots.server.BlockPosition;
+ import me.rakkoon69.rakunloots.server.LoadedWorld;
++import me.rakkoon69.rakunloots.server.MenuHandle;
+ import me.rakkoon69.rakunloots.server.ChunkPosition;
+ import me.rakkoon69.rakunloots.server.ChunkView;
+ import me.rakkoon69.rakunloots.server.ParticleDraw;
+@@ -82,9 +83,88 @@ public final class FakeServerAdapter implements ServerAdapter {
+     public record InventoryClose(FakeSharedInventory inventory, Set<UUID> viewers) {
+     }
+ 
++    /**
++     * One menu shown to a player through the adapter.
++     */
++    public record MenuOpen(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++    }
++
++    /**
++     * One menu update asked for through the adapter.
++     */
++    public record MenuUpdate(UUID playerId, Map<Integer, ItemStack> contents) {
++    }
++
++    /**
++     * One menu close asked for through the adapter.
++     */
++    public record MenuClose(UUID playerId, MenuHandle menu) {
++    }
++
++    /**
++     * One sound played through the adapter.
++     */
++    public record Sound(UUID playerId, String key, double volume, double pitch) {
++    }
++
+     private record HeldOpen(UUID playerId, FakeSharedInventory inventory, CompletableFuture<Boolean> opened) {
+     }
+ 
++    private record HeldMenuOpen(UUID playerId, FakeMenu menu, CompletableFuture<Optional<MenuHandle>> opened) {
++    }
++
++    /**
++     * A menu inventory made by this fake. It copies its contents and listens for close.
++     */
++    public static final class FakeMenu implements MenuHandle {
++
++        private final UUID playerId;
++        private final String title;
++        private final int size;
++        private final Map<Integer, ItemStack> contents = new HashMap<>();
++        private boolean closed;
++
++        private FakeMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++            this.playerId = playerId;
++            this.title = title;
++            this.size = size;
++            replace(contents);
++        }
++
++        @Override
++        public UUID playerId() {
++            return playerId;
++        }
++
++        public String title() {
++            return title;
++        }
++
++        public int size() {
++            return size;
++        }
++
++        public Map<Integer, ItemStack> contents() {
++            Map<Integer, ItemStack> copy = new HashMap<>();
++            contents.forEach((slot, stack) -> copy.put(slot, stack.clone()));
++            return copy;
++        }
++
++        public boolean closed() {
++            return closed;
++        }
++
++        private void replace(Map<Integer, ItemStack> stacks) {
++            contents.clear();
++            stacks.forEach((slot, stack) -> {
++                if (slot < 0 || slot >= size) {
++                    throw new IllegalArgumentException("slot " + slot + " is outside a size of " + size);
++                }
++                contents.put(slot, stack.clone());
++            });
++        }
++    }
++
+     private final UUID worldKey;
+     private final FakeScheduler global = new FakeScheduler();
+     private final FakeScheduler async = new FakeScheduler(true);
+@@ -116,6 +196,16 @@ public final class FakeServerAdapter implements ServerAdapter {
+     private boolean holdOpens;
+     private boolean refuseOpens;
+     private boolean failOpens;
++    private final List<MenuOpen> menuOpens = new CopyOnWriteArrayList<>();
++    private final List<MenuOpen> menuOpenCalls = new CopyOnWriteArrayList<>();
++    private final List<MenuUpdate> menuUpdates = new CopyOnWriteArrayList<>();
++    private final List<MenuClose> menuCloses = new CopyOnWriteArrayList<>();
++    private final List<Sound> sounds = new CopyOnWriteArrayList<>();
++    private final List<Runnable> nextTickActions = new CopyOnWriteArrayList<>();
++    private final List<HeldMenuOpen> heldMenuOpens = new ArrayList<>();
++    private boolean holdMenuOpens;
++    private boolean refuseMenuOpens;
++    private boolean failMenuOpens;
+     private boolean failDrops;
+     private final List<BlockPosition> blockReads = new CopyOnWriteArrayList<>();
+     private final List<CompletableFuture<Void>> heldCloses = new ArrayList<>();
+@@ -842,6 +932,152 @@ public final class FakeServerAdapter implements ServerAdapter {
+         held.forEach(closed -> closed.complete(null));
+     }
+ 
++    /**
++     * Makes a menu, refusing what the real adapters refuse.
++     */
++    @Override
++    public MenuHandle createMenu(UUID playerId, String title, int size, Map<Integer, ItemStack> contents) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(title, "title");
++        Objects.requireNonNull(contents, "contents");
++        if (size < 9 || size > 54 || size % 9 != 0) {
++            throw new IllegalArgumentException("size must be a multiple of 9 from 9 to 54, not " + size);
++        }
++        contents.forEach((slot, stack) -> {
++            Objects.requireNonNull(stack, "stack");
++            if (slot < 0 || slot >= size) {
++                throw new IllegalArgumentException("slot " + slot + " is outside a size of " + size);
++            }
++        });
++        return new FakeMenu(playerId, title, size, contents);
++    }
++
++    /**
++     * Shows a menu to an online player and records it. While opens are held, the open waits for
++     * {@link #releaseMenuOpens()}. While opens are refused or fail, no menu opens.
++     */
++    @Override
++    public CompletableFuture<Optional<MenuHandle>> openMenu(UUID playerId, MenuHandle menu) {
++        Objects.requireNonNull(playerId, "playerId");
++        FakeMenu made = madeMenu(menu);
++        menuOpenCalls.add(new MenuOpen(playerId, made.title, made.size, made.contents()));
++        if (failMenuOpens) {
++            return CompletableFuture.failedFuture(new IllegalStateException("menu open failed"));
++        }
++        if (holdMenuOpens) {
++            CompletableFuture<Optional<MenuHandle>> opened = new CompletableFuture<>();
++            heldMenuOpens.add(new HeldMenuOpen(playerId, made, opened));
++            return opened;
++        }
++        return CompletableFuture.completedFuture(showMenu(playerId, made));
++    }
++
++    private Optional<MenuHandle> showMenu(UUID playerId, FakeMenu menu) {
++        if (refuseMenuOpens || !onlinePlayers.contains(playerId) || menu.closed()) {
++            return Optional.empty();
++        }
++        if (!playerId.equals(menu.playerId())) {
++            throw new IllegalArgumentException("menu belongs to " + menu.playerId() + ", not " + playerId);
++        }
++        menuOpens.add(new MenuOpen(playerId, menu.title, menu.size, menu.contents()));
++        return Optional.of(menu);
++    }
++
++    public void holdMenuOpens() {
++        holdMenuOpens = true;
++    }
++
++    public void releaseMenuOpens() {
++        holdMenuOpens = false;
++        List<HeldMenuOpen> held = List.copyOf(heldMenuOpens);
++        heldMenuOpens.clear();
++        held.forEach(open -> open.opened.complete(showMenu(open.playerId, open.menu)));
++    }
++
++    public void refuseMenuOpens() {
++        refuseMenuOpens = true;
++    }
++
++    public void failMenuOpens() {
++        failMenuOpens = true;
++    }
++
++    public List<MenuOpen> menuOpenCalls() {
++        return List.copyOf(menuOpenCalls);
++    }
++
++    public List<MenuOpen> menuOpens() {
++        return List.copyOf(menuOpens);
++    }
++
++    @Override
++    public CompletableFuture<Void> updateMenu(MenuHandle menu, Map<Integer, ItemStack> contents) {
++        FakeMenu made = madeMenu(menu);
++        made.replace(contents);
++        if (!made.closed) {
++            menuUpdates.add(new MenuUpdate(made.playerId, made.contents()));
++        }
++        return CompletableFuture.completedFuture(null);
++    }
++
++    public List<MenuUpdate> menuUpdates() {
++        return List.copyOf(menuUpdates);
++    }
++
++    @Override
++    public CompletableFuture<Void> closeMenu(MenuHandle menu) {
++        FakeMenu made = madeMenu(menu);
++        made.closed = true;
++        menuCloses.add(new MenuClose(made.playerId, made));
++        return CompletableFuture.completedFuture(null);
++    }
++
++    public List<MenuClose> menuCloses() {
++        return List.copyOf(menuCloses);
++    }
++
++    @Override
++    public CompletableFuture<Void> runOnPlayerNextTick(UUID playerId, Runnable action) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(action, "action");
++        if (onlinePlayers.contains(playerId)) {
++            nextTickActions.add(action);
++        }
++        return CompletableFuture.completedFuture(null);
++    }
++
++    /**
++     * Runs every deferred player action, as the next tick does.
++     */
++    public void runNextTickActions() {
++        List<Runnable> actions = List.copyOf(nextTickActions);
++        nextTickActions.clear();
++        actions.forEach(Runnable::run);
++    }
++
++    @Override
++    public CompletableFuture<Boolean> playSound(UUID playerId, String key, double volume, double pitch) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(key, "key");
++        if (!onlinePlayers.contains(playerId)) {
++            return CompletableFuture.completedFuture(false);
++        }
++        sounds.add(new Sound(playerId, key, volume, pitch));
++        return CompletableFuture.completedFuture(true);
++    }
++
++    public List<Sound> sounds() {
++        return List.copyOf(sounds);
++    }
++
++    private static FakeMenu madeMenu(MenuHandle menu) {
++        Objects.requireNonNull(menu, "menu");
++        if (!(menu instanceof FakeMenu made)) {
++            throw new IllegalArgumentException("not made by a server adapter: " + menu);
++        }
++        return made;
++    }
++
+     private static FakeSharedInventory made(SharedInventory inventory) {
+         Objects.requireNonNull(inventory, "inventory");
+         if (!(inventory instanceof FakeSharedInventory shared)) {

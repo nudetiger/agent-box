@@ -1,0 +1,96 @@
+{
+  "kitVersion": "1.1.0",
+  "package": "mattpocock/skills",
+  "categories": [
+    "engineering",
+    "productivity"
+  ],
+  "exclude": [
+    "in-progress",
+    "misc",
+    "deprecated"
+  ],
+  "sources": [
+    {
+      "id": "mattpocock-skills",
+      "repo": "https://github.com/mattpocock/skills",
+      "ref": "main",
+      "mode": "clone",
+      "commit": "49dd158d1076134a641b33efb035946536778336",
+      "cloneDate": "2026-10-17",
+      "license": "MIT",
+      "skills": [
+        "ask-matt",
+        "codebase-design",
+        "code-review",
+        "diagnosing-bugs",
+        "domain-modeling",
+        "grill-with-docs",
+        "grilling",
+        "grill-me",
+        "handoff",
+        "implement",
+        "implement-spec",
+        "improve-codebase-architecture",
+        "pr",
+        "prototype",
+        "research",
+        "retro",
+        "setup-matt-pocock-skills",
+        "tdd",
+        "teach",
+        "to-questionnaire",
+        "to-spec",
+        "to-tickets",
+        "triage",
+        "wait-what",
+        "wayfinder",
+        "wizard",
+        "writing-for-agents"
+      ],
+      "skillPath": "skills/{cat}/"
+    },
+    {
+      "id": "agent-box",
+      "repo": "https://github.com/nudetiger/agent-box",
+      "ref": "main",
+      "mode": "local",
+      "src": "Tools/agent-box/claude-skill/agent-box",
+      "license": "private",
+      "skills": [
+        "agent-box"
+      ]
+    },
+    {
+      "id": "ponytail",
+      "repo": "https://github.com/DietrichGebert/ponytail",
+      "ref": "main",
+      "mode": "clone",
+      "commit": "16352ac229eb08a9598dcae48fe9f2b342567d86",
+      "cloneDate": "2026-10-17",
+      "license": "MIT",
+      "skills": [
+        "ponytail",
+        "ponytail-audit",
+        "ponytail-debt",
+        "ponytail-gain",
+        "ponytail-help",
+        "ponytail-review"
+      ],
+      "skillPath": "skills/{name}"
+    },
+    {
+      "id": "no-ai-slop",
+      "repo": "https://github.com/petergyang/no-ai-slop",
+      "ref": "main",
+      "mode": "clone",
+      "commit": "000650b156983f5159695b441477f4e63b25dc85",
+      "cloneDate": "2026-10-17",
+      "license": "MIT",
+      "skills": [
+        "no-ai-slop"
+      ],
+      "skillPath": "skills/{name}"
+    }
+  ]
+}

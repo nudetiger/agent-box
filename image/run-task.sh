@@ -60,7 +60,15 @@ fi
 if [ -n "$SETUP_CMD" ]; then
   log "setup: $SETUP_CMD"
   bash -lc "$SETUP_CMD" >"$OUT/setup.log" 2>&1; setup_exit=$?
+  # Dependency installs fail on network flakes (Lykos L212 check1, 2026-10-20: node-gyp's header
+  # download, "Completion callback never invoked"): once more before the run is lost.
+  if [ "$setup_exit" != 0 ] && [ "${SETUP_RETRIES:-1}" -gt 0 ]; then
+    log "setup exit $setup_exit: $(tail -n 3 "$OUT/setup.log" | tr '\n' ' ' | cut -c1-300); retrying once"
+    mv "$OUT/setup.log" "$OUT/setup-1.log"; sleep 5
+    bash -lc "$SETUP_CMD" >"$OUT/setup.log" 2>&1; setup_exit=$?
+  fi
   log "setup exit $setup_exit"
+  [ "$setup_exit" = 0 ] || log "setup failed: \`$SETUP_CMD\` exited $setup_exit: $(tail -n 3 "$OUT/setup.log" | tr '\n' ' ' | cut -c1-300)"
 fi
 setup_s=$(( $(date +%s) - t0 ))
 
@@ -87,10 +95,17 @@ elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
   mkdir -p ~/.config/opencode
   # The model list (1 MB) stays in the container: make-config reads limits from it, nothing else does.
-  if ! curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" \
-    >/tmp/models.json 2>/tmp/models.err; then
-    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL: $(cat /tmp/models.err)"
-    SKIP_AGENT=unreachable
+  # Tried a few times: a gateway restarting answers 503 for a moment (Lykos L212 fix1-2, 2026-10-20).
+  # Unreachable after that: the run stops here, without the tests (they cost 3 minutes for nothing).
+  for try in 1 2 3 4; do
+    curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" >/tmp/models.json 2>/tmp/models.err && break
+    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL (try $try): $(cat /tmp/models.err)"
+    [ "$try" = 4 ] && SKIP_AGENT=unreachable || sleep $(( try * 10 ))
+  done
+  # A model missing from the key's list is named in the log; the run goes on (a combo may not be
+  # listed). A model that answers nothing is caught on the host (lib/ledger.mjs noOutput).
+  if [ "${SKIP_AGENT:-0}" != unreachable ] && ! jq -e --arg m "$MODEL" '[.data[]?.id] | index($m)' /tmp/models.json >/dev/null 2>&1; then
+    log "warning: model $MODEL is not in the OmniRoute key's model list"
   fi
 fi
 if [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
@@ -133,12 +148,19 @@ short and cached, and source reads faster than bytecode.'
   if [ "${TUI:-0}" = 1 ]; then
     opencode serve --hostname 127.0.0.1 --port 4096 >"$OUT/serve.log" 2>&1 &
     serve_pid=$!
-    for _ in $(seq 1 80); do curl -fs -m 1 http://127.0.0.1:4096/session >/dev/null 2>&1 && break; sleep 0.25; done
+    # A deadline, not a count: 80 tries of a 1 s curl plus a pause took about 90 s when the server
+    # never came up (RakunLoots P9, 2026-10-23). A server that exited is not waited for.
+    serve_end=$(( $(date +%s) + ${SERVE_WAIT_S:-20} ))
+    while [ "$(date +%s)" -lt "$serve_end" ] && kill -0 "$serve_pid" 2>/dev/null; do
+      curl -fs -m 1 http://127.0.0.1:4096/session >/dev/null 2>&1 && break; sleep 0.25
+    done
     if curl -fs -m 1 http://127.0.0.1:4096/session >/dev/null 2>&1; then attach_args=(--attach http://127.0.0.1:4096)
-    else log "opencode serve did not start; running without the TUI server"; kill "$serve_pid" 2>/dev/null; serve_pid=""; fi
+    else log "opencode serve did not start; running without the TUI server: $(tail -n 3 "$OUT/serve.log" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"; kill "$serve_pid" 2>/dev/null; serve_pid=""; fi
   fi
   [ -n "${VARIANT:-}" ] && variant_args=(--variant "$VARIANT")
-  log "agent: $agent_name on omniroute/$MODEL${EFFORT:+ ($EFFORT)}${SCOUT_MODEL:+, scout $SCOUT_MODEL}, timeout ${TIMEOUT_MIN}m${STEPS:+, at most $STEPS steps}${CONTINUE_SESSION:+, resuming $CONTINUE_SESSION}"
+  # STEPS caps each prompt's steps (OpenCode's agent `steps`); the harness's follow-ups (cut resume,
+  # self-check, auto-fix, report) are prompts of their own, so a run's total can exceed it.
+  log "agent: $agent_name on omniroute/$MODEL${EFFORT:+ ($EFFORT)}${SCOUT_MODEL:+, scout $SCOUT_MODEL}, timeout ${TIMEOUT_MIN}m${STEPS:+, at most $STEPS steps per prompt}${CONTINUE_SESSION:+, resuming $CONTINUE_SESSION}"
   phase agent
   t0=$(date +%s)
   timeout --kill-after=30 "${TIMEOUT_MIN}m" \
@@ -172,7 +194,9 @@ final_message() {
     const last = texts.length ? texts[texts.length - 1] : "";
     fs.writeFileSync("/out/final.md", last);
     const m = last.match(/^\s*BLOCKED:\s*(.+)$/m);
-    fs.writeFileSync("/out/blocked.txt", m ? m[1].trim() : "");
+    // "BLOCKED: none." says there is no block (RakunLoots #110 review3, 2026-10-22).
+    const none = (t) => /^[*_`"\x27(]*(none|nothing|no|n\/a|-|no blocker|not blocked)[*_`"\x27).]*$/i.test(t.trim());
+    fs.writeFileSync("/out/blocked.txt", m && !none(m[1]) ? m[1].trim() : "");
     const block = (name) => {
       // The name may stand on the line after the fence (lib/ledger.mjs blockRegex, the same pattern).
       const b = last.match(new RegExp("```[^\\n`]*?(?:\\r?\\n[ \\t]*)?" + name + "[^\\n]*\\n([\\s\\S]*?)\\n\\s*```"));
@@ -295,7 +319,15 @@ if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [
     rmin="${AUTOFIX_MIN:-15}"
   else
     log "no report block: asking for it"
-    rmsg='Your last message has no `agent-box-report` block. Do not change anything. Reply with only that fenced block, in the format the operating conditions give, filled in from the work you did (status, tests, decisions, context_gaps, test_dispute, disputes).'
+    rmsg='Your last message has no readable `agent-box-report` block. Do not change anything. Reply with only that fenced block, its body one JSON object (JSON, not YAML: double-quoted keys and strings, arrays in brackets), filled in from the work you did:
+
+```agent-box-report
+{"status": "done|partial|blocked", "tests": "pass|fail|not_run", "test_summary": "<summary line>", "decisions": [], "context_gaps": [], "test_dispute": [], "disputes": []}
+```'
+    pe="$(jq -r 'if type == "object" and has("parse_error") then .parse_error else empty end' "$OUT/report.json" 2>/dev/null | head -c 300)"
+    [ -n "$pe" ] && rmsg="$rmsg
+
+Your earlier block could not be read as JSON. It began: $pe"
     rmin=5
   fi
   t0=$(date +%s)
@@ -307,8 +339,10 @@ if [ "${REVIEW:-0}" != 1 ] && [ "$agent_exit" = 0 ] && [ -n "$session_id" ] && [
   cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
   final_message
   jq -e 'type == "object" and (has("parse_error") | not)' "$OUT/report.json" >/dev/null 2>&1 \
-    && { log "report block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
-    || log "still no report block"
+    && log "report block received" || log "still no report block"
+  # The earlier message stays in final.md either way: a short reply alone replaced a whole review's
+  # prose once (RakunLoots full review, 2026-10-23).
+  { cat "$OUT/final-before-report.md"; printf '\n\n'; cat "$OUT/final.md"; } >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"
 fi
 
 # 3e. A review with no readable findings block: the same, for the block alone. An unreadable review
@@ -341,8 +375,8 @@ if [ "${REVIEW:-0}" = 1 ] && [ -z "${PREAMBLE:-}" ] && [ "$agent_exit" = 0 ] && 
   agent_s=$(( agent_s + $(date +%s) - t0 ))
   cp "$OUT/final.md" "$OUT/final-before-report.md" 2>/dev/null
   final_message
-  findings_readable && { log "findings block received"; cat "$OUT/final-before-report.md" "$OUT/final.md" >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"; } \
-    || log "still no readable findings block"
+  findings_readable && log "findings block received" || log "still no readable findings block"
+  { cat "$OUT/final-before-report.md"; printf '\n\n'; cat "$OUT/final.md"; } >"$OUT/final.tmp" && mv "$OUT/final.tmp" "$OUT/final.md"
 fi
 
 # 4. Review runs are read-only: record and discard any edit. Otherwise anything left uncommitted
@@ -366,17 +400,20 @@ settle() {
   if [ -n "$(git status --porcelain)" ]; then
     git add -A && git commit -q -m "agent-box: uncommitted changes left by the agent" && leftovers=1
   fi
-  # SEALED holds newline-separated globs relative to the repo root.
+  # SEALED holds newline-separated globs relative to the repo root. Checked against where this round
+  # started: an earlier round's edits were reverted before it ended, and an orchestrator's correction
+  # committed before a continued round (continue --reseal) is the seal now. Against BASE_SHA, a
+  # continuation reverted root's corrected fixture as a worker edit (RakunLoots #110, 2026-10-22).
   [ -n "${SEALED:-}" ] || return
   local specs=() g f touched=()
   while IFS= read -r g; do [ -n "$g" ] && specs+=(":(glob)$g"); done <<<"$SEALED"
-  mapfile -t touched < <(git diff --name-only "$BASE_SHA..HEAD" -- "${specs[@]}")
+  mapfile -t touched < <(git diff --name-only "$START_SHA..HEAD" -- "${specs[@]}")
   [ "${#touched[@]}" -gt 0 ] || return
   sealed_touched+=("${touched[@]}")
   printf '%s\n' "${sealed_touched[@]}" | sort -u >"$OUT/sealed-violation.txt"
   log "worker changed sealed files: ${touched[*]} (reverted)"
   for f in "${touched[@]}"; do
-    if git cat-file -e "$BASE_SHA:$f" 2>/dev/null; then git checkout -q "$BASE_SHA" -- "$f"; else git rm -q -f -- "$f"; fi
+    if git cat-file -e "$START_SHA:$f" 2>/dev/null; then git checkout -q "$START_SHA" -- "$f"; else git rm -q -f -- "$f"; fi
   done
   git commit -q -m "agent-box: revert worker edits to sealed files" -- "${touched[@]}" || true
 }
@@ -385,7 +422,7 @@ settle() {
 #    HIDDEN=1 (benchmark check): files the worker never saw are copied over the result first.
 test_exit=-1 test_s=0
 run_tests() {
-  [ "$setup_exit" = 0 ] && [ "${REVIEW:-0}" != 1 ] && [ "$weak_spec" != true ] || return 0
+  [ "$setup_exit" = 0 ] && [ "${REVIEW:-0}" != 1 ] && [ "$weak_spec" != true ] && [ "$agent_exit" != -2 ] || return 0
   if [ "${HIDDEN:-0}" = 1 ] && [ -d /in/hidden ]; then cp -a /in/hidden/. /work/repo/; log "hidden check files copied in"; fi
   phase test
   log "test: $TEST_CMD"

@@ -1,0 +1,4 @@
+1: A. A vitest test that fails with a thrown non-assertion error is errored and refused, as with node:test. An assertion failure is an AssertionError (vitest's expect throws AssertionError; also err.name === "AssertionError" or code ERR_ASSERTION).
+2: A. Any template that runs node's test runner is node:test: `node ... --test`, `tsx --test`, `npx tsx --test`, `node --import tsx --test`.
+3: A. Update the create row to mention adapter selection and the weaker exit-code fallback.
+4: A. Inside opts.dir next to the existing reporter files, removed afterwards.

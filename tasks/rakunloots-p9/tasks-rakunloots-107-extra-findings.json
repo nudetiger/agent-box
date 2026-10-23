@@ -1,0 +1,17 @@
+[
+  {
+    "severity": "high",
+    "confidence": "CONFIRMED",
+    "category": "logic",
+    "file": "src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java",
+    "line": 59,
+    "issue": "The fixed400-point quadrature exceeds1e-9 marginal accuracy on500entries even at weight ratio2.",
+    "scenario": "500drawableentries,250weight1 and250weight2,min=max250. Their inclusion probabilities must sum to250. Actualsum249.9999566113319 differs by4.33886681037e-5, exceeding500*1e-9=5e-7. Therefore at least one marginal error is>=8.6777e-8>1e-9. Independent conservation oracle; no expected quadrature output is reused.",
+    "basis": "Issue#107: quadrature keeps absolute error below1e-9 for weight ratios up to10^6 between entries. No100-entry cap is stated;500entries at ratio2 are valid.",
+    "repro": {
+      "file": "/tmp/repro-large/ProbeLargeChance.java",
+      "content": "package me.rakkoon69.rakunloots.config;\nimport me.rakkoon69.rakunloots.items.ItemReference;\nimport me.rakkoon69.rakunloots.roll.LootChance;\nimport java.util.*;\npublic class ProbeLargeChance {\n public static void main(String[] ignored) {\n  for(int n:new int[]{500}) {\n   List<ContentEntry> entries=new ArrayList<>();\n   for(int i=0;i<n;i++) entries.add(new ContentEntry(\"e\"+i,ItemReference.of(\"\",\"diamond\"),1,i<n/2?1:2,OptionalInt.empty()));\n   long start=System.nanoTime();\n   var chances=LootChance.calculate(new Roll(n/2,n/2,entries));\n   double sum=chances.values().stream().mapToDouble(LootChance.EntryChance::probability).sum();\n   double budget=n*1e-9;\n   System.out.printf(Locale.ROOT,\"n=%d total=%.15f expected=%d difference=%.12g maxTotalError=%.12g light=%.15f heavy=%.15f ms=%.1f%n\",n,sum,n/2,Math.abs(sum-n/2),budget,chances.get(\"e0\").probability(),chances.get(\"e\"+(n/2)).probability(),(System.nanoTime()-start)/1e6);\n   if(!Double.isFinite(sum) || Math.abs(sum-n/2)>budget) throw new AssertionError(\"At least one marginal error exceeds1e-9\");\n  }\n }\n}\r\n",
+      "cmd": "rm -rf /tmp/repro-large/classes && mkdir -p /tmp/repro-large/classes && javac -d /tmp/repro-large/classes src/main/java/me/rakkoon69/rakunloots/items/ItemReference.java src/main/java/me/rakkoon69/rakunloots/items/VanillaAdditions.java src/main/java/me/rakkoon69/rakunloots/config/ContentEntry.java src/main/java/me/rakkoon69/rakunloots/config/Roll.java src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java /tmp/repro-large/ProbeLargeChance.java && timeout 30 java -cp /tmp/repro-large/classes me.rakkoon69.rakunloots.config.ProbeLargeChance"
+    }
+  }
+]

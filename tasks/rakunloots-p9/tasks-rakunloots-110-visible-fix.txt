@@ -1,0 +1,22 @@
+# Review findings to fix
+
+Independent reviewers found these in your change. The orchestrator checked them; fix each one, keep the
+sealed tests unchanged, rerun the tests, commit, and end with the report block again.
+
+## 1. A claim-menu refresh makes the new view clickable before its physical menu update lands, so a click on the still-visible removed row runs the replacement row's loot action. (medium, CONFIRMED)
+
+- Where: `src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java:199`
+- Fails when: Player is owed alpha then beta; the menu shows alpha at slot 0. Claim alpha; its completion removes alpha from storage and calls refreshIf, which puts the beta view in entries (line 199) and dispatches updateMenu. While the physical update is queued, the player clicks slot 0, which still shows alpha. click reads the new view and claims beta. Repro result: owed was [] instead of [beta] after the deferred click on the old alpha row.
+
+## 2. A deferred click captures only the menu handle, so a same-handle refresh before it runs makes it execute the replacement icon's unrelated action. (medium, CONFIRMED)
+
+- Where: `src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java:238`
+- Fails when: The menu's slot 0 action is A. clickLater(player, 0) captures the handle and schedules the click; before the next tick, refresh installs a same-handle view whose slot 0 action is B. runNextTickActions then sees the same handle, reads the current view, and invokes B even though the player clicked A. Repro result: newClicks was 1, expected 0.
+
+Finish the two CONFIRMED findings from your SAME High reviewer's fix recheck (the verbatim findings above are review2:1 and review2:2; distinguish them from original review1:1/2). Root independently sealed both failures in Phase9ClaimVisibleViewProofTest.java on candidate5ef0ab1, retaining all prior seals. Root ran valid proof2tests2behaviorfailures0errors on916fd80: oldvisibleloot0clickedwhilephysicalupdatequeued gave5itemsinstead2(tookloot1too), and same-handle deferredoldclick invokednewicon1instead0. Initial prototype used wrong FakeAdapter future assumption; final sealed test uses its documented runNextTickActions seam and checks actual actions, so only these latest behavioral failures are evidence.
+
+Fix the visible/action mapping, not just the claim guard. The MenuService entry used for click dispatch must correspond to the physically shown view. Updating desired state before the adapter future completes must not expose replacement row actions while the old row is still on screen. Preserve per-handle physical update ordering from916fd80. Tie deferred clicks to the visible view/version captured when the event arrived, so refresh on the same handle cannot redirect an old click to a new action. You may ignore a deferred click whose view changed; it must never invoke the replacement icon's unrelated action. Do not increment the open epoch for every refresh (would invalidate ClaimMenu's whole session), block/join player threads, or discard every paging click to make the race go away (the previous sealed latest-page-turn test must stay green).
+
+This is another explicit SAME-SESSION reseal continuation: root added the new visible-view regression class in5ef0ab1. BASE_SHA/START_SHA are5ef0ab1, and SEALED protects allTHREE testfiles: Phase9SingleClaimAcceptanceTest, Phase9ClaimLanguageSnapshotProofTest, Phase9ClaimVisibleViewProofTest. Original #110 task/rulings and same OpenCode session are preserved, no cold worker or parallel model. Both old proof classes and the new one must remain unchanged. No old fixture rollback is expected with this new baseline. Do not edit historical harness artifacts or production config rules.
+
+Run the new visible-view class green, ALL other original/root/regression tests green, then the full supplied filtered gate including :foliaTest (appropriate because MenuService/async dispatch affects Folia). No repeated broad suites without new changes. Commit naming#110, valid JSON agent-box-report with review2IDs1/2, root IDs where relevant, exact red/green evidence, and all other/resourcechanges. No scouts/subagents. Root will continue the SAME High reviewer session on only your fix diff since916fd80.

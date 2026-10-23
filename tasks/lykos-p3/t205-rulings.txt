@@ -1,0 +1,3 @@
+1: A. Update the T216, ticket-07 and scaffold tests to the seven-name library and the nine-file scaffold; change only the counts and name lists, not what they check. library-t216's own seal is historical; the harness seal for this run is T205's.
+2: A. role: subagent for both. Role only shapes the Shift+Tab primary cycle; a session can still be started with the specialist named explicitly.
+3: A. No skills field; a fresh project must resolve both before lykos init.

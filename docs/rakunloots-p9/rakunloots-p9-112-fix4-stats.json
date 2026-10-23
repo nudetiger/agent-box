@@ -1,0 +1,126 @@
+{
+  "query": "rakunloots/p9-112-loop-fix4-2",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "22e896d4",
+    "ts": "2026-10-22T07:47:45Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-112-loop-fix4-2",
+    "role": "implement-hard",
+    "model": "deepseek/deepseek-flash-max",
+    "harness": "4e312604",
+    "mode": "implement",
+    "parent": "p9-112-loop-fix3-1",
+    "round": 5,
+    "task": "4e184bfe",
+    "title": "Review round 4: fix these",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "f930100e60",
+    "head": "13af9d5347",
+    "effort": null,
+    "seconds": {
+      "total": 358,
+      "setup": 16,
+      "agent": 311,
+      "test": 3
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": 0,
+      "first_test": 0
+    },
+    "steps": 13,
+    "tools": 12,
+    "tool_s": 204,
+    "tokens": {
+      "input": 10949,
+      "output": 13711,
+      "reasoning": 0,
+      "cache_read": 911104,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 5,
+    "diff": {
+      "files": 15,
+      "insertions": 1901,
+      "deletions": 60
+    },
+    "verdict": "pass",
+    "flags": [],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": {
+      "status": "done",
+      "tests": [
+        {
+          "command": "bash ./gradlew --console=plain :test --tests '*Phase9WikiOpenRaceProofTest'",
+          "result": "BUILD SUCCESSFUL in 1m 40s"
+        },
+        {
+          "command": "bash ./gradlew --console=plain :test --tests '*Phase9LootPageAcceptanceTest' --tests '*Phase9ChanceCacheMidCalculationTest' --tests '*Phase9ChanceCacheAcceptanceTest' --tests '*Phase9WikiOpenRaceProofTest' --tests '*Phase9WikiInfoResolutionProofTest' --tests '*WikiMenuTest' --tests '*WikiCommandTest'",
+          "result": "BUILD SUCCESSFUL in 9s"
+        },
+        {
+          "command": "bash ./gradlew --console=plain :test --tests '*menu.*' --tests '*wiki.*' --tests '*hologram.*' --tests '*Shipped*' --tests '*Plugin*'",
+          "result": "BUILD SUCCESSFUL in 15s"
+        },
+        {
+          "command": "bash ./gradlew --console=plain :test",
+          "result": "BUILD SUCCESSFUL in 38s"
+        },
+        {
+          "command": "bash ./gradlew --console=plain cleanTest :test --no-build-cache",
+          "result": "BUILD SUCCESSFUL in 38s"
+        }
+      ],
+      "context_gaps": [
+        "The earlier single PluginListenerWiringTest failure remains unproven as pre-existing because no baseline reproduction was run; it did not reproduce in this round's gate or full runs, and no unrelated test was changed."
+      ],
+      "decisions": [
+        "4.both.1: the session registry now records a wiki session only after openTracked reports that its menu physically landed. A newer open that is refused therefore never installs or removes anything, leaving the still-visible earlier menu registered for chance-ready refreshes.",
+        "A successful older callback cannot replace a physically newer session: sessions.compute compares the landed epoch against the registered session's current menu epoch and keeps the newer one. A session that fails to land, including a stale world read, is not registered at all.",
+        "Config and MenuState are still captured before loadedWorlds, so a stale read cannot re-capture or hijack a later menu state. Existing close, reload, replacement, paging, and epoch guards are unchanged.",
+        "Added an inverse open/world-read regression to Phase9WikiOpenRaceProofTest: hold the first menu open, hold the second world read, release the first menu, complete the second read, click the visible list into its loot page, publish chances, and require the in-place refresh.",
+        "Retained 1.both.1 always/no-calculating, 1.both.2 corrected source:id missing behavior, the changing-source exactly-one-resolution proof, missing-back action, refused/exceptional/paged opens, and both failed-open regressions."
+      ]
+    },
+    "steps_budget": 130
+  },
+  "contextGaps": [
+    "The earlier single PluginListenerWiringTest failure remains unproven as pre-existing because no baseline reproduction was run; it did not reproduce in this round's gate or full runs, and no unrelated test was changed."
+  ],
+  "trust": null,
+  "verdictLabel": null,
+  "flags": [],
+  "labels": [],
+  "reviews": [
+    {
+      "id": "8ec80fc2",
+      "run": "p9-112-loop-rv5-review-both-alt",
+      "model": "deepseek/deepseek-flash-high",
+      "verdict": "clean",
+      "ts": "2026-10-22T07:50:57Z",
+      "findings": []
+    }
+  ],
+  "outcome": {
+    "result": "accepted",
+    "cause": null,
+    "why": "Root inspected entire initial and all four fix diffs/reports; all original and root regressions retained, inverse ordering fixed. Same High review5 zero findings, independent original gate plusFolia green51s. Existing conditional Fancy loader skip accounted. Accepted candidate, finalfixed107 integration and113Probe still pending.",
+    "ts": "2026-10-22T07:52:58Z"
+  },
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

@@ -1,0 +1,6 @@
+1: Defaults: seal.writers [test-writer], seal.enforce_for [implementer]. The test command allowance applies to a specialist in either list. The specialists test-writer and implementer themselves are T205; do not add them here.
+2: Interaction modes are manual, accept-edits and auto (gate/modes.ts). Plan is a specialist now, not a mode. "Every mode except plan" therefore means every interaction mode; a plan specialist is in neither list by default and so gets no allowance.
+3: The allowance matches the bash command string exactly: the recorded template with {files} replaced by one or more space-separated paths, each matching seal.test_globs. Anything else (extra flags, pipes, &&, other files) goes through the normal permission rules.
+4: The veto event is block-only. Do not add a way for a handler to rewrite arguments.
+5: Active seals are computed once at session start with activeSeals(cwd = the session workspace). Recompute after a commit made by the session's commit tool. Do not spawn git per tool call.
+6: seal_events rows: kind 'vetoed' (detail: tool name and path) and 'bash-warned' (detail: the command and the sealed paths it names), with session_id and specialist set.

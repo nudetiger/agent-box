@@ -1,0 +1,1 @@
+MSYS_NO_PATHCONV=1 podman run --rm --entrypoint bash -v agent-box-gradle1-cache:/one:ro -v agent-box-gradle4-cache:/four:ro -v agent-box-rakunloots-gradle-cache:/current:ro agent-box:latest -c 'du -sh /one/caches/modules-2 /four/caches/modules-2 /current/caches/modules-2; ls /one/jdks /four/jdks'

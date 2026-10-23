@@ -1,0 +1,76 @@
+{
+  "query": "rakunloots/p9-114-probe-recheck",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "5e0cbdf1",
+    "ts": "2026-10-22T18:13:23Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-114-probe-recheck",
+    "role": "review-both-alt",
+    "model": "deepseek/deepseek-flash-high",
+    "harness": "4e312604",
+    "mode": "review",
+    "parent": "p9-114-probe-review",
+    "round": 2,
+    "task": "0bb30dd0",
+    "title": "Final narrowly scoped recheck after your complete review. Actual Spigot26.2 log ",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "79c50b0ec7",
+    "head": "79c50b0ec7",
+    "effort": null,
+    "seconds": {
+      "total": 185,
+      "setup": 16,
+      "agent": 119,
+      "test": 0
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": -1,
+      "first_test": -1
+    },
+    "steps": 3,
+    "tools": 2,
+    "tool_s": 1,
+    "tokens": {
+      "input": 3720,
+      "output": 19384,
+      "reasoning": 0,
+      "cache_read": 403328,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 0,
+    "diff": {
+      "files": 0,
+      "insertions": 0,
+      "deletions": 0
+    },
+    "verdict": "review",
+    "flags": [],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": null,
+    "steps_budget": 35
+  },
+  "contextGaps": [],
+  "trust": "delegate.sh accept|reject rakunloots p9-114-probe-recheck --why \"...\"",
+  "verdictLabel": null,
+  "flags": [],
+  "labels": [],
+  "reviews": [],
+  "outcome": null,
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

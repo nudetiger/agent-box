@@ -1,0 +1,2444 @@
+diff --git a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+index 03b201e..466506a 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
++++ b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+@@ -59,6 +59,7 @@ import me.rakkoon69.rakunloots.visuals.BoxVisualsListener;
+ import me.rakkoon69.rakunloots.visuals.BoxVisualsService;
+ import me.rakkoon69.rakunloots.visuals.GlowLibraries;
+ import me.rakkoon69.rakunloots.visuals.GuardianBeamLaser;
++import me.rakkoon69.rakunloots.wiki.LootChanceCache;
+ import me.rakkoon69.rakunloots.wiki.WikiMenu;
+ import org.bukkit.event.HandlerList;
+ import org.bukkit.event.Listener;
+@@ -99,6 +100,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+     private AnimationService animations;
+     private BoxVisualsService visuals;
+     private MenuService menus;
++    private LootChanceCache chanceCache;
+     private BukkitCommandRegistrar registrar;
+ 
+     public RakunLootsPlugin() {
+@@ -156,6 +158,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+             getLogger().warning("Support for this server (Folia) is experimental. Loot boxes may fail to summon, and "
+                     + "some visuals are off. Do not run it on a live server yet.");
+         }
++        chanceCache = new LootChanceCache(adapter.async());
+         ConfigSnapshot snapshot = loadConfig();
+         MenuRenderer menuRenderer = new MenuRenderer(itemSources, key -> config.message("", key), log);
+         menus = new MenuService(adapter, menuRenderer);
+@@ -199,7 +202,8 @@ public class RakunLootsPlugin extends JavaPlugin {
+ 
+         UnclaimedSummonItems claims = new UnclaimedSummonItems(adapter, this::config, store, maker, log::failure);
+         ClaimMenu claimMenu = new ClaimMenu(adapter, this::config, claims, maker, menus, menuRenderer, log::failure);
+-        WikiMenu wikiMenu = new WikiMenu(adapter, this::config, itemSources, menus, menuRenderer, log::failure);
++        WikiMenu wikiMenu = new WikiMenu(adapter, this::config, itemSources, menus, menuRenderer, chanceCache,
++                log::failure);
+         SummonItemUse use = new SummonItemUse(maker, this::config, summons, giveBack, log::failure);
+         registerEvents(use, claims);
+         registerCommands(giveBack, claims, claimMenu, wikiMenu);
+@@ -293,6 +297,9 @@ public class RakunLootsPlugin extends JavaPlugin {
+         ConfigSnapshot snapshot = ConfigLoader.load(ConfigFolder.read(getDataFolder().toPath()),
+                 new BukkitNameCatalog());
+         config = snapshot;
++        if (chanceCache != null) {
++            chanceCache.load(snapshot);
++        }
+         // Enable and reload both come here, and the warnings command lists what happened since the last one.
+         log.record().clear();
+         log.config(snapshot.rawWarnings());
+@@ -365,6 +372,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+         }
+         visuals = null;
+         menus = null;
++        chanceCache = null;
+         animations = null;
+         holograms = null;
+         viewerListener = null;
+diff --git a/src/main/java/me/rakkoon69/rakunloots/hologram/HologramService.java b/src/main/java/me/rakkoon69/rakunloots/hologram/HologramService.java
+index 134af72..e2bad7c 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/hologram/HologramService.java
++++ b/src/main/java/me/rakkoon69/rakunloots/hologram/HologramService.java
+@@ -4,11 +4,11 @@ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
+ import me.rakkoon69.rakunloots.lootbox.BoxEvent;
+ import me.rakkoon69.rakunloots.lootbox.BoxObserver;
+ import me.rakkoon69.rakunloots.lootbox.MessageText;
++import me.rakkoon69.rakunloots.lootbox.TimeText;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+-import java.util.Locale;
+ import java.util.Map;
+ import java.util.Objects;
+ import java.util.Optional;
+@@ -236,13 +236,7 @@ public final class HologramService implements BoxObserver {
+      * {@code m:ss}, or {@code h:mm:ss} from an hour.
+      */
+     static String time(int seconds) {
+-        int hours = seconds / 3600;
+-        int minutes = seconds / 60 % 60;
+-        int rest = seconds % 60;
+-        if (hours > 0) {
+-            return String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest);
+-        }
+-        return String.format(Locale.ROOT, "%d:%02d", minutes, rest);
++        return TimeText.time(seconds);
+     }
+ 
+     private record Template(List<String> lines, String name, String unlocked, String noOwner, String unending) {
+diff --git a/src/main/java/me/rakkoon69/rakunloots/lootbox/TimeText.java b/src/main/java/me/rakkoon69/rakunloots/lootbox/TimeText.java
+new file mode 100644
+index 0000000..5e45abc
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/lootbox/TimeText.java
+@@ -0,0 +1,22 @@
++package me.rakkoon69.rakunloots.lootbox;
++
++import java.util.Locale;
++
++/**
++ * The one seconds formatter shared by holograms and the wiki: {@code m:ss}, or {@code h:mm:ss} from an hour.
++ */
++public final class TimeText {
++
++    private TimeText() {
++    }
++
++    public static String time(int seconds) {
++        int hours = seconds / 3600;
++        int minutes = seconds / 60 % 60;
++        int rest = seconds % 60;
++        if (hours > 0) {
++            return String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest);
++        }
++        return String.format(Locale.ROOT, "%d:%02d", minutes, rest);
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+index 7ef9eef..09a65ff 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuRenderer.java
+@@ -31,6 +31,7 @@ public final class MenuRenderer {
+ 
+     private static final String PREVIOUS = "previous_page";
+     private static final String NEXT = "next_page";
++    private static final String MISSING_LORE = "This menu item could not be loaded.";
+ 
+     private final ItemSourceRegistry items;
+     private final Function<String, String> language;
+@@ -43,6 +44,25 @@ public final class MenuRenderer {
+         this.warnings = Objects.requireNonNull(warnings, "warnings");
+     }
+ 
++    /**
++     * Whether this stack is the barrier the renderer draws for a layout item that could not be resolved.
++     */
++    public static boolean isMissingIcon(ItemStack item) {
++        if (item == null || item.getType() != Material.BARRIER) {
++            return false;
++        }
++        ItemMeta meta = item.getItemMeta();
++        if (meta == null || meta.getLore() == null) {
++            return false;
++        }
++        for (String line : meta.getLore()) {
++            if (ChatColor.stripColor(line).equals(MISSING_LORE)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     public int pageCount(MenuPage layout, int entryCount) {
+         Objects.requireNonNull(layout, "layout");
+         if (entryCount < 0) {
+@@ -149,7 +169,7 @@ public final class MenuRenderer {
+             ItemMeta meta = barrier.getItemMeta();
+             if (meta != null) {
+                 meta.setDisplayName(ChatColor.RED + "Missing " + nameOf(reference));
+-                meta.setLore(List.of(ChatColor.GRAY + "This menu item could not be loaded."));
++                meta.setLore(List.of(ChatColor.GRAY + MISSING_LORE));
+                 barrier.setItemMeta(meta);
+             }
+             return new MenuIcon(barrier, action, sound);
+diff --git a/src/main/java/me/rakkoon69/rakunloots/wiki/LootChanceCache.java b/src/main/java/me/rakkoon69/rakunloots/wiki/LootChanceCache.java
+new file mode 100644
+index 0000000..d7cd151
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/wiki/LootChanceCache.java
+@@ -0,0 +1,112 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.Loot;
++import me.rakkoon69.rakunloots.config.Roll;
++import me.rakkoon69.rakunloots.roll.LootChance;
++import me.rakkoon69.rakunloots.server.TaskScheduler;
++
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.concurrent.CopyOnWriteArrayList;
++import java.util.function.Consumer;
++import java.util.function.Function;
++
++/**
++ * Computes every loaded loot's exact content chances after each config load, on the async scheduler, and keeps the
++ * result bound to the snapshot it came from. The expensive math never runs while the cache lock is held, and a job
++ * whose load has been replaced is discarded at publication as well as at every read.
++ */
++public final class LootChanceCache {
++
++    private final TaskScheduler async;
++    private final Function<Roll, Map<String, LootChance.EntryChance>> calculator;
++    private final CopyOnWriteArrayList<Consumer<ConfigSnapshot>> listeners = new CopyOnWriteArrayList<>();
++    private final Object lock = new Object();
++    private long generation;
++    private ConfigSnapshot snapshot;
++    private Map<String, Map<String, LootChance.EntryChance>> chances;
++
++    public LootChanceCache(TaskScheduler async) {
++        this(async, LootChance::calculate);
++    }
++
++    /**
++     * The calculator seam is for tests that need to hold the expensive math while a reload lands.
++     */
++    LootChanceCache(TaskScheduler async, Function<Roll, Map<String, LootChance.EntryChance>> calculator) {
++        this.async = Objects.requireNonNull(async, "async");
++        this.calculator = Objects.requireNonNull(calculator, "calculator");
++    }
++
++    /**
++     * Called after the new result is published for this snapshot, on the worker thread that computed it.
++     */
++    public void addListener(Consumer<ConfigSnapshot> listener) {
++        listeners.add(Objects.requireNonNull(listener, "listener"));
++    }
++
++    /**
++     * Starts computing every loot of a newly loaded snapshot. An older job that is still running keeps its snapshot and
++     * is discarded when it tries to publish.
++     */
++    public void load(ConfigSnapshot snapshot) {
++        Objects.requireNonNull(snapshot, "snapshot");
++        long job;
++        synchronized (lock) {
++            this.snapshot = snapshot;
++            this.chances = null;
++            job = ++generation;
++        }
++        async.run(() -> compute(snapshot, job));
++    }
++
++    /**
++     * The chances of one loot for the given snapshot, or empty while the snapshot is not the current one or its job
++     * has not published. Reading never starts calculation.
++     */
++    public Optional<Map<String, LootChance.EntryChance>> chances(ConfigSnapshot snapshot, String lootId) {
++        Objects.requireNonNull(snapshot, "snapshot");
++        Objects.requireNonNull(lootId, "lootId");
++        synchronized (lock) {
++            if (this.snapshot != snapshot || chances == null) {
++                return Optional.empty();
++            }
++            return Optional.ofNullable(chances.get(lootId));
++        }
++    }
++
++    private void compute(ConfigSnapshot source, long job) {
++        if (!current(source, job)) {
++            return;
++        }
++        Map<String, Map<String, LootChance.EntryChance>> computed = new LinkedHashMap<>();
++        for (Map.Entry<String, Loot> loot : source.loots().entrySet()) {
++            if (!current(source, job)) {
++                return;
++            }
++            computed.put(loot.getKey(), calculator.apply(loot.getValue().roll()));
++        }
++        synchronized (lock) {
++            if (generation != job || this.snapshot != source) {
++                return;
++            }
++            chances = computed;
++        }
++        for (Consumer<ConfigSnapshot> listener : listeners) {
++            try {
++                listener.accept(source);
++            } catch (RuntimeException ignored) {
++                // A failed refresh must not turn a published calculation into a failed one.
++            }
++        }
++    }
++
++    private boolean current(ConfigSnapshot source, long job) {
++        synchronized (lock) {
++            return generation == job && snapshot == source;
++        }
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java b/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
+index 585369a..a3402ea 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
++++ b/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
+@@ -2,17 +2,23 @@ package me.rakkoon69.rakunloots.wiki;
+ 
+ import me.rakkoon69.rakunloots.command.SenderLocation;
+ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ContentEntry;
+ import me.rakkoon69.rakunloots.config.Loot;
+ import me.rakkoon69.rakunloots.config.MenuButton;
+ import me.rakkoon69.rakunloots.config.MenuPage;
++import me.rakkoon69.rakunloots.config.OpenMode;
++import me.rakkoon69.rakunloots.config.Roll;
+ import me.rakkoon69.rakunloots.config.WikiSettings;
++import me.rakkoon69.rakunloots.items.ItemReference;
+ import me.rakkoon69.rakunloots.items.ItemResolveResult;
+ import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
+ import me.rakkoon69.rakunloots.lootbox.MessageText;
++import me.rakkoon69.rakunloots.lootbox.TimeText;
+ import me.rakkoon69.rakunloots.menu.MenuIcon;
+ import me.rakkoon69.rakunloots.menu.MenuRenderer;
+ import me.rakkoon69.rakunloots.menu.MenuService;
+ import me.rakkoon69.rakunloots.menu.MenuView;
++import me.rakkoon69.rakunloots.roll.LootChance;
+ import me.rakkoon69.rakunloots.roll.TimerChance;
+ import me.rakkoon69.rakunloots.server.LoadedWorld;
+ import me.rakkoon69.rakunloots.server.ServerAdapter;
+@@ -31,18 +37,21 @@ import java.util.OptionalDouble;
+ import java.util.UUID;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.CompletionException;
++import java.util.concurrent.ConcurrentHashMap;
+ import java.util.function.BiConsumer;
+ import java.util.function.Supplier;
+ 
+ /**
+  * The loots wiki: every listed loot in the player's world, rarest timer chance first, then loots the timer cannot
+- * summon. An entry opens a read-only loot page whose back button returns to the same list page. Both pages render
+- * from the config snapshot read at open.
++ * summon. An entry opens a read-only loot page whose contents show the exact roll chances, and whose info icon shows
++ * the loot's own rules. Back returns to the same list page. Both pages render from the config snapshot read at open;
++ * a loot page opened before the async chances are ready refreshes in place when they arrive.
+  */
+ public final class WikiMenu {
+ 
+     private static final String MENU_ID = "wiki";
+     private static final String BACK = "back";
++    private static final String INFO = "info";
+     private static final String KEY_LIST_TITLE = "menu_wiki_list_title";
+     private static final String KEY_ENTRY_NAME = "menu_wiki_list_entry_name";
+     private static final String KEY_ENTRY_LORE = "menu_wiki_list_entry_lore";
+@@ -50,6 +59,24 @@ public final class WikiMenu {
+     private static final String KEY_NOT_ON_TIMER = "menu_wiki_list_not_on_timer";
+     private static final String KEY_LIST_CLICK = "menu_wiki_list_click";
+     private static final String KEY_LOOT_TITLE = "menu_wiki_loot_title";
++    private static final String KEY_CONTENT_CHANCE = "menu_wiki_content_chance";
++    private static final String KEY_CONTENT_ALWAYS = "menu_wiki_content_always";
++    private static final String KEY_CONTENT_CALCULATING = "menu_wiki_content_calculating";
++    private static final String KEY_CONTENT_AMOUNT = "menu_wiki_content_amount";
++    private static final String KEY_MISSING_NAME = "menu_wiki_content_missing_name";
++    private static final String KEY_MISSING_LORE = "menu_wiki_content_missing_lore";
++    private static final String KEY_INFO_NAME = "menu_wiki_info_name";
++    private static final String KEY_INFO_OPEN_MODE = "menu_wiki_info_open_mode";
++    private static final String KEY_OPEN_MODE_DROP = "menu_wiki_open_mode_drop";
++    private static final String KEY_OPEN_MODE_INVENTORY = "menu_wiki_open_mode_inventory";
++    private static final String KEY_INFO_LOCK = "menu_wiki_info_lock";
++    private static final String KEY_INFO_NO_LOCK = "menu_wiki_info_no_lock";
++    private static final String KEY_INFO_LIFE = "menu_wiki_info_life";
++    private static final String KEY_INFO_UNENDING = "menu_wiki_info_unending";
++    private static final String KEY_INFO_ITEMS = "menu_wiki_info_items";
++    private static final String KEY_INFO_WORLDS = "menu_wiki_info_worlds";
++    private static final String KEY_INFO_WORLD = "menu_wiki_info_world";
++    private static final String KEY_INFO_NO_WORLDS = "menu_wiki_info_no_worlds";
+     private static final String KEY_BACK_NAME = "menu_button_back_name";
+     private static final String KEY_BACK_LORE = "menu_button_back_lore";
+     private static final String KEY_PREFIX = "prefix";
+@@ -59,16 +86,21 @@ public final class WikiMenu {
+     private final ItemSourceRegistry items;
+     private final MenuService menus;
+     private final MenuRenderer renderer;
++    private final LootChanceCache chances;
+     private final BiConsumer<String, Throwable> failures;
++    private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
+ 
+     public WikiMenu(ServerAdapter adapter, Supplier<ConfigSnapshot> config, ItemSourceRegistry items,
+-                    MenuService menus, MenuRenderer renderer, BiConsumer<String, Throwable> failures) {
++                    MenuService menus, MenuRenderer renderer, LootChanceCache chances,
++                    BiConsumer<String, Throwable> failures) {
+         this.adapter = Objects.requireNonNull(adapter, "adapter");
+         this.config = Objects.requireNonNull(config, "config");
+         this.items = Objects.requireNonNull(items, "items");
+         this.menus = Objects.requireNonNull(menus, "menus");
+         this.renderer = Objects.requireNonNull(renderer, "renderer");
++        this.chances = Objects.requireNonNull(chances, "chances");
+         this.failures = Objects.requireNonNull(failures, "failures");
++        chances.addListener(this::chancesReady);
+     }
+ 
+     /**
+@@ -97,7 +129,8 @@ public final class WikiMenu {
+         }
+         worlds.whenComplete((loaded, failure) -> {
+             if (failure != null) {
+-                failures.accept("could not read the loaded worlds for the loots wiki of " + playerId, unwrap(failure));
++                failures.accept("could not read the loaded worlds for the loots wiki of " + playerId,
++                        unwrap(failure));
+                 return;
+             }
+             try {
+@@ -109,7 +142,12 @@ public final class WikiMenu {
+                                         unwrap(openFailure));
+                                 return;
+                             }
+-                            epoch.ifPresent(session::openedAs);
++                            if (epoch.isEmpty()) {
++                                return;
++                            }
++                            session.registeredAt(epoch.get());
++                            sessions.compute(playerId, (id, current) ->
++                                    current == null || current.currentEpoch <= epoch.get() ? session : current);
+                         });
+             } catch (Throwable buildFailure) {
+                 failures.accept("could not build the loots wiki for " + playerId, buildFailure);
+@@ -125,7 +163,7 @@ public final class WikiMenu {
+         Map<String, Integer> weights = worldName.flatMap(snapshot::world)
+                 .map(settings -> settings.loots())
+                 .orElseGet(Map::of);
+-        Map<String, Double> chances = TimerChance.calculate(weights, snapshot.loots().keySet());
++        Map<String, Double> timerChances = TimerChance.calculate(weights, snapshot.loots().keySet());
+ 
+         List<Row> rows = new ArrayList<>();
+         for (Map.Entry<String, Loot> entry : snapshot.loots().entrySet()) {
+@@ -133,7 +171,7 @@ public final class WikiMenu {
+             if (!wiki.show()) {
+                 continue;
+             }
+-            Double chance = chances.get(entry.getKey());
++            Double chance = timerChances.get(entry.getKey());
+             rows.add(new Row(entry.getKey(), entry.getValue(),
+                     chance == null ? OptionalDouble.empty() : OptionalDouble.of(chance)));
+         }
+@@ -154,36 +192,189 @@ public final class WikiMenu {
+             entries.add(new MenuIcon(item, Optional.of(() -> session.showLoot(row.id())), Optional.empty()));
+         }
+         String title = text(snapshot, KEY_LIST_TITLE, Map.of());
+-        return renderer.render(MENU_ID, title, layout, entries, state.page, session::goToPage,
++        return renderer.render(MENU_ID, title, layout, entries, state.listPage, session::goToListPage,
+                 key -> snapshot.message("", key));
+     }
+ 
+-    private MenuView renderLoot(Session session, State state, Loot loot) {
++    private MenuView renderLoot(Session session, State state, LootPage page, Loot loot) {
+         ConfigSnapshot snapshot = state.snapshot;
+         MenuPage layout = snapshot.wikiLootMenu();
+-        Map<String, MenuButton> buttons = new LinkedHashMap<>();
++        Map<String, LootChance.EntryChance> exact = chances.chances(snapshot, loot.id()).orElse(null);
++        String title = text(snapshot, KEY_LOOT_TITLE, lootValues(loot));
++        MenuView view = renderer.render(MENU_ID, title, layout, contentIcons(snapshot, loot, exact),
++                page.page(), destination -> session.goToLootPage(loot.id(), destination),
++                key -> snapshot.message("", key));
++
++        Map<Integer, MenuIcon> icons = new LinkedHashMap<>(view.icons());
+         MenuButton back = layout.buttons().get(BACK);
+         if (back != null) {
+-            buttons.put(BACK, back);
+-        }
+-        MenuPage stub = layout.withButtons(buttons);
+-        String title = text(snapshot, KEY_LOOT_TITLE, lootValues(loot));
+-        MenuView view = renderer.render(MENU_ID, title, stub, List.of(), 0, page -> {
+-        }, key -> snapshot.message("", key));
+-        if (back == null) {
+-            return view;
++            MenuIcon shown = icons.get(back.slot());
++            if (shown != null) {
++                ItemStack item = shown.item();
++                if (!MenuRenderer.isMissingIcon(item)) {
++                    decorate(item, text(snapshot, KEY_BACK_NAME, lootValues(loot)), backLore(snapshot, loot));
++                }
++                icons.put(back.slot(), new MenuIcon(item, Optional.of(session::showList), shown.sound()));
++            }
+         }
+-        MenuIcon shown = view.icons().get(back.slot());
+-        if (shown == null) {
+-            return view;
++        MenuButton info = layout.buttons().get(INFO);
++        if (info != null) {
++            MenuIcon shown = icons.get(info.slot());
++            if (shown != null && !MenuRenderer.isMissingIcon(shown.item())) {
++                ItemStack item = shown.item();
++                decorate(item, text(snapshot, KEY_INFO_NAME, lootValues(loot)), infoLore(snapshot, loot));
++                icons.put(info.slot(), new MenuIcon(item, Optional.empty(), Optional.empty()));
++            }
+         }
+-        ItemStack item = shown.item();
+-        decorate(item, text(snapshot, KEY_BACK_NAME, lootValues(loot)), backLore(snapshot, loot));
+-        Map<Integer, MenuIcon> icons = new LinkedHashMap<>(view.icons());
+-        icons.put(back.slot(), new MenuIcon(item, Optional.of(session::showList), shown.sound()));
+         return new MenuView(view.title(), view.rows(), icons);
+     }
+ 
++    private List<MenuIcon> contentIcons(ConfigSnapshot snapshot, Loot loot,
++                                        Map<String, LootChance.EntryChance> exact) {
++        List<ContentEntry> shown = new ArrayList<>();
++        for (ContentEntry entry : loot.roll().entries()) {
++            if (entry.weight() != 0) {
++                shown.add(entry);
++            }
++        }
++        shown.sort(chanceOrder(exact));
++
++        List<MenuIcon> icons = new ArrayList<>();
++        for (ContentEntry entry : shown) {
++            LootChance.EntryChance chance = exact == null ? null : exact.get(entry.id());
++            icons.add(contentIcon(snapshot, loot, entry, chance));
++        }
++        return icons;
++    }
++
++    private static Comparator<ContentEntry> chanceOrder(Map<String, LootChance.EntryChance> chances) {
++        return Comparator
++                .comparingInt((ContentEntry entry) -> alwaysLast(entry, chances))
++                .thenComparingDouble(entry -> {
++                    LootChance.EntryChance chance = chances == null ? null : chances.get(entry.id());
++                    return chance == null ? 0.0 : chance.probability();
++                });
++    }
++
++    private static int alwaysLast(ContentEntry entry, Map<String, LootChance.EntryChance> chances) {
++        LootChance.EntryChance chance = chances == null ? null : chances.get(entry.id());
++        boolean always = chance == null ? entry.weight() < 0 : chance.kind() == LootChance.Kind.ALWAYS;
++        return always ? 1 : 0;
++    }
++
++    private MenuIcon contentIcon(ConfigSnapshot snapshot, Loot loot, ContentEntry entry,
++                                 LootChance.EntryChance chance) {
++        ItemResolveResult resolved;
++        try {
++            resolved = items.resolve(entry.item());
++        } catch (RuntimeException failure) {
++            resolved = null;
++        }
++        if (resolved == null || resolved.isMiss() || resolved.item().isEmpty()) {
++            return missingContent(snapshot, entry);
++        }
++
++        ItemStack item = resolved.item().orElseThrow().clone();
++        item.setAmount(Math.min(entry.amount(), Math.max(1, item.getMaxStackSize())));
++        List<String> lore = new ArrayList<>();
++        ItemMeta meta = item.getItemMeta();
++        if (meta != null && meta.getLore() != null) {
++            lore.addAll(meta.getLore());
++        }
++        boolean always = chance == null
++                ? entry.weight() < 0
++                : chance.kind() == LootChance.Kind.ALWAYS;
++        if (always) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_CONTENT_ALWAYS, Map.of()));
++        } else if (chance != null) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_CONTENT_CHANCE, Map.of(),
++                    Map.of("chance", chance.probability())));
++        } else {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_CONTENT_CALCULATING, Map.of()));
++        }
++        addRendered(lore, MessageText.render(snapshot, "", KEY_CONTENT_AMOUNT,
++                Map.of("amount", Integer.toString(entry.amount()))));
++        setLore(item, lore);
++        return new MenuIcon(item, Optional.empty(), Optional.empty());
++    }
++
++    private static MenuIcon missingContent(ConfigSnapshot snapshot, ContentEntry entry) {
++        Map<String, String> values = Map.of("item", referenceLabel(entry.item()));
++        ItemStack item = new ItemStack(Material.BARRIER);
++        decorate(item, text(snapshot, KEY_MISSING_NAME, values), lines(snapshot, KEY_MISSING_LORE, values));
++        return new MenuIcon(item, Optional.empty(), Optional.empty());
++    }
++
++    private static String referenceLabel(ItemReference reference) {
++        String source = reference.source() == null || reference.source().isBlank()
++                ? "vanilla"
++                : reference.source();
++        return source + ":" + reference.id();
++    }
++
++    private static List<String> infoLore(ConfigSnapshot snapshot, Loot loot) {
++        List<String> lore = new ArrayList<>();
++        for (String line : loot.description()) {
++            addRendered(lore, MessageText.color(line));
++        }
++
++        String modeKey = loot.openMode() == OpenMode.INVENTORY ? KEY_OPEN_MODE_INVENTORY : KEY_OPEN_MODE_DROP;
++        String openMode = snapshot.message("", modeKey);
++        if (!openMode.isBlank()) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_OPEN_MODE,
++                    Map.of("open_mode", openMode)));
++        }
++        if (loot.lockSeconds() > 0) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_LOCK,
++                    Map.of("lock", TimeText.time(loot.lockSeconds()))));
++        } else {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_NO_LOCK, Map.of()));
++        }
++        if (loot.lifeSeconds().isPresent()) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_LIFE,
++                    Map.of("life", TimeText.time(loot.lifeSeconds().getAsInt()))));
++        } else {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_UNENDING, Map.of()));
++        }
++        int[] range = itemRange(loot.roll());
++        addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_ITEMS,
++                Map.of("min", Integer.toString(range[0]), "max", Integer.toString(range[1]))));
++
++        addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_WORLDS, Map.of()));
++        List<String> worldNames = new ArrayList<>(snapshot.worlds().keySet());
++        worldNames.sort(String::compareTo);
++        int added = 0;
++        for (String worldName : worldNames) {
++            Map<String, Integer> weights = snapshot.world(worldName).orElseThrow().loots();
++            Double chance = TimerChance.calculate(weights, snapshot.loots().keySet()).get(loot.id());
++            if (chance == null) {
++                continue;
++            }
++            added++;
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_WORLD,
++                    Map.of("world", worldName), Map.of("chance", chance)));
++        }
++        if (added == 0) {
++            addRendered(lore, MessageText.render(snapshot, "", KEY_INFO_NO_WORLDS, Map.of()));
++        }
++        return lore;
++    }
++
++    private static int[] itemRange(Roll roll) {
++        int drawable = 0;
++        for (ContentEntry entry : roll.entries()) {
++            if (entry.weight() > 0) {
++                drawable++;
++            }
++        }
++        int min = Math.max(0, roll.min());
++        int max = Math.max(0, roll.max());
++        if (min >= max) {
++            min = max;
++        }
++        return new int[]{Math.min(min, drawable), Math.min(max, drawable)};
++    }
++
+     private ItemStack rowIcon(ConfigSnapshot snapshot, Row row) {
+         WikiSettings wiki = snapshot.wiki(row.id()).orElse(WikiSettings.shown());
+         if (wiki.icon().isPresent()) {
+@@ -254,6 +445,25 @@ public final class WikiMenu {
+         return MessageText.render(snapshot, "", key, values);
+     }
+ 
++    private static List<String> lines(ConfigSnapshot snapshot, String key, Map<String, String> values) {
++        List<String> lines = new ArrayList<>();
++        String text = MessageText.render(snapshot, "", key, values);
++        for (String line : text.split("\n", -1)) {
++            if (!line.isBlank()) {
++                lines.add(line);
++            }
++        }
++        return lines;
++    }
++
++    private static void addRendered(List<String> lines, String text) {
++        for (String line : text.split("\n", -1)) {
++            if (!line.isBlank()) {
++                lines.add(line);
++            }
++        }
++    }
++
+     private static Map<String, String> lootValues(Loot loot) {
+         return Map.of("loot", loot.displayName());
+     }
+@@ -274,6 +484,15 @@ public final class WikiMenu {
+         item.setItemMeta(meta);
+     }
+ 
++    private static void setLore(ItemStack item, List<String> lore) {
++        ItemMeta meta = item.getItemMeta();
++        if (meta == null) {
++            return;
++        }
++        meta.setLore(lore);
++        item.setItemMeta(meta);
++    }
++
+     private static Throwable unwrap(Throwable failure) {
+         return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+     }
+@@ -281,14 +500,28 @@ public final class WikiMenu {
+     private record Row(String id, Loot loot, OptionalDouble chance) {
+     }
+ 
+-    private record State(ConfigSnapshot snapshot, List<Row> rows, int page, long epoch) {
++    private record LootPage(String lootId, int page, boolean ready) {
++    }
+ 
+-        private State withPage(int next) {
+-            return new State(snapshot, rows, next, epoch);
++    private record State(ConfigSnapshot snapshot, List<Row> rows, int listPage, Optional<LootPage> lootPage,
++                         long epoch) {
++
++        private State withListPage(int next) {
++            return new State(snapshot, rows, next, lootPage, epoch);
++        }
++
++        private State withLootPage(Optional<LootPage> next) {
++            return new State(snapshot, rows, listPage, next, epoch);
+         }
+ 
+         private State withEpoch(long next) {
+-            return new State(snapshot, rows, page, next);
++            return new State(snapshot, rows, listPage, lootPage, next);
++        }
++    }
++
++    private void chancesReady(ConfigSnapshot snapshot) {
++        for (Session session : sessions.values()) {
++            session.chancesReady(snapshot);
+         }
+     }
+ 
+@@ -298,15 +531,19 @@ public final class WikiMenu {
+         private final Object lock = new Object();
+         private State state;
+         private long revision;
++        private long openSequence;
++        private long openDone;
++        private volatile long currentEpoch = -1L;
+ 
+         private Session(UUID playerId, ConfigSnapshot snapshot, List<Row> rows) {
+             this.playerId = playerId;
+-            this.state = new State(snapshot, rows, 0, -1L);
++            this.state = new State(snapshot, rows, 0, Optional.empty(), -1L);
+         }
+ 
+-        private void openedAs(long epoch) {
++        private void registeredAt(long epoch) {
+             synchronized (lock) {
+                 state = state.withEpoch(epoch);
++                currentEpoch = epoch;
+                 revision++;
+             }
+         }
+@@ -317,13 +554,16 @@ public final class WikiMenu {
+                 if (loot == null || state.epoch < 0L) {
+                     return;
+                 }
++                LootPage page = new LootPage(lootId, 0,
++                        chances.chances(state.snapshot, lootId).isPresent());
++                State target = state.withLootPage(Optional.of(page));
+                 long expected = state.epoch;
+                 long rendered = ++revision;
+-                MenuView view = renderLoot(this, state, loot);
++                MenuView view = renderLoot(this, target, page, loot);
+                 if (revision != rendered) {
+                     return;
+                 }
+-                replace(expected, view);
++                replace(expected, view, target);
+             }
+         }
+ 
+@@ -332,50 +572,157 @@ public final class WikiMenu {
+                 if (state.epoch < 0L) {
+                     return;
+                 }
++                State target = state.withLootPage(Optional.empty());
+                 long expected = state.epoch;
+                 long rendered = ++revision;
++                MenuView view = renderList(this, target);
++                if (revision != rendered) {
++                    return;
++                }
++                replace(expected, view, target);
++            }
++        }
++
++        private void goToListPage(int destination) {
++            synchronized (lock) {
++                int page = renderer.clampPage(state.snapshot.wikiListMenu(), state.rows.size(), destination);
++                state = state.withListPage(page);
++                if (state.epoch < 0L) {
++                    return;
++                }
++                long rendered = ++revision;
+                 MenuView view = renderList(this, state);
+                 if (revision != rendered) {
+                     return;
+                 }
+-                replace(expected, view);
++                menus.refreshIf(playerId, state.epoch, view);
++            }
++        }
++
++        private void goToLootPage(String lootId, int destination) {
++            synchronized (lock) {
++                LootPage current = state.lootPage.orElse(null);
++                if (current == null || !current.lootId().equals(lootId)) {
++                    return;
++                }
++                Loot loot = state.snapshot.loot(lootId).orElse(null);
++                if (loot == null) {
++                    return;
++                }
++                int count = contentCount(loot);
++                int page = renderer.clampPage(state.snapshot.wikiLootMenu(), count, destination);
++                LootPage next = new LootPage(lootId, page,
++                        current.ready() || chances.chances(state.snapshot, lootId).isPresent());
++                state = state.withLootPage(Optional.of(next));
++                if (state.epoch < 0L) {
++                    return;
++                }
++                long rendered = ++revision;
++                MenuView view = renderLoot(this, state, next, loot);
++                if (revision != rendered) {
++                    return;
++                }
++                menus.refreshIf(playerId, state.epoch, view);
+             }
+         }
+ 
+-        private void replace(long expected, MenuView view) {
++        private void replace(long expected, MenuView view, State target) {
++            long token = ++openSequence;
+             menus.replaceIf(playerId, expected, view).whenComplete((epoch, failure) -> {
+                 if (failure != null) {
++                    finishOpen(token);
+                     failures.accept("could not replace the loots wiki for " + playerId, unwrap(failure));
+                     return;
+                 }
+-                epoch.ifPresent(next -> replaced(expected, next));
++                if (epoch.isEmpty()) {
++                    finishOpen(token);
++                    return;
++                }
++                replaced(token, expected, epoch.get(), target);
+             });
+         }
+ 
+-        private void replaced(long expected, long next) {
++        private void finishOpen(long token) {
++            synchronized (lock) {
++                if (token > openDone) {
++                    openDone = token;
++                }
++            }
++        }
++
++        private void replaced(long token, long expected, long next, State target) {
+             synchronized (lock) {
++                if (token > openDone) {
++                    openDone = token;
++                }
+                 if (state.epoch != expected) {
+                     return;
+                 }
+-                state = state.withEpoch(next);
++                state = target.withListPage(state.listPage).withEpoch(next);
++                currentEpoch = next;
+                 revision++;
++                refreshReadyLocked();
+             }
+         }
+ 
+-        private void goToPage(int destination) {
++        private void chancesReady(ConfigSnapshot snapshot) {
+             synchronized (lock) {
+-                int page = renderer.clampPage(state.snapshot.wikiListMenu(), state.rows.size(), destination);
+-                state = state.withPage(page);
+-                if (state.epoch < 0L) {
++                if (openSequence != openDone) {
++                    return;
++                }
++                if (state.epoch >= 0L && menus.state(playerId).epoch() != state.epoch) {
++                    sessions.remove(playerId, this);
++                    return;
++                }
++                if (state.epoch < 0L || state.snapshot != snapshot || state.lootPage.isEmpty()) {
++                    return;
++                }
++                LootPage page = state.lootPage.get();
++                if (page.ready()) {
++                    return;
++                }
++                Loot loot = snapshot.loot(page.lootId()).orElse(null);
++                if (loot == null) {
+                     return;
+                 }
++                LootPage ready = new LootPage(page.lootId(), page.page(), true);
++                state = state.withLootPage(Optional.of(ready));
+                 long rendered = ++revision;
+-                MenuView view = renderList(this, state);
++                MenuView view = renderLoot(this, state, ready, loot);
+                 if (revision != rendered) {
+                     return;
+                 }
+                 menus.refreshIf(playerId, state.epoch, view);
+             }
+         }
++
++        private void refreshReadyLocked() {
++            LootPage page = state.lootPage.orElse(null);
++            if (page == null || page.ready()) {
++                return;
++            }
++            Loot loot = state.snapshot.loot(page.lootId()).orElse(null);
++            if (loot == null || chances.chances(state.snapshot, page.lootId()).isEmpty()) {
++                return;
++            }
++            LootPage ready = new LootPage(page.lootId(), page.page(), true);
++            state = state.withLootPage(Optional.of(ready));
++            long rendered = ++revision;
++            MenuView view = renderLoot(this, state, ready, loot);
++            if (revision != rendered) {
++                return;
++            }
++            menus.refreshIf(playerId, state.epoch, view);
++        }
++    }
++
++    private static int contentCount(Loot loot) {
++        int count = 0;
++        for (ContentEntry entry : loot.roll().entries()) {
++            if (entry.weight() != 0) {
++                count++;
++            }
++        }
++        return count;
+     }
+ }
+diff --git a/src/main/resources/languages/en.yml b/src/main/resources/languages/en.yml
+index bd232ce..062be9a 100644
+--- a/src/main/resources/languages/en.yml
++++ b/src/main/resources/languages/en.yml
+@@ -200,6 +200,25 @@ menu_wiki_list_timer_chance: "&7Timer chance: &e{chance:2}%"
+ menu_wiki_list_not_on_timer: "&7The world timer cannot summon this loot."
+ menu_wiki_list_click: "&7Click to read about it."
+ menu_wiki_loot_title: "&8Loot: &r{loot}"
++menu_wiki_content_chance: "&7Chance: &e{chance:2}%"
++menu_wiki_content_always: "&7Always included"
++menu_wiki_content_calculating: "&7Chance: &ecalculating..."
++menu_wiki_content_amount: "&7Amount: &e{amount}"
++menu_wiki_content_missing_name: "&cMissing &f{item}"
++menu_wiki_content_missing_lore:
++  - "&7That item is not loaded on this server."
++menu_wiki_info_name: "&6&l{loot}"
++menu_wiki_info_open_mode: "&7Open mode: &e{open_mode}"
++menu_wiki_open_mode_drop: "&edrops on the ground"
++menu_wiki_open_mode_inventory: "&eopens in your inventory"
++menu_wiki_info_lock: "&7Lock: &e{lock}"
++menu_wiki_info_no_lock: "&7Lock: &aNo lock"
++menu_wiki_info_life: "&7Life: &e{life}"
++menu_wiki_info_unending: "&7Life: &aUnending"
++menu_wiki_info_items: "&7Items per box: &e{min}&7 to &e{max}"
++menu_wiki_info_worlds: "&7Worlds:"
++menu_wiki_info_world: "&8- &e{world}&7: &e{chance:2}%"
++menu_wiki_info_no_worlds: "&7No world timer summons this loot."
+ menu_button_back_name: "&a[Back]"
+ menu_button_back_lore:
+   - "&7Back to the loots wiki."
+diff --git a/src/main/resources/languages/vi.yml b/src/main/resources/languages/vi.yml
+index c125324..9bebc7b 100644
+--- a/src/main/resources/languages/vi.yml
++++ b/src/main/resources/languages/vi.yml
+@@ -199,6 +199,25 @@ menu_wiki_list_timer_chance: "&7Ti le hen gio: &e{chance:2}%"
+ menu_wiki_list_not_on_timer: "&7Bo hen gio the gioi khong the trieu hoi loot nay."
+ menu_wiki_list_click: "&7Bam de xem."
+ menu_wiki_loot_title: "&8Loot: &r{loot}"
++menu_wiki_content_chance: "&7Ti le: &e{chance:2}%"
++menu_wiki_content_always: "&7Luon co trong hop"
++menu_wiki_content_calculating: "&7Ti le: &edang tinh..."
++menu_wiki_content_amount: "&7So luong: &e{amount}"
++menu_wiki_content_missing_name: "&cThieu &f{item}"
++menu_wiki_content_missing_lore:
++  - "&7Vat pham nay chua duoc tai tren may chu."
++menu_wiki_info_name: "&6&l{loot}"
++menu_wiki_info_open_mode: "&7Cach mo: &e{open_mode}"
++menu_wiki_open_mode_drop: "&eroi ra dat"
++menu_wiki_open_mode_inventory: "&emo trong tui do"
++menu_wiki_info_lock: "&7Khoa: &e{lock}"
++menu_wiki_info_no_lock: "&7Khoa: &aKhong khoa"
++menu_wiki_info_life: "&7Ton tai: &e{life}"
++menu_wiki_info_unending: "&7Ton tai: &aVinh vien"
++menu_wiki_info_items: "&7Vat pham moi hop: &e{min}&7 den &e{max}"
++menu_wiki_info_worlds: "&7The gioi:"
++menu_wiki_info_world: "&8- &e{world}&7: &e{chance:2}%"
++menu_wiki_info_no_worlds: "&7Khong co bo hen gio the gioi nao trieu hoi loot nay."
+ menu_button_back_name: "&a[Quay lai]"
+ menu_button_back_lore:
+   - "&7Quay lai wiki loot."
+diff --git a/src/main/resources/languages/zh.yml b/src/main/resources/languages/zh.yml
+index 1b8fb0f..c3abe20 100644
+--- a/src/main/resources/languages/zh.yml
++++ b/src/main/resources/languages/zh.yml
+@@ -199,6 +199,25 @@ menu_wiki_list_timer_chance: "&7计时器概率：&e{chance:2}%"
+ menu_wiki_list_not_on_timer: "&7世界计时器无法召唤此战利品。"
+ menu_wiki_list_click: "&7点击查看。"
+ menu_wiki_loot_title: "&8战利品：&r{loot}"
++menu_wiki_content_chance: "&7概率：&e{chance:2}%"
++menu_wiki_content_always: "&7必定包含"
++menu_wiki_content_calculating: "&7概率：&e计算中..."
++menu_wiki_content_amount: "&7数量：&e{amount}"
++menu_wiki_content_missing_name: "&c缺失 &f{item}"
++menu_wiki_content_missing_lore:
++  - "&7此物品未在本服务器加载。"
++menu_wiki_info_name: "&6&l{loot}"
++menu_wiki_info_open_mode: "&7开启方式：&e{open_mode}"
++menu_wiki_open_mode_drop: "&e掉落到地面"
++menu_wiki_open_mode_inventory: "&e打开到背包"
++menu_wiki_info_lock: "&7锁定：&e{lock}"
++menu_wiki_info_no_lock: "&7锁定：&a无需锁定"
++menu_wiki_info_life: "&7存在时间：&e{life}"
++menu_wiki_info_unending: "&7存在时间：&a永久"
++menu_wiki_info_items: "&7每箱物品：&e{min}&7 到 &e{max}"
++menu_wiki_info_worlds: "&7世界："
++menu_wiki_info_world: "&8- &e{world}&7：&e{chance:2}%"
++menu_wiki_info_no_worlds: "&7没有世界计时器会召唤此战利品。"
+ menu_button_back_name: "&a[返回]"
+ menu_button_back_lore:
+   - "&7返回战利品 wiki。"
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java b/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java
+index 07b6802..87ef885 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java
+@@ -11,6 +11,7 @@ import me.rakkoon69.rakunloots.menu.MenuService;
+ import me.rakkoon69.rakunloots.menu.MenuWarnings;
+ import me.rakkoon69.rakunloots.storage.StreamableServerMock;
+ import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import me.rakkoon69.rakunloots.wiki.LootChanceCache;
+ import me.rakkoon69.rakunloots.wiki.WikiMenu;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -100,8 +101,10 @@ class WikiCommandTest {
+         ItemSourceRegistry items = ItemSourceRegistry.create();
+         MenuRenderer renderer = new MenuRenderer(items, key -> config.message("", key), MenuWarnings.ignore);
+         MenuService menus = new MenuService(adapter, renderer);
+-        WikiMenu menu = new WikiMenu(adapter, () -> config, items, menus, renderer,
++        LootChanceCache chances = new LootChanceCache(adapter.async());
++        WikiMenu menu = new WikiMenu(adapter, () -> config, items, menus, renderer, chances,
+                 (what, cause) -> failures.add(what));
++        chances.load(config);
+         registry = new CommandRegistry(new FakeCommandSources(), key -> config.message("", key), line -> {
+         });
+         registry.register(WikiCommand.node(config.wikiCommand(), menu));
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheAcceptanceTest.java
+new file mode 100644
+index 0000000..d9304af
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheAcceptanceTest.java
+@@ -0,0 +1,54 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import me.rakkoon69.rakunloots.config.*;
++import me.rakkoon69.rakunloots.server.TaskHandle;
++import me.rakkoon69.rakunloots.server.TaskScheduler;
++import org.junit.jupiter.api.Test;
++import java.util.*;
++import static org.junit.jupiter.api.Assertions.*;
++
++/** Jobs are deliberately held, then completed out of order, just as reload can overlap old work. */
++class Phase9ChanceCacheAcceptanceTest {
++    private static ConfigSnapshot config(int secondWeight) {
++        var snapshot = ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
++            .worlds("{}\n").language("en","text: test\n")
++            .loot("demo","open_mode: drop\nblock: barrel\nroll:\n  min: 1\n  max: 1\n  entries:\n    a:\n      item: {id: diamond}\n      weight: 1\n    b:\n      item: {id: emerald}\n      weight: "+secondWeight+"\n")
++            .build(),id->Optional.of(id));
++        assertTrue(snapshot.loot("demo").isPresent(),"fixture loot demo must load");
++        return snapshot;
++    }
++    @Test void chanceWorkWaitsForTheAsyncSchedulerRatherThanPageReads() {
++        var scheduler=new HeldScheduler();
++        var cache=new LootChanceCache(scheduler);
++        var snapshot=config(1);
++        cache.load(snapshot);
++        assertEquals(1,scheduler.jobs.size());
++        assertTrue(cache.chances(snapshot,"demo").isEmpty());
++        assertTrue(cache.chances(snapshot,"demo").isEmpty());
++        assertEquals(1,scheduler.jobs.size(),"reading does not enqueue more computation");
++        scheduler.jobs.removeFirst().run();
++        assertEquals(0.5,cache.chances(snapshot,"demo").orElseThrow().get("a").probability(),1e-9);
++    }
++    @Test void anOldJobFinishingLastCannotPublishForTheNewSnapshot() {
++        var scheduler=new HeldScheduler();
++        var cache=new LootChanceCache(scheduler);
++        var old=config(1);
++        var current=config(3);
++        cache.load(old);
++        cache.load(current);
++        assertTrue(cache.chances(current,"demo").isEmpty());
++        scheduler.jobs.removeLast().run();
++        assertEquals(0.25,cache.chances(current,"demo").orElseThrow().get("a").probability(),1e-9);
++        scheduler.jobs.removeFirst().run();
++        assertEquals(0.25,cache.chances(current,"demo").orElseThrow().get("a").probability(),1e-9);
++        assertTrue(cache.chances(old,"demo").isEmpty());
++    }
++    private static class HeldScheduler implements TaskScheduler {
++        final Deque<Runnable> jobs=new ArrayDeque<>();
++        // Each held body represents work already started on another thread and paused before computation.
++        // TaskHandle.cancel explicitly lets an already-started run finish, so cancellation cannot hide this race.
++        @Override public TaskHandle run(Runnable job) { jobs.addLast(job); return ()->{}; }
++        @Override public TaskHandle runLater(Runnable job,long ticks) { throw new AssertionError("unexpected delayed chance job"); }
++        @Override public TaskHandle repeat(Runnable job,long delay,long period) { throw new AssertionError("unexpected repeating chance job"); }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheMidCalculationTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheMidCalculationTest.java
+new file mode 100644
+index 0000000..1b71ced
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9ChanceCacheMidCalculationTest.java
+@@ -0,0 +1,103 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.roll.LootChance;
++import me.rakkoon69.rakunloots.server.TaskHandle;
++import me.rakkoon69.rakunloots.server.TaskScheduler;
++import org.junit.jupiter.api.Test;
++
++import java.util.ArrayDeque;
++import java.util.Deque;
++import java.util.Optional;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * A reload that lands after the old job's first generation check but before its math returns must still discard the old
++ * result at publication.
++ */
++class Phase9ChanceCacheMidCalculationTest {
++
++    @Test
++    void anOldCalculationThatReturnsAfterTheNewerPublicationIsDiscarded() throws Exception {
++        HeldScheduler scheduler = new HeldScheduler();
++        CountDownLatch calculating = new CountDownLatch(1);
++        CountDownLatch release = new CountDownLatch(1);
++        AtomicBoolean first = new AtomicBoolean(true);
++        LootChanceCache cache = new LootChanceCache(scheduler, roll -> {
++            if (first.compareAndSet(true, false)) {
++                calculating.countDown();
++                await(release);
++            }
++            return LootChance.calculate(roll);
++        });
++        ConfigSnapshot old = config(1);
++        ConfigSnapshot current = config(3);
++
++        cache.load(old);
++        Thread oldJob = new Thread(scheduler.jobs.removeFirst(), "old-chance-job");
++        oldJob.start();
++        assertTrue(calculating.await(5, TimeUnit.SECONDS), "the old job reached the expensive calculation");
++
++        cache.load(current);
++        scheduler.jobs.removeFirst().run();
++        assertEquals(0.25, cache.chances(current, "demo").orElseThrow().get("a").probability(), 1e-9);
++
++        release.countDown();
++        oldJob.join(5000);
++        assertFalse(oldJob.isAlive(), "the old calculation returned");
++        assertEquals(0.25, cache.chances(current, "demo").orElseThrow().get("a").probability(), 1e-9,
++                "an older result cannot replace the newer generation");
++        assertTrue(cache.chances(old, "demo").isEmpty(), "the older snapshot never gets the newer result");
++    }
++
++    private static void await(CountDownLatch latch) {
++        try {
++            if (!latch.await(5, TimeUnit.SECONDS)) {
++                throw new AssertionError("timed out waiting for the test interleaving");
++            }
++        } catch (InterruptedException interrupted) {
++            Thread.currentThread().interrupt();
++            throw new AssertionError(interrupted);
++        }
++    }
++
++    private static ConfigSnapshot config(int secondWeight) {
++        ConfigSnapshot snapshot = ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
++                .worlds("{}\n").language("en", "text: test\n")
++                .loot("demo", "open_mode: drop\nblock: barrel\nroll:\n  min: 1\n  max: 1\n  entries:\n"
++                        + "    a:\n      item: {id: diamond}\n      weight: 1\n"
++                        + "    b:\n      item: {id: emerald}\n      weight: " + secondWeight + "\n")
++                .build(), id -> Optional.of(id));
++        assertTrue(snapshot.loot("demo").isPresent(), "fixture loot demo must load");
++        return snapshot;
++    }
++
++    private static final class HeldScheduler implements TaskScheduler {
++        final Deque<Runnable> jobs = new ArrayDeque<>();
++
++        @Override
++        public TaskHandle run(Runnable job) {
++            jobs.addLast(job);
++            return () -> {
++            };
++        }
++
++        @Override
++        public TaskHandle runLater(Runnable job, long ticks) {
++            throw new AssertionError("unexpected delayed chance job");
++        }
++
++        @Override
++        public TaskHandle repeat(Runnable job, long delay, long period) {
++            throw new AssertionError("unexpected repeating chance job");
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9LootPageAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9LootPageAcceptanceTest.java
+new file mode 100644
+index 0000000..98c95ee
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9LootPageAcceptanceTest.java
+@@ -0,0 +1,878 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.command.SenderLocation;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.Loot;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.lootbox.MessageText;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.roll.LootChance;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.ChatColor;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.yaml.snakeyaml.Yaml;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * Issue #112 through the real config, the recording server adapter, and the real chance calculation.
++ */
++class Phase9LootPageAcceptanceTest {
++
++    private static final UUID WORLD = UUID.fromString("00000000-0000-0000-0000-00000000c1a2");
++    private static final List<String> SHIPPED_LOOTS = List.of(
++            "airdrops", "buried_stash", "deep_vault", "head_trophy", "sky_lantern", "sunken_treasure",
++            "treasure_chest");
++    private static final List<String> LOOT_PAGE_KEYS = List.of(
++            "menu_wiki_content_chance", "menu_wiki_content_always", "menu_wiki_content_calculating",
++            "menu_wiki_content_amount", "menu_wiki_content_missing_name", "menu_wiki_content_missing_lore",
++            "menu_wiki_info_name", "menu_wiki_info_open_mode", "menu_wiki_open_mode_drop",
++            "menu_wiki_open_mode_inventory", "menu_wiki_info_lock", "menu_wiki_info_no_lock",
++            "menu_wiki_info_life", "menu_wiki_info_unending", "menu_wiki_info_items", "menu_wiki_info_worlds",
++            "menu_wiki_info_world", "menu_wiki_info_no_worlds");
++
++    private static final String LANGUAGE = """
++            prefix: ""
++            menu_wiki_list_title: "&8Loots wiki"
++            menu_wiki_list_entry_name: "&e{loot}"
++            menu_wiki_list_entry_lore:
++              - "&7{description}"
++            menu_wiki_list_timer_chance: "&7Chance: &e{chance:2}%"
++            menu_wiki_list_not_on_timer: "&7No timer"
++            menu_wiki_list_click: "&eClick"
++            menu_wiki_loot_title: "&8Loot {loot}"
++            menu_wiki_content_chance: "&7Chance: &e{chance:2}%"
++            menu_wiki_content_always: "&7Always included"
++            menu_wiki_content_calculating: "&7Chance: calculating"
++            menu_wiki_content_amount: "&7Amount: &e{amount}"
++            menu_wiki_content_missing_name: "&cMissing {item}"
++            menu_wiki_content_missing_lore:
++              - "&7That item is not loaded."
++            menu_wiki_info_name: "&6{loot} info"
++            menu_wiki_info_open_mode: "&7Open mode: &e{open_mode}"
++            menu_wiki_open_mode_drop: "&edrop"
++            menu_wiki_open_mode_inventory: "&einventory"
++            menu_wiki_info_lock: "&7Lock: &e{lock}"
++            menu_wiki_info_no_lock: "&7Lock: &aNo lock"
++            menu_wiki_info_life: "&7Life: &e{life}"
++            menu_wiki_info_unending: "&7Life: &aUnending"
++            menu_wiki_info_items: "&7Items: &e{min}&7 to &e{max}"
++            menu_wiki_info_worlds: "&7Worlds:"
++            menu_wiki_info_world: "&8- &e{world}&7: &e{chance:2}%"
++            menu_wiki_info_no_worlds: "&7No world timer summons this loot."
++            menu_button_back_name: "&a[Back]"
++            menu_button_back_lore:
++              - "&7Back to the list"
++            menu_button_previous_page_name: "&a[Prev]"
++            menu_button_previous_page_lore: "&7{page}/{pages}"
++            menu_button_next_page_name: "&a[Next]"
++            menu_button_next_page_lore: "&7{page}/{pages}"
++            """;
++
++    private static final String SMALL_WIKI_MENU = """
++            list:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++            loot:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                back:
++                  slot: 9
++                  item:
++                    id: oak_door
++                info:
++                  slot: 10
++                  item:
++                    id: not_an_item
++            """;
++
++    private static final String PAGED_WIKI_MENU = """
++            list:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                next_page:
++                  slot: 17
++                  item:
++                    id: arrow
++            loot:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                back:
++                  slot: 9
++                  item:
++                    id: oak_door
++                info:
++                  slot: 10
++                  item:
++                    id: book
++            """;
++
++    private static final String WIKI_MENU = """
++            list:
++              rows: 6
++              content_slots: ["0-44"]
++              filler:
++                id: stone
++              buttons:
++                previous_page:
++                  slot: 45
++                  item:
++                    id: arrow
++                next_page:
++                  slot: 53
++                  item:
++                    id: arrow
++            loot:
++              rows: 6
++              content_slots: ["0-44"]
++              filler:
++                id: stone
++              buttons:
++                previous_page:
++                  slot: 45
++                  item:
++                    id: arrow
++                back:
++                  slot: 48
++                  item:
++                    id: oak_door
++                info:
++                  slot: 49
++                  item:
++                    id: book
++                next_page:
++                  slot: 53
++                  item:
++                    id: arrow
++            """;
++
++    private FakeServerAdapter adapter;
++    private ConfigSnapshot config;
++    private WikiMenu menu;
++    private MenuService menus;
++    private LootChanceCache cache;
++    private UUID player;
++    private final List<String> failures = new ArrayList<>();
++
++    @BeforeEach
++    void setUp() {
++        StreamableServerMock.mock();
++        adapter = new FakeServerAdapter(WORLD);
++        player = UUID.randomUUID();
++        adapter.addOnlinePlayer(player);
++    }
++
++    @AfterEach
++    void tearDown() {
++        MockBukkit.unmock();
++        assertTrue(failures.isEmpty(), failures.toString());
++    }
++
++    @Test
++    void shippedTreasureChestShowsItsExactContentsChancesAmountsAndInfo() throws IOException {
++        use(shippedTreasure());
++
++        Map<Integer, ItemStack> page = openLoot("Treasure Chest");
++
++        assertEquals(Material.STICK, page.get(0).getType());
++        assertEquals(1, page.get(0).getAmount());
++        assertEquals(Material.IRON_PICKAXE, page.get(1).getType());
++        assertEquals(Material.IRON_SWORD, page.get(2).getType());
++        assertEquals(Material.BREAD, page.get(3).getType());
++        assertEquals(6, page.get(3).getAmount());
++        assertEquals(Material.GOLD_INGOT, page.get(4).getType());
++        assertEquals(8, page.get(4).getAmount());
++
++        Loot loot = config.loot("treasure_chest").orElseThrow();
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(loot.roll());
++        assertEquals(MessageText.formatPercent(chances.get("tagged_stick").probability(), 2),
++                chanceShown(page.get(0)), lore(page.get(0)).toString());
++        assertEquals(MessageText.formatPercent(chances.get("chest_pickaxe").probability(), 2),
++                chanceShown(page.get(1)), lore(page.get(1)).toString());
++        assertEquals(MessageText.formatPercent(chances.get("chest_blade").probability(), 2),
++                chanceShown(page.get(2)), lore(page.get(2)).toString());
++        assertEquals(MessageText.formatPercent(chances.get("bread").probability(), 2),
++                chanceShown(page.get(3)), lore(page.get(3)).toString());
++        assertTrue(lore(page.get(4)).stream().anyMatch(line -> line.contains("Always")), lore(page.get(4)).toString());
++
++        List<String> blade = lore(page.get(2));
++        assertTrue(ChatColor.stripColor(blade.get(0)).contains("Found in a treasure chest."), blade.toString());
++        assertTrue(ChatColor.stripColor(blade.get(1)).contains("%"), blade.toString());
++        assertTrue(ChatColor.stripColor(blade.get(2)).contains("Amount: 1"), blade.toString());
++
++        ItemStack info = page.get(49);
++        assertEquals(Material.BOOK, info.getType());
++        assertEquals("Treasure Chest", name(info));
++        List<String> infoLore = lore(info);
++        String joined = ChatColor.stripColor(String.join("\n", infoLore));
++        assertTrue(joined.contains("A chest on solid ground"), joined);
++        assertTrue(joined.contains("inventory"), joined);
++        assertTrue(joined.contains("0:30"), joined);
++        assertTrue(joined.contains("10:00"), joined);
++        assertTrue(joined.contains("1 to 3"), joined);
++        assertTrue(joined.contains("world"), joined);
++        assertTrue(headerBeforeWorld(infoLore), infoLore.toString());
++        assertTrue(joined.contains(MessageText.formatPercent(30.0 / 190.0, 2)), joined);
++
++        int opens = adapter.menuOpens().size();
++        int updates = adapter.menuUpdates().size();
++        int sounds = adapter.sounds().size();
++        menus.click(player, 0).join();
++        menus.click(player, 49).join();
++        assertEquals(opens, adapter.menuOpens().size(), "content and info have no action");
++        assertEquals(updates, adapter.menuUpdates().size(), "content and info have no action");
++        assertEquals(sounds, adapter.sounds().size(), "content and info have no sound");
++    }
++
++    @Test
++    void weightZeroIsHiddenAndAMissingItemIsABarrierNamedSourceAndId() {
++        use(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  min: 1
++                  max: 4
++                  entries:
++                    hidden:
++                      weight: 0
++                      amount: 1
++                      item:
++                        id: not_an_item
++                    vanilla_missing:
++                      weight: 10
++                      amount: 1
++                      item:
++                        id: not_an_item
++                    namespaced_missing:
++                      weight: 20
++                      amount: 1
++                      item:
++                        id: 'minecraft:not_an_item'
++                    custom_missing:
++                      weight: 30
++                      amount: 1
++                      item:
++                        source: mmoitems
++                        id: premium
++                    drawable:
++                      weight: 40
++                      amount: 1
++                      item:
++                        id: diamond
++                    always:
++                      weight: -1
++                      amount: 4
++                      item:
++                        id: emerald
++                """))));
++
++        Map<Integer, ItemStack> page = openLoot("Demo");
++        List<String> barriers = new ArrayList<>();
++        for (int slot = 0; slot < 45; slot++) {
++            ItemStack item = page.get(slot);
++            if (item != null && item.getType() == Material.BARRIER) {
++                barriers.add(name(item));
++                assertTrue(String.join(" ", lore(item)).contains("not loaded"), lore(item).toString());
++            }
++        }
++
++        assertEquals(List.of("Missing vanilla:not_an_item", "Missing vanilla:minecraft:not_an_item",
++                "Missing mmoitems:premium"), barriers);
++        assertEquals(5, filledContent(page), "the weight-zero entry is absent");
++        assertEquals(Material.EMERALD, page.get(4).getType(), "always-included entries are last");
++        assertEquals(4, page.get(4).getAmount());
++        assertNull(page.get(5), "only five non-hidden entries are shown");
++    }
++
++    @Test
++    void contentStacksCapAtTheItemMaximumButTheLoreKeepsTheConfiguredAmount() {
++        use(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      amount: 99
++                      item:
++                        id: ender_pearl
++                """))));
++
++        ItemStack icon = openLoot("Demo").get(0);
++        assertEquals(new ItemStack(Material.ENDER_PEARL).getMaxStackSize(), icon.getAmount());
++        assertTrue(ChatColor.stripColor(String.join(" ", lore(icon))).contains("Amount: 99"),
++                lore(icon).toString());
++    }
++
++    @Test
++    void infoListsWorldTimersByNameWithTheirChances() {
++        use(fixture("""
++                worlds:
++                  zeta:
++                    loots:
++                      demo: 30
++                      other: 70
++                  alpha:
++                    loots:
++                      demo: 70
++                      other: 30
++                  none:
++                    loots:
++                      other: 1
++                """, Map.of(
++                "demo", loot("Demo", """
++                        roll:
++                          entries:
++                            a:
++                              item:
++                                id: diamond
++                        """),
++                "other", loot("Other", """
++                        roll:
++                          entries:
++                            a:
++                              item:
++                                id: emerald
++                        """))));
++
++        List<String> lore = lore(openLoot("Demo").get(49));
++        int header = indexContaining(lore, "Worlds:");
++        int alpha = indexContaining(lore, "- alpha:");
++        int zeta = indexContaining(lore, "- zeta:");
++        assertTrue(header >= 0 && header < alpha && alpha < zeta, lore.toString());
++        assertTrue(ChatColor.stripColor(lore.get(alpha)).contains("70.00"), lore.get(alpha));
++        assertTrue(ChatColor.stripColor(lore.get(zeta)).contains("30.00"), lore.get(zeta));
++        assertFalse(lore.stream().anyMatch(line -> ChatColor.stripColor(line).contains("- none")), lore.toString());
++    }
++
++    @Test
++    void noLockAndUnendingShowTheirLinesAndTimesUseTheSharedFormatter() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("open", loot("No Lock", """
++                lock: 0
++                life: -1
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """));
++        loots.put("timed", loot("Timed", """
++                lock: 3725
++                life: 600
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """));
++        use(fixture("{}", loots));
++
++        String open = ChatColor.stripColor(String.join("\n", lore(openLoot("No Lock").get(49))));
++        assertTrue(open.contains("No lock"), open);
++        assertTrue(open.contains("Unending"), open);
++        assertTrue(open.contains("No world timer summons this loot."), open);
++
++        menus.click(player, 48).join();
++        String timed = ChatColor.stripColor(String.join("\n", lore(openLoot("Timed").get(49))));
++        assertTrue(timed.contains("1:02:05"), timed);
++        assertTrue(timed.contains("10:00"), timed);
++    }
++
++    @Test
++    void aPageOpenedBeforeChancesAreReadyCalculatesThenRefreshesInPlaceWhenTheyArrive() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        assertEquals(1, adapter.asyncScheduler().runCalls(), "one chance job after the load");
++
++        Map<Integer, ItemStack> page = openLoot("Demo");
++        assertEquals(1, adapter.asyncScheduler().runCalls(), "opening a page schedules no chance work");
++        assertTrue(String.join(" ", lore(page.get(0))).contains("calculating"), lore(page.get(0)).toString());
++
++        adapter.releaseAsync();
++
++        assertEquals(1, adapter.asyncScheduler().runCalls(), "the held job was the only one");
++        assertEquals(1, adapter.menuUpdates().size(), "the open page refreshes in place");
++        assertEquals(2, adapter.menuOpens().size(), "the loot page is not reopened");
++        ItemStack refreshed = adapter.menuUpdates().get(0).contents().get(0);
++        String refreshedLore = String.join(" ", lore(refreshed));
++        assertFalse(refreshedLore.contains("calculating"), refreshedLore);
++        assertTrue(refreshedLore.contains("%"), refreshedLore);
++    }
++
++    @Test
++    void anAlwaysIncludedEntrySaysSoBeforeChancesArrive() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    drawable:
++                      item:
++                        id: diamond
++                    always:
++                      weight: -1
++                      amount: 4
++                      item:
++                        id: emerald
++                """))));
++
++        Map<Integer, ItemStack> page = openLoot("Demo");
++
++        assertTrue(String.join(" ", lore(page.get(0))).contains("calculating"), lore(page.get(0)).toString());
++        assertTrue(String.join(" ", lore(page.get(1))).contains("Always included"), lore(page.get(1)).toString());
++        assertFalse(String.join(" ", lore(page.get(1))).contains("calculating"), lore(page.get(1)).toString());
++    }
++
++    @Test
++    void aMissingInfoLayoutItemKeepsTheMenuBarrierNameAndLore() {
++        use(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """)), SMALL_WIKI_MENU));
++
++        ItemStack info = openLoot("Demo").get(10);
++
++        assertEquals(Material.BARRIER, info.getType());
++        assertEquals("Missing vanilla:not_an_item", name(info));
++        List<String> lore = lore(info);
++        assertTrue(ChatColor.stripColor(String.join(" ", lore)).contains("This menu item could not be loaded."),
++                lore.toString());
++        assertFalse(ChatColor.stripColor(String.join(" ", lore)).contains("Demo info"), lore.toString());
++
++        int opens = adapter.menuOpens().size();
++        int updates = adapter.menuUpdates().size();
++        int sounds = adapter.sounds().size();
++        menus.click(player, 10).join();
++        assertEquals(opens, adapter.menuOpens().size());
++        assertEquals(updates, adapter.menuUpdates().size());
++        assertEquals(sounds, adapter.sounds().size());
++    }
++
++    @Test
++    void aMissingBackLayoutItemKeepsItsBarrierNameAndStillReturnsToList() {
++        use(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """)), SMALL_WIKI_MENU.replace("id: oak_door", "id: not_an_item")));
++
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++        menus.click(player, 0).join();
++        assertEquals(before + 2, adapter.menuOpens().size(), "the loot page did not open");
++
++        ItemStack back = adapter.menuOpens().get(before + 1).contents().get(9);
++        assertEquals(Material.BARRIER, back.getType());
++        assertEquals("Missing vanilla:not_an_item", name(back));
++        assertTrue(ChatColor.stripColor(String.join(" ", lore(back))).contains("This menu item could not be loaded."),
++                lore(back).toString());
++
++        menus.click(player, 9).join();
++        assertEquals(before + 3, adapter.menuOpens().size(), "the missing back barrier still returns to the list");
++        assertEquals("§8Loots wiki", adapter.menuOpens().get(before + 2).title());
++    }
++
++    @Test
++    void anExceptionalLootPageOpenDoesNotLeaveTheSessionOnALootPage() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++        int slot = slotNamed(adapter.menuOpens().get(before).contents(), "Demo");
++
++        adapter.failMenuOpens();
++        menus.click(player, slot).join();
++        assertFalse(failures.isEmpty(), "the failed open is reported");
++        failures.clear();
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(updates, adapter.menuUpdates().size(), "the still-open list is not refreshed");
++    }
++
++    @Test
++    void pagingTheListDuringAFailedLootOpenDoesNotLeaveALootPageBehind() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        for (int index = 0; index < 10; index++) {
++            loots.put("demo" + index, loot("Demo" + index, """
++                    roll:
++                      entries:
++                        a:
++                          item:
++                            id: diamond
++                    """));
++        }
++        useHeld(fixture("{}", loots, PAGED_WIKI_MENU));
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++
++        adapter.holdMenuOpens();
++        menus.click(player, 0).join();
++        menus.click(player, 17).join();
++        adapter.refuseMenuOpens();
++        adapter.releaseMenuOpens();
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(updates, adapter.menuUpdates().size(), "the list stays on its new page");
++        assertEquals("Demo9", name(adapter.menuUpdates().get(0).contents().get(0)));
++    }
++
++    @Test
++    void aLootPageThatFailsToOpenDoesNotRefreshOverTheStillOpenList() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++        Map<Integer, ItemStack> list = adapter.menuOpens().get(before).contents();
++        int slot = slotNamed(list, "Demo");
++
++        adapter.refuseMenuOpens();
++        menus.click(player, slot).join();
++        assertEquals(before + 1, adapter.menuOpens().size(), "the loot page open was refused");
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(updates, adapter.menuUpdates().size(), "the still-open list is not refreshed");
++        assertEquals("Demo", name(adapter.menuOpens().get(before).contents().get(slot)));
++    }
++
++    @Test
++    void twoLootPageOpensThatFailDoNotLeaveTheSessionOnALootPage() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++        Map<Integer, ItemStack> list = adapter.menuOpens().get(before).contents();
++        int slot = slotNamed(list, "Demo");
++
++        adapter.holdMenuOpens();
++        menus.click(player, slot).join();
++        menus.click(player, slot).join();
++        adapter.refuseMenuOpens();
++        adapter.releaseMenuOpens();
++        assertEquals(before + 1, adapter.menuOpens().size(), "both loot page opens were refused");
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(updates, adapter.menuUpdates().size(), "the still-open list is not refreshed");
++        assertEquals("Demo", name(adapter.menuOpens().get(before).contents().get(slot)));
++    }
++
++    @Test
++    void aPageClosedBeforeChancesArriveIsNotRefreshed() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        openLoot("Demo");
++        menus.close(player).join();
++        int opens = adapter.menuOpens().size();
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(opens, adapter.menuOpens().size(), "a closed page is not reopened");
++        assertEquals(updates, adapter.menuUpdates().size(), "a closed page is not refreshed");
++    }
++
++    @Test
++    void aPageBackOnTheListBeforeChancesArriveIsNotRefreshedBackToTheLootPage() {
++        useHeld(fixture("{}", Map.of("demo", loot("Demo", """
++                roll:
++                  entries:
++                    a:
++                      item:
++                        id: diamond
++                """))));
++        openLoot("Demo");
++        menus.click(player, 48).join();
++        int opens = adapter.menuOpens().size();
++        int updates = adapter.menuUpdates().size();
++
++        adapter.releaseAsync();
++
++        assertEquals(opens, adapter.menuOpens().size());
++        assertEquals(updates, adapter.menuUpdates().size(), "the list page the player moved to is left alone");
++    }
++
++    @Test
++    void fiftyEntriesPageOnTheShippedLayoutAndBackReturnsToTheList() {
++        StringBuilder roll = new StringBuilder("roll:\n  min: 1\n  max: 1\n  entries:\n");
++        for (int index = 0; index < 50; index++) {
++            roll.append("    e").append(index).append(":\n")
++                    .append("      weight: 1\n")
++                    .append("      amount: ").append(index + 1).append("\n")
++                    .append("      item:\n")
++                    .append("        id: diamond\n");
++        }
++        use(fixture("{}", Map.of("demo", loot("Demo", roll.toString()))));
++
++        Map<Integer, ItemStack> first = openLoot("Demo");
++        assertEquals(1, first.get(0).getAmount());
++        assertEquals(45, first.get(44).getAmount());
++        assertEquals(Material.ARROW, first.get(53).getType(), "next page");
++        assertEquals(Material.STONE, first.get(45).getType(), "no previous page on page one");
++
++        menus.click(player, 53).join();
++        Map<Integer, ItemStack> second = adapter.menuUpdates().get(0).contents();
++        assertEquals(46, second.get(0).getAmount());
++        assertEquals(50, second.get(4).getAmount());
++        assertNull(second.get(5), "the last page holds only five entries");
++        assertEquals(Material.ARROW, second.get(45).getType(), "previous page");
++
++        menus.click(player, 45).join();
++        assertEquals(1, adapter.menuUpdates().get(1).contents().get(0).getAmount());
++
++        menus.click(player, 48).join();
++        assertEquals(3, adapter.menuOpens().size(), "back replaces the loot page with the list");
++        assertEquals("§8Loots wiki", adapter.menuOpens().get(2).title());
++        assertEquals("Demo", name(adapter.menuOpens().get(2).contents().get(0)));
++    }
++
++    @Test
++    void everyLootPageKeyIsTranslatedInEveryShippedLanguage() throws IOException {
++        for (String language : List.of("en", "vi", "zh")) {
++            Map<String, Object> messages = messages("/languages/" + language + ".yml");
++            for (String key : LOOT_PAGE_KEYS) {
++                Object value = messages.get(key);
++                assertNotNull(value, language + " is missing " + key);
++                if (value instanceof List<?> list) {
++                    assertFalse(list.isEmpty(), language + " " + key);
++                    assertTrue(list.stream().anyMatch(line -> !String.valueOf(line).isBlank()), language + " " + key);
++                } else {
++                    assertFalse(String.valueOf(value).isBlank(), language + " " + key);
++                }
++            }
++        }
++    }
++
++    private void use(ConfigSnapshot snapshot) {
++        build(snapshot);
++        cache.load(snapshot);
++    }
++
++    private void useHeld(ConfigSnapshot snapshot) {
++        build(snapshot);
++        adapter.holdAsync();
++        cache.load(snapshot);
++    }
++
++    private void build(ConfigSnapshot snapshot) {
++        config = snapshot;
++        ItemSourceRegistry items = ItemSourceRegistry.create();
++        cache = new LootChanceCache(adapter.async());
++        MenuRenderer renderer = new MenuRenderer(items, key -> config.message("", key), MenuWarnings.ignore);
++        menus = new MenuService(adapter, renderer);
++        menu = new WikiMenu(adapter, () -> config, items, menus, renderer, cache,
++                (what, cause) -> failures.add(what + ": " + cause));
++    }
++
++    private Map<Integer, ItemStack> openLoot(String name) {
++        int before = adapter.menuOpens().size();
++        menu.open(player, new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(before + 1, adapter.menuOpens().size(), "the list did not open");
++        int slot = slotNamed(adapter.menuOpens().get(before).contents(), name);
++        menus.click(player, slot).join();
++        assertEquals(before + 2, adapter.menuOpens().size(), "the loot page did not open");
++        return adapter.menuOpens().get(before + 1).contents();
++    }
++
++    private static int slotNamed(Map<Integer, ItemStack> contents, String name) {
++        for (Map.Entry<Integer, ItemStack> entry : contents.entrySet()) {
++            if (name(entry.getValue()).equals(name)) {
++                return entry.getKey();
++            }
++        }
++        throw new AssertionError("no icon named " + name + " in " + contents);
++    }
++
++    private static int filledContent(Map<Integer, ItemStack> page) {
++        int filled = 0;
++        for (int slot = 0; slot < 45; slot++) {
++            if (page.get(slot) != null) {
++                filled++;
++            }
++        }
++        return filled;
++    }
++
++    private static int indexContaining(List<String> lore, String text) {
++        for (int index = 0; index < lore.size(); index++) {
++            if (ChatColor.stripColor(lore.get(index)).contains(text)) {
++                return index;
++            }
++        }
++        return -1;
++    }
++
++    private static boolean headerBeforeWorld(List<String> lore) {
++        int header = -1;
++        int world = -1;
++        for (int index = 0; index < lore.size(); index++) {
++            String line = ChatColor.stripColor(lore.get(index));
++            if (line.equals("Worlds:")) {
++                header = index;
++            } else if (line.startsWith("- world:")) {
++                world = index;
++            }
++        }
++        return header >= 0 && world > header;
++    }
++
++    private static String name(ItemStack item) {
++        if (item == null || item.getItemMeta() == null || item.getItemMeta().getDisplayName() == null) {
++            return "";
++        }
++        return ChatColor.stripColor(item.getItemMeta().getDisplayName());
++    }
++
++    private static String chanceShown(ItemStack item) {
++        for (String line : lore(item)) {
++            String plain = ChatColor.stripColor(line);
++            if (plain.startsWith("Chance:")) {
++                return plain.substring("Chance:".length()).replace("%", "").trim();
++            }
++        }
++        return "";
++    }
++
++    private static List<String> lore(ItemStack item) {
++        if (item == null || item.getItemMeta() == null || item.getItemMeta().getLore() == null) {
++            return List.of();
++        }
++        return item.getItemMeta().getLore();
++    }
++
++    private static ConfigSnapshot shippedTreasure() throws IOException {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals(resource("/config.yml"))
++                .worlds(resource("/worlds.yml"))
++                .language("en", resource("/languages/en.yml"))
++                .menu("wiki", resource("/menus/wiki.yml"));
++        for (String id : SHIPPED_LOOTS) {
++            sources.loot(id, resource("/loots/" + id + ".yml"));
++        }
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static ConfigSnapshot fixture(String worlds, Map<String, String> loots) {
++        return fixture(worlds, loots, WIKI_MENU);
++    }
++
++    private static ConfigSnapshot fixture(String worlds, Map<String, String> loots, String menu) {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\nbanned_loot_blocks: []\n")
++                .worlds(worlds)
++                .language("en", LANGUAGE)
++                .menu("wiki", menu);
++        loots.forEach(sources::loot);
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static String loot(String displayName, String body) {
++        return "display_name: '" + displayName + "'\nopen_mode: drop\nblock: barrel\n" + body;
++    }
++
++    private static String resource(String path) throws IOException {
++        try (InputStream in = Phase9LootPageAcceptanceTest.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        }
++    }
++
++    @SuppressWarnings("unchecked")
++    private static Map<String, Object> messages(String path) throws IOException {
++        return (Map<String, Object>) new Yaml().load(resource(path));
++    }
++
++    private static NameCatalog catalog() {
++        return new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                if (writtenId.contains(":")) {
++                    return Optional.of(writtenId);
++                }
++                if (writtenId.equals("not_an_item")) {
++                    return Optional.empty();
++                }
++                return Optional.of("minecraft:" + writtenId);
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return true;
++            }
++        };
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiInfoResolutionProofTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiInfoResolutionProofTest.java
+new file mode 100644
+index 0000000..713a315
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiInfoResolutionProofTest.java
+@@ -0,0 +1,79 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.command.SenderLocation;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.items.ItemResolveResult;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.items.ItemWarning;
++import me.rakkoon69.rakunloots.items.MissReason;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.Test;
++
++import java.nio.charset.StandardCharsets;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class Phase9WikiInfoResolutionProofTest {
++
++    @Test
++    void infoDecorationUsesTheSameResolutionThatBuiltItsIcon() throws Exception {
++        StreamableServerMock.mock();
++        try {
++            UUID world = UUID.randomUUID();
++            UUID player = UUID.randomUUID();
++            FakeServerAdapter adapter = new FakeServerAdapter(world);
++            adapter.addOnlinePlayer(player);
++            String language;
++            try (var stream = getClass().getResourceAsStream("/languages/en.yml")) {
++                language = new String(Objects.requireNonNull(stream).readAllBytes(), StandardCharsets.UTF_8);
++            }
++            ConfigSnapshot snapshot = ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
++                    .worlds("{}\n").language("en", language)
++                    .menu("wiki", "list:\n  rows: 2\n  content_slots: ['0-8']\n"
++                            + "loot:\n  rows: 2\n  content_slots: ['0-8']\n  buttons:\n"
++                            + "    info:\n      slot: 10\n      item: {source: changing, id: book}\n")
++                    .loot("demo", "open_mode: drop\nblock: barrel\nroll:\n  entries:\n"
++                            + "    a:\n      item: {id: diamond}\n")
++                    .build(), id -> Optional.of(id));
++            assertTrue(snapshot.loot("demo").isPresent());
++            ItemSourceRegistry items = ItemSourceRegistry.create();
++            AtomicInteger resolutions = new AtomicInteger();
++            assertTrue(items.register("changing", id -> resolutions.getAndIncrement() == 0
++                    ? ItemResolveResult.miss("changing", id, MissReason.UNKNOWN_ID, ItemWarning.unknownId(id))
++                    : ItemResolveResult.hit("changing", id, new ItemStack(Material.BOOK))));
++            MenuRenderer renderer = new MenuRenderer(items, key -> snapshot.message("", key), MenuWarnings.ignore);
++            MenuService menus = new MenuService(adapter, renderer);
++            LootChanceCache cache = new LootChanceCache(adapter.async());
++            WikiMenu wiki = new WikiMenu(adapter, () -> snapshot, items, menus, renderer, cache,
++                    (what, cause) -> {
++                        throw new AssertionError(what, cause);
++                    });
++            cache.load(snapshot);
++            wiki.open(player, new SenderLocation(world, 0, 64, 0));
++            menus.click(player, 0).join();
++            ItemStack info = adapter.menuOpens().get(1).contents().get(10);
++            assertEquals(Material.BARRIER, info.getType());
++            assertTrue(info.getItemMeta().getDisplayName().contains("Missing changing:book"),
++                    "The first resolution missed, but the barrier was relabelled: "
++                            + info.getItemMeta().getDisplayName());
++            assertEquals(1, resolutions.get(),
++                    "decoration must use the item resolution that actually built the icon");
++        } finally {
++            MockBukkit.unmock();
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiOpenRaceProofTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiOpenRaceProofTest.java
+new file mode 100644
+index 0000000..47c55b0
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/Phase9WikiOpenRaceProofTest.java
+@@ -0,0 +1,193 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.command.SenderLocation;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.server.LoadedWorld;
++import me.rakkoon69.rakunloots.server.ServerAdapter;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.junit.jupiter.api.Test;
++
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Proxy;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class Phase9WikiOpenRaceProofTest {
++
++    @Test
++    void anOlderWorldReadCannotRemoveTheCurrentLootPagesRefreshRegistration() throws Exception {
++        StreamableServerMock.mock();
++        try {
++            UUID world = UUID.randomUUID();
++            UUID player = UUID.randomUUID();
++            FakeServerAdapter delegate = new FakeServerAdapter(world);
++            delegate.addOnlinePlayer(player);
++            delegate.holdAsync();
++            CompletableFuture<List<LoadedWorld>> firstWorlds = new CompletableFuture<>();
++            AtomicInteger reads = new AtomicInteger();
++            ServerAdapter adapter = (ServerAdapter) Proxy.newProxyInstance(ServerAdapter.class.getClassLoader(),
++                    new Class<?>[]{ServerAdapter.class}, (proxy, method, args) -> {
++                        if (method.getName().equals("loadedWorlds") && reads.getAndIncrement() == 0) {
++                            return firstWorlds;
++                        }
++                        try {
++                            return method.invoke(delegate, args);
++                        } catch (InvocationTargetException failure) {
++                            throw failure.getCause();
++                        }
++                    });
++            ConfigSnapshot snapshot = config(1);
++            ItemSourceRegistry items = ItemSourceRegistry.create();
++            MenuRenderer renderer = new MenuRenderer(items, key -> snapshot.message("", key), MenuWarnings.ignore);
++            MenuService menus = new MenuService(adapter, renderer);
++            LootChanceCache cache = new LootChanceCache(adapter.async());
++            List<Throwable> failures = new ArrayList<>();
++            WikiMenu wiki = new WikiMenu(adapter, () -> snapshot, items, menus, renderer, cache,
++                    (what, cause) -> failures.add(cause));
++            cache.load(snapshot);
++            SenderLocation location = new SenderLocation(world, 0, 64, 0);
++            wiki.open(player, location);
++            wiki.open(player, location);
++            menus.click(player, 0).join();
++            assertEquals(2, delegate.menuOpens().size());
++            assertTrue(lore(delegate.menuOpens().get(1).contents().get(0)).contains("calculating"));
++            firstWorlds.complete(List.of(new LoadedWorld(world, "world")));
++            assertEquals(2, delegate.menuOpens().size(), "the old open must be refused");
++            delegate.releaseAsync();
++            assertTrue(failures.isEmpty(), failures.toString());
++            assertEquals(1, delegate.menuUpdates().size(), "the current page must remain registered for ready refresh");
++            assertFalse(lore(delegate.menuUpdates().get(0).contents().get(0)).contains("calculating"));
++        } finally {
++            MockBukkit.unmock();
++        }
++    }
++
++    @Test
++    void anInverseWorldReadCannotUnregisterTheVisibleMenu() throws Exception {
++        StreamableServerMock.mock();
++        try {
++            UUID world = UUID.randomUUID();
++            UUID player = UUID.randomUUID();
++            FakeServerAdapter delegate = new FakeServerAdapter(world);
++            delegate.addOnlinePlayer(player);
++            delegate.holdAsync();
++            delegate.holdMenuOpens();
++            CompletableFuture<List<LoadedWorld>> secondWorlds = new CompletableFuture<>();
++            AtomicInteger reads = new AtomicInteger();
++            ServerAdapter adapter = (ServerAdapter) Proxy.newProxyInstance(ServerAdapter.class.getClassLoader(),
++                    new Class<?>[]{ServerAdapter.class}, (proxy, method, args) -> {
++                        if (method.getName().equals("loadedWorlds") && reads.getAndIncrement() == 1) {
++                            return secondWorlds;
++                        }
++                        try {
++                            return method.invoke(delegate, args);
++                        } catch (InvocationTargetException failure) {
++                            throw failure.getCause();
++                        }
++                    });
++            ConfigSnapshot snapshot = config(1);
++            ItemSourceRegistry items = ItemSourceRegistry.create();
++            MenuRenderer renderer = new MenuRenderer(items, key -> snapshot.message("", key), MenuWarnings.ignore);
++            MenuService menus = new MenuService(adapter, renderer);
++            LootChanceCache cache = new LootChanceCache(adapter.async());
++            WikiMenu wiki = new WikiMenu(adapter, () -> snapshot, items, menus, renderer, cache,
++                    (what, cause) -> {
++                        throw new AssertionError(what, cause);
++                    });
++            cache.load(snapshot);
++            SenderLocation location = new SenderLocation(world, 0, 64, 0);
++            wiki.open(player, location);
++            wiki.open(player, location);
++
++            delegate.releaseMenuOpens();
++            assertEquals(1, delegate.menuOpens().size(), "the first menu did not land");
++            secondWorlds.complete(List.of(new LoadedWorld(world, "world")));
++            assertEquals(1, delegate.menuOpens().size(), "the stale second menu unexpectedly landed");
++
++            menus.click(player, 0).join();
++            assertEquals(2, delegate.menuOpens().size(), "the visible list did not open its loot page");
++            int updates = delegate.menuUpdates().size();
++            delegate.releaseAsync();
++
++            assertEquals(updates + 1, delegate.menuUpdates().size(),
++                    "the visible menu's loot page must remain registered for the chance refresh");
++            assertFalse(lore(delegate.menuUpdates().get(updates).contents().get(0)).contains("calculating"));
++        } finally {
++            MockBukkit.unmock();
++        }
++    }
++
++    @Test
++    void anAlwaysEntryIsKnownEvenBeforeTheChanceJobRuns() throws Exception {
++        StreamableServerMock.mock();
++        try {
++            UUID world = UUID.randomUUID();
++            UUID player = UUID.randomUUID();
++            FakeServerAdapter adapter = new FakeServerAdapter(world);
++            adapter.addOnlinePlayer(player);
++            adapter.holdAsync();
++            ConfigSnapshot snapshot = config(-1);
++            ItemSourceRegistry items = ItemSourceRegistry.create();
++            MenuRenderer renderer = new MenuRenderer(items, key -> snapshot.message("", key), MenuWarnings.ignore);
++            MenuService menus = new MenuService(adapter, renderer);
++            LootChanceCache cache = new LootChanceCache(adapter.async());
++            WikiMenu wiki = new WikiMenu(adapter, () -> snapshot, items, menus, renderer, cache,
++                    (what, cause) -> {
++                        throw new AssertionError(what, cause);
++                    });
++            cache.load(snapshot);
++            wiki.open(player, new SenderLocation(world, 0, 64, 0));
++            menus.click(player, 0).join();
++            String text = lore(adapter.menuOpens().get(1).contents().get(0));
++            assertTrue(text.contains("Always"), text);
++            assertFalse(text.contains("calculating"), text);
++        } finally {
++            MockBukkit.unmock();
++        }
++    }
++
++    private static String lore(org.bukkit.inventory.ItemStack item) {
++        return String.join(" ", item.getItemMeta().getLore());
++    }
++
++    private static ConfigSnapshot config(int weight) throws Exception {
++        String language;
++        try (var stream = Phase9WikiOpenRaceProofTest.class.getResourceAsStream("/languages/en.yml")) {
++            language = new String(Objects.requireNonNull(stream).readAllBytes(), StandardCharsets.UTF_8);
++        }
++        ConfigSnapshot snapshot = ConfigLoader.load(ConfigSources.builder().globals("language: en\n")
++                .worlds("{}\n").language("en", language)
++                .loot("demo", "open_mode: drop\nblock: barrel\nroll:\n  min: 1\n  max: 1\n  entries:\n"
++                        + "    a:\n      weight: " + weight + "\n      item: {id: diamond}\n").build(),
++                new NameCatalog() {
++                    public Optional<String> currentId(String id) {
++                        return Optional.of(id.contains(":") ? id : "minecraft:" + id);
++                    }
++
++                    public boolean soundExists(String key) {
++                        return true;
++                    }
++                });
++        assertTrue(snapshot.loot("demo").isPresent(), "the real fixture must load");
++        return snapshot;
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java
+index c064972..9f86f93 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java
+@@ -48,6 +48,25 @@ class WikiMenuTest {
+             menu_wiki_list_not_on_timer: "&7No timer"
+             menu_wiki_list_click: "&eClick"
+             menu_wiki_loot_title: "&8Loot {loot}"
++            menu_wiki_content_chance: "&7Chance: &e{chance:2}%"
++            menu_wiki_content_always: "&7Always included"
++            menu_wiki_content_calculating: "&7Chance: calculating"
++            menu_wiki_content_amount: "&7Amount: &e{amount}"
++            menu_wiki_content_missing_name: "&cMissing {item}"
++            menu_wiki_content_missing_lore:
++              - "&7That item is not loaded."
++            menu_wiki_info_name: "&6{loot} info"
++            menu_wiki_info_open_mode: "&7Open mode: &e{open_mode}"
++            menu_wiki_open_mode_drop: "&edrop"
++            menu_wiki_open_mode_inventory: "&einventory"
++            menu_wiki_info_lock: "&7Lock: &e{lock}"
++            menu_wiki_info_no_lock: "&7Lock: &aNo lock"
++            menu_wiki_info_life: "&7Life: &e{life}"
++            menu_wiki_info_unending: "&7Life: &aUnending"
++            menu_wiki_info_items: "&7Items: &e{min}&7 to &e{max}"
++            menu_wiki_info_worlds: "&7Worlds:"
++            menu_wiki_info_world: "&8- &e{world}&7: &e{chance:2}%"
++            menu_wiki_info_no_worlds: "&7No world timer summons this loot."
+             menu_button_back_name: "&a[Back]"
+             menu_button_back_lore:
+               - "&7Back to the list"
+@@ -207,7 +226,7 @@ class WikiMenuTest {
+     }
+ 
+     @Test
+-    void aLootPageHasOnlyBackAndFillerAndBackKeepsTheListPage() {
++    void aLootPageShowsItsContentsAndBackKeepsTheListPage() {
+         Map<String, String> loots = new LinkedHashMap<>();
+         for (int index = 0; index < 10; index++) {
+             String id = String.format("loot%02d", index);
+@@ -229,18 +248,22 @@ class WikiMenuTest {
+         assertEquals(Material.OAK_DOOR, stub.get(9).getType());
+         assertEquals("§a[Back]", stub.get(9).getItemMeta().getDisplayName());
+         assertTrue(String.join(" ", stub.get(9).getItemMeta().getLore()).contains("Back to the list"));
+-        for (int slot = 0; slot <= 8; slot++) {
++        assertEquals(Material.DIAMOND, stub.get(0).getType());
++        assertTrue(lore(stub.get(0)).contains("Chance"), lore(stub.get(0)));
++        for (int slot = 1; slot <= 8; slot++) {
+             assertFalse(stub.containsKey(slot), "unused content slot " + slot + " is empty");
+         }
+-        for (int slot = 10; slot <= 17; slot++) {
++        assertEquals(Material.BOOK, stub.get(10).getType());
++        assertEquals("loot09 info", named(stub.get(10)));
++        for (int slot = 11; slot <= 17; slot++) {
+             assertEquals(Material.STONE, stub.get(slot).getType(), "slot " + slot);
+         }
+ 
+         int opens = adapter.menuOpens().size();
+         int updates = adapter.menuUpdates().size();
+         menus.click(player, 10).join();
+-        assertEquals(opens, adapter.menuOpens().size(), "the filtered info button cannot be clicked");
+-        assertEquals(updates, adapter.menuUpdates().size(), "the filtered info button cannot be clicked");
++        assertEquals(opens, adapter.menuOpens().size(), "the info icon is read-only");
++        assertEquals(updates, adapter.menuUpdates().size(), "the info icon is read-only");
+ 
+         menus.click(player, 9).join();
+         assertEquals(3, adapter.menuOpens().size(), "the list page did not replace the loot page");
+@@ -346,8 +369,10 @@ class WikiMenuTest {
+         ItemSourceRegistry items = ItemSourceRegistry.create();
+         MenuRenderer renderer = new MenuRenderer(items, key -> config.message("", key), MenuWarnings.ignore);
+         menus = new MenuService(adapter, renderer);
+-        menu = new WikiMenu(adapter, () -> config, items, menus, renderer,
++        LootChanceCache chances = new LootChanceCache(adapter.async());
++        menu = new WikiMenu(adapter, () -> config, items, menus, renderer, chances,
+                 (what, cause) -> failures.add(what));
++        chances.load(snapshot);
+     }
+ 
+     private static ConfigSnapshot snapshot(String worlds, Map<String, String> loots) {

@@ -1,0 +1,2 @@
+1: A. Exit mode output reaches the model as the gate reason, so it stays translated; only node:test and vitest spawns set containerPaths.
+2: A. Copy into a new options object; never mutate the caller's options.

@@ -1,0 +1,216 @@
+{
+  "kit": "1.1.0",
+  "skills": {
+    "agent-box": {
+      "computedHash": "c23dae20aac0d5aa1b3777039218df9d18e4255d0bfdc5c9b95dccda0dd41b3a",
+      "skillPath": "",
+      "source": "nudetiger/agent-box",
+      "sourceType": "github"
+    },
+    "ask-matt": {
+      "computedHash": "9153a87908838ed24838c16da0eaeec46877f3ab701efdeefea7a5579a4a474d",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "code-review": {
+      "computedHash": "9e6d1b00c31e10a002ac3e5fb49014c9589166f668c62996e80a36d23ca21e70",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "codebase-design": {
+      "computedHash": "362b0bec828219d9f4b08ca7c466164e67253bdd817359258e60d2e9c5692a8f",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "diagnosing-bugs": {
+      "computedHash": "aa87b0ac245c6d1b203c4678eb34dc101af02291448780c55c5e58ccc1619bd7",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "domain-modeling": {
+      "computedHash": "b62d997256cc073e123d4303da8e9db00db0e28de9739660ca3e55ab76e09cdb",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "grill-me": {
+      "computedHash": "19e660207b447acf6ee0d600471c02e549c7aca8fb3ab38fdc2c7056aa442fc8",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "grill-with-docs": {
+      "computedHash": "abc0fa7948db18b5fb0e1cc1c522ac5ff47d874e2da1e5df60619d79be11f38b",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "grilling": {
+      "computedHash": "26d225ea8a36f4acacbe267e789cfb97d73964412f4243dd4b65b6cb806ddebc",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "handoff": {
+      "computedHash": "739d8fbe3e6ed688581eb62b35f04834822eae47e57bc35a79c8d8dc9ac703d3",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "implement": {
+      "computedHash": "83042ad79e3d7ce616124bf59a38a5ebe79417adb36bedfc4e6223aab783be8c",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "implement-spec": {
+      "computedHash": "5bdaaf884b02b24db432241bcc32250bfee6149c45c743a2a1fef6b416837cfa",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "improve-codebase-architecture": {
+      "computedHash": "f053ff6d7a70f10bd0104e368f7e664b23ea6378898e305bf027e8864757822f",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "no-ai-slop": {
+      "computedHash": "1c1abfa4e447e2e96f02832cc3d31d8b298184027aab1bb4cf5aa33179dc2f81",
+      "skillPath": "skills/{name}",
+      "source": "petergyang/no-ai-slop",
+      "sourceType": "github"
+    },
+    "ponytail": {
+      "computedHash": "f18008471528f0adde90a560d053f85935eed5cee26c447b7177ad24472bcf32",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "ponytail-audit": {
+      "computedHash": "3ab632ce4695de214dafe4db13d6f939e1c4be328bd0754ea751dc28b70be554",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "ponytail-debt": {
+      "computedHash": "f0b59cb7e623f68568f2164864c757d41f0452d176c2f28b5b9b3c6b7ef3a799",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "ponytail-gain": {
+      "computedHash": "b87f5b982820479831608d3b3d4b942c95577820fef088662348eb16b48792dc",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "ponytail-help": {
+      "computedHash": "c4b353c9a13a9fd7008e319d1965816faaed13dcb61feb90afc514e50031706b",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "ponytail-review": {
+      "computedHash": "affa0eedca467b58699fafbea28f6f85352aa3e7f23785964bf42f029a291504",
+      "skillPath": "skills/{name}",
+      "source": "DietrichGebert/ponytail",
+      "sourceType": "github"
+    },
+    "pr": {
+      "computedHash": "57658baca2e50e9cf98fdb6b74a51f2afd34b71019d516f7c5d45a51a28354b0",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "prototype": {
+      "computedHash": "f74ae01f4fc454d3a4ef21271920f1706e626271e715dda0559e489f45c792c3",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "research": {
+      "computedHash": "524b404b1ca373a8b00f63a64667ec4b0a61c3c9cf4e8f246e639be859bb6979",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "retro": {
+      "computedHash": "42110f533f169026d037cf141b9f6c2752c6d914903be4758c38a68349e83e78",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "setup-matt-pocock-skills": {
+      "computedHash": "5dcf60b4265d52423cd83b8f0aef466f93b624152bbb9d2450b41ed80f7d0e6d",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "tdd": {
+      "computedHash": "969583080caf842ae86a53501a0091eced13fd89cad65d3aa75c09112318ff33",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "teach": {
+      "computedHash": "d9480a846c88bb1151947eb484bab1a8c9a84af4d9ddf1ea0f6fb7fe639cf9b3",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "to-questionnaire": {
+      "computedHash": "77825120815c21400f82e2794faf342d1d1a4ab1493be3fe061857885d26b768",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "to-spec": {
+      "computedHash": "c73a2250beac0479e384f5466e834bb54ce6e30b7f8705e9999ba840d9d59b36",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "to-tickets": {
+      "computedHash": "b8eb6dca1085e85220b0f5990ed787ebf8a924844d090689f1073b06367e2f7a",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "triage": {
+      "computedHash": "797f4371a4cea1b564ecfdc7a603089acf3c023454e47ccb0b3307c62de279f8",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "wait-what": {
+      "computedHash": "95393f96e730b20dabc6b425515cb6292d34bd9a91859a03c2c821e24d321112",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "wayfinder": {
+      "computedHash": "0efeec3d47d2fdd3d9b677f19ca7360a3e1e2034ff23bfee33765a74c5d27d22",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "wizard": {
+      "computedHash": "dbefb750eae07d9f8b05ab1084f6acfdda2752df2a6b577c46a505e2bc790164",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    },
+    "writing-for-agents": {
+      "computedHash": "1c0c4ebf2d221917591144f0ced4fe46dae13301cb3d6d93fc88ecf0dda6aed2",
+      "skillPath": "skills/{cat}/",
+      "source": "mattpocock/skills",
+      "sourceType": "github"
+    }
+  },
+  "version": 1
+}

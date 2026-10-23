@@ -1,0 +1,1 @@
+MSYS_NO_PATHCONV=1 podman exec agent-box-rakunloots-p9-107-impl bash -c 'jstack 66 | grep -A 18 -m 2 -E "SocketDispatcher.read|SSLSocketInputRecord|Execution worker|included builds"'

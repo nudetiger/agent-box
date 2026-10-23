@@ -29,5 +29,8 @@ RUN chmod 755 /usr/local/bin/run-task.sh /usr/local/bin/api /opt/agent-box/chang
 
 USER node
 ENV OPENCODE_DISABLE_AUTOUPDATE=1
+# A UTF-8 locale: Java 17 reads sources in the locale's encoding, and the default POSIX one compiled
+# RakunLoots' UTF-8 sources as US-ASCII (RakunLoots P9, 2026-10-21).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 WORKDIR /work
 ENTRYPOINT ["sleep", "infinity"]

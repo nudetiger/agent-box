@@ -1,0 +1,2287 @@
+diff --git a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+index a674f18..03b201e 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
++++ b/src/main/java/me/rakkoon69/rakunloots/RakunLootsPlugin.java
+@@ -11,6 +11,7 @@ import me.rakkoon69.rakunloots.command.BukkitCommandRegistrar;
+ import me.rakkoon69.rakunloots.command.BukkitCommandSources;
+ import me.rakkoon69.rakunloots.command.ClaimCommand;
+ import me.rakkoon69.rakunloots.command.CommandRegistry;
++import me.rakkoon69.rakunloots.command.WikiCommand;
+ import me.rakkoon69.rakunloots.config.ConfigFolder;
+ import me.rakkoon69.rakunloots.config.ConfigLoader;
+ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
+@@ -58,6 +59,7 @@ import me.rakkoon69.rakunloots.visuals.BoxVisualsListener;
+ import me.rakkoon69.rakunloots.visuals.BoxVisualsService;
+ import me.rakkoon69.rakunloots.visuals.GlowLibraries;
+ import me.rakkoon69.rakunloots.visuals.GuardianBeamLaser;
++import me.rakkoon69.rakunloots.wiki.WikiMenu;
+ import org.bukkit.event.HandlerList;
+ import org.bukkit.event.Listener;
+ import org.bukkit.permissions.Permission;
+@@ -197,9 +199,10 @@ public class RakunLootsPlugin extends JavaPlugin {
+ 
+         UnclaimedSummonItems claims = new UnclaimedSummonItems(adapter, this::config, store, maker, log::failure);
+         ClaimMenu claimMenu = new ClaimMenu(adapter, this::config, claims, maker, menus, menuRenderer, log::failure);
++        WikiMenu wikiMenu = new WikiMenu(adapter, this::config, itemSources, menus, menuRenderer, log::failure);
+         SummonItemUse use = new SummonItemUse(maker, this::config, summons, giveBack, log::failure);
+         registerEvents(use, claims);
+-        registerCommands(giveBack, claims, claimMenu);
++        registerCommands(giveBack, claims, claimMenu, wikiMenu);
+     }
+ 
+     /**
+@@ -269,7 +272,8 @@ public class RakunLootsPlugin extends JavaPlugin {
+         getServer().getPluginManager().registerEvents(listener, this);
+     }
+ 
+-    private void registerCommands(SummonItemGiveBack giveBack, UnclaimedSummonItems claims, ClaimMenu claimMenu) {
++    private void registerCommands(SummonItemGiveBack giveBack, UnclaimedSummonItems claims, ClaimMenu claimMenu,
++                                  WikiMenu wikiMenu) {
+         BukkitCommandSources sources = new BukkitCommandSources(getServer(), this::config);
+         CommandRegistry registry = new CommandRegistry(sources, key -> config.message("", key), log::debug);
+         registrar = new BukkitCommandRegistrar(this, registry);
+@@ -278,6 +282,7 @@ public class RakunLootsPlugin extends JavaPlugin {
+                 this::reloadConfigFiles, adapter, sources, lifecycle, summons, timers, holograms, animations, visuals,
+                 search::reload, menus::reload, giveBack::give, log.record())));
+         registrar.register(ClaimCommand.node(snapshot.claimCommand(), claims, claimMenu));
++        registrar.register(WikiCommand.node(snapshot.wikiCommand(), wikiMenu));
+     }
+ 
+     /**
+@@ -291,15 +296,18 @@ public class RakunLootsPlugin extends JavaPlugin {
+         // Enable and reload both come here, and the warnings command lists what happened since the last one.
+         log.record().clear();
+         log.config(snapshot.rawWarnings());
+-        applyClaimPermissionDefault(snapshot.claimCommand().permissionDefault());
++        applyPermissionDefault(ClaimCommand.PERMISSION, "take the summon items you are owed with the claim command",
++                snapshot.claimCommand().permissionDefault());
++        applyPermissionDefault(WikiCommand.PERMISSION, "open the loots wiki",
++                snapshot.wikiCommand().permissionDefault());
+         return snapshot;
+     }
+ 
+     /**
+-     * Sets the default of the claim permission, which plugin.yml registers, and recalculates the permissibles so
++     * Sets the default of a command permission, which plugin.yml registers, and recalculates the permissibles so
+      * players already online see it. A server that did not register the permission gets it added.
+      */
+-    private void applyClaimPermissionDefault(DefaultAccess access) {
++    private void applyPermissionDefault(String node, String description, DefaultAccess access) {
+         PluginManager plugins = getServer().getPluginManager();
+         PermissionDefault value = switch (access) {
+             case EVERYONE -> PermissionDefault.TRUE;
+@@ -307,10 +315,9 @@ public class RakunLootsPlugin extends JavaPlugin {
+             case OPERATORS -> PermissionDefault.OP;
+             case NON_OPERATORS -> PermissionDefault.NOT_OP;
+         };
+-        Permission permission = plugins.getPermission(ClaimCommand.PERMISSION);
++        Permission permission = plugins.getPermission(node);
+         if (permission == null) {
+-            plugins.addPermission(new Permission(ClaimCommand.PERMISSION,
+-                    "take the summon items you are owed with the claim command", value));
++            plugins.addPermission(new Permission(node, description, value));
+             return;
+         }
+         permission.setDefault(value);
+diff --git a/src/main/java/me/rakkoon69/rakunloots/command/WikiCommand.java b/src/main/java/me/rakkoon69/rakunloots/command/WikiCommand.java
+new file mode 100644
+index 0000000..e6b5d98
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/command/WikiCommand.java
+@@ -0,0 +1,39 @@
++package me.rakkoon69.rakunloots.command;
++
++import me.rakkoon69.rakunloots.config.WikiCommandSettings;
++import me.rakkoon69.rakunloots.wiki.WikiMenu;
++
++import java.util.Optional;
++import java.util.UUID;
++
++/**
++ * The loots wiki command: a root of its own, named by the {@code wiki_command} block of {@code config.yml}. Only a
++ * player can run it, because the list shows the timer chances of the world they stand in.
++ */
++public final class WikiCommand {
++
++    /**
++     * The wiki command's permission. {@code plugin.yml} registers it, and the plugin sets its default from the config
++     * at enable and on reload.
++     */
++    public static final String PERMISSION = "rakunloots.wiki";
++
++    private WikiCommand() {
++    }
++
++    public static CommandNode node(WikiCommandSettings settings, WikiMenu menu) {
++        return CommandNode.builder(settings.name())
++                .aliases(settings.aliases().toArray(String[]::new))
++                .permission(PERMISSION)
++                .handler(invocation -> {
++                    Optional<UUID> playerId = invocation.sender().playerId();
++                    Optional<SenderLocation> location = invocation.sender().location();
++                    if (playerId.isEmpty() || location.isEmpty()) {
++                        invocation.reply("cmd_wiki_needs_player");
++                        return;
++                    }
++                    menu.open(playerId.get(), location.get());
++                })
++                .build();
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+index bd3b508..3b7b8a9 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+@@ -52,9 +52,10 @@ final class ConfigLoadSupport {
+     private static final String KEY_STORAGE_BACKUPS_KEPT = "backups_kept";
+     private static final String KEY_CLAIM_COMMAND = "claim_command";
+     private static final String KEY_ADMIN_COMMAND = "admin_command";
++    private static final String KEY_WIKI_COMMAND = "wiki_command";
+     private static final String KEY_COMMAND_NAME = "name";
+     private static final String KEY_COMMAND_ALIASES = "aliases";
+-    private static final String KEY_CLAIM_PERMISSION_DEFAULT = "permission_default";
++    private static final String KEY_PERMISSION_DEFAULT = "permission_default";
+     private static final String KEY_BANNED_LOOT_BLOCKS = "banned_loot_blocks";
+     private static final List<String> DEFAULT_BANNED_LOOT_BLOCKS = List.of("@banned_loot_blocks");
+     private static final int DEFAULT_LIFE_SECONDS = 360;
+@@ -63,7 +64,7 @@ final class ConfigLoadSupport {
+     private static final Set<String> LOOT_ROOT_KEYS = Set.of(
+             "language", "messages", "open_mode", "lock", "life", "summon_delay", "message_owner_on_remove_enable",
+             "loot_end", "display_name", "description", "block", "head_data", "roll", "summon_item", "summon_settings",
+-            "hologram", "glow", "laser", "animations"
++            "hologram", "glow", "laser", "animations", "wiki"
+     );
+     private static final Set<String> LOOT_END_KEYS = Set.of(
+             "allow_explosion", "drop_block", "timeout_spill", "empty_removal"
+@@ -74,6 +75,7 @@ final class ConfigLoadSupport {
+             "source", "id", "name", "lore", "enchants", "flags",
+             "custom_model_data", "unbreakable", "damage", "nbt"
+     );
++    private static final Set<String> WIKI_KEYS = Set.of("show", "icon");
+ 
+     private ConfigLoadSupport() {
+     }
+@@ -197,6 +199,7 @@ final class ConfigLoadSupport {
+         Map<PlacementRule, Integer> placementAttempts = globals.placementAttempts;
+         Set<String> bannedLootBlocks = blockLists.resolveGlobal(KEY_BANNED_LOOT_BLOCKS, globals.bannedLootBlocks);
+ 
++        Map<String, WikiSettings> wikis = new LinkedHashMap<>();
+         Map<String, SummonRules> summonRules = new LinkedHashMap<>();
+         Map<String, HologramSettings> holograms = new LinkedHashMap<>();
+         Map<String, VisualsSettings> visuals = new LinkedHashMap<>();
+@@ -210,6 +213,8 @@ final class ConfigLoadSupport {
+                     lootId, entry.getValue(), nameCatalog, resolvedNames, bannedLootBlocks, rawWarnings);
+             loot.ifPresent(value -> {
+                 loots.put(lootId, value);
++                wikis.put(lootId, parseWiki(
++                        lootId, entry.getValue().get("wiki"), nameCatalog, resolvedNames, rawWarnings));
+                 summonRules.put(
+                         lootId,
+                         SummonConfig.parseSummonRules(lootId, entry.getValue(), blockLists, placementAttempts, rawWarnings)
+@@ -251,6 +256,7 @@ final class ConfigLoadSupport {
+                 Collections.unmodifiableMap(new LinkedHashMap<>(resolvedNames)),
+                 worlds,
+                 Collections.unmodifiableMap(loots),
++                Collections.unmodifiableMap(wikis),
+                 Collections.unmodifiableMap(summonRules),
+                 Collections.unmodifiableMap(holograms),
+                 Collections.unmodifiableMap(visuals),
+@@ -262,6 +268,7 @@ final class ConfigLoadSupport {
+                 globals.storage,
+                 globals.claimCommand,
+                 globals.adminCommand,
++                globals.wikiCommand,
+                 menus.claim(),
+                 menus.wikiList(),
+                 menus.wikiLoot(),
+@@ -387,6 +394,72 @@ final class ConfigLoadSupport {
+         return item;
+     }
+ 
++    /**
++     * A loot's {@code wiki}: a yes or no, or a map of {@code show} and {@code icon}. A missing value, or one with an
++     * unknown key, shows the loot with its block as the icon. A value that cannot be used warns high and falls back
++     * the same way.
++     */
++    private static WikiSettings parseWiki(
++            String lootId,
++            Object raw,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        if (raw == null) {
++            return WikiSettings.shown();
++        }
++        if (raw instanceof Boolean show) {
++            return show ? WikiSettings.shown() : new WikiSettings(false, Optional.empty());
++        }
++        if (!(raw instanceof Map<?, ?> map)) {
++            warnings.add(ConfigWarning.unusableWikiValue(lootId, "wiki"));
++            return WikiSettings.shown();
++        }
++
++        boolean unknown = false;
++        for (Object key : map.keySet()) {
++            if (!WIKI_KEYS.contains(String.valueOf(key))) {
++                warnings.add(ConfigWarning.unknownKey(lootId, "wiki." + key));
++                unknown = true;
++            }
++        }
++        if (unknown) {
++            return WikiSettings.shown();
++        }
++
++        boolean usable = true;
++        boolean show = true;
++        Object rawShow = map.get("show");
++        if (rawShow != null) {
++            Optional<Boolean> parsed = strictBoolean(rawShow);
++            if (parsed.isPresent()) {
++                show = parsed.get();
++            } else {
++                warnings.add(ConfigWarning.unusableWikiValue(lootId, "wiki.show"));
++                usable = false;
++            }
++        }
++
++        Optional<ItemReference> icon = Optional.empty();
++        Object rawIcon = map.get("icon");
++        if (rawIcon != null) {
++            if (rawIcon instanceof Map<?, ?>) {
++                icon = parseItemReference(lootId, "wiki.icon", rawIcon, nameCatalog, resolvedNames, warnings);
++                if (icon.isEmpty()) {
++                    usable = false;
++                }
++            } else {
++                warnings.add(ConfigWarning.unusableWikiValue(lootId, "wiki.icon"));
++                usable = false;
++            }
++        }
++        if (!usable) {
++            return WikiSettings.shown();
++        }
++        return new WikiSettings(show, icon);
++    }
++
+     private static Optional<OpenMode> parseOpenMode(String lootId, Object raw, List<ConfigWarning> warnings) {
+         if (raw == null) {
+             warnings.add(ConfigWarning.lootHigh(ConfigWarning.Kind.UNUSABLE_OPEN_MODE, lootId));
+@@ -1109,14 +1182,14 @@ final class ConfigLoadSupport {
+         StorageSettings storage = parseStorage(root.get(KEY_STORAGE), warnings);
+         ClaimCommandSettings claimCommand = parseClaimCommand(root.get(KEY_CLAIM_COMMAND), warnings);
+         AdminCommandSettings adminCommand = parseAdminCommand(root.get(KEY_ADMIN_COMMAND), warnings);
++        WikiCommandSettings wikiCommand = parseWikiCommand(root.get(KEY_WIKI_COMMAND), warnings);
+         Map<PlacementRule, Integer> placementAttempts = SummonConfig.parsePlacementAttempts(root, warnings);
+         List<String> bannedLootBlocks = parseBannedLootBlocks(root, warnings);
+         int hologramViewRange = HologramConfig.parseGlobalViewRange(root, warnings);
+         HologramProviderChoice hologramProvider = HologramConfig.parseProvider(root, warnings);
+ 
+-        return new Globals(language, warningLevel, debug, storage, claimCommand, adminCommand, placementAttempts,
+-                bannedLootBlocks,
+-                hologramViewRange, hologramProvider);
++        return new Globals(language, warningLevel, debug, storage, claimCommand, adminCommand, wikiCommand,
++                placementAttempts, bannedLootBlocks, hologramViewRange, hologramProvider);
+     }
+ 
+     /**
+@@ -1237,22 +1310,35 @@ final class ConfigLoadSupport {
+     private static ClaimCommandSettings parseClaimCommand(Object raw, List<ConfigWarning> warnings) {
+         CommandWords words = parseCommandWords(raw, KEY_CLAIM_COMMAND, ClaimCommandSettings.DEFAULT_NAME,
+                 ClaimCommandSettings.DEFAULT_ALIASES, warnings, ConfigWarning::unusableClaimCommandValue);
+-        return new ClaimCommandSettings(words.name(), words.aliases(), parseClaimPermissionDefault(raw, warnings));
++        return new ClaimCommandSettings(words.name(), words.aliases(), parsePermissionDefault(
++                raw, ClaimCommandSettings.DEFAULT_PERMISSION, ConfigWarning::unusableClaimCommandValue, warnings));
++    }
++
++    private static WikiCommandSettings parseWikiCommand(Object raw, List<ConfigWarning> warnings) {
++        CommandWords words = parseCommandWords(raw, KEY_WIKI_COMMAND, WikiCommandSettings.DEFAULT_NAME,
++                WikiCommandSettings.DEFAULT_ALIASES, warnings, ConfigWarning::unusableWikiCommandValue);
++        return new WikiCommandSettings(words.name(), words.aliases(), parsePermissionDefault(
++                raw, WikiCommandSettings.DEFAULT_PERMISSION, ConfigWarning::unusableWikiCommandValue, warnings));
+     }
+ 
+     /**
+-     * The claim command's {@code permission_default}. A missing key uses everyone silently; a value that is not
+-     * {@code true}, {@code false}, {@code op}, or {@code not op} warns high and uses everyone.
++     * A command block's {@code permission_default}. A missing key uses the fallback silently; a value that is not
++     * {@code true}, {@code false}, {@code op}, or {@code not op} warns high and uses the fallback.
+      */
+-    private static DefaultAccess parseClaimPermissionDefault(Object raw, List<ConfigWarning> warnings) {
+-        if (!(raw instanceof Map<?, ?> block) || block.get(KEY_CLAIM_PERMISSION_DEFAULT) == null) {
+-            return ClaimCommandSettings.DEFAULT_PERMISSION;
++    private static DefaultAccess parsePermissionDefault(
++            Object raw,
++            DefaultAccess fallback,
++            Function<String, ConfigWarning> unusable,
++            List<ConfigWarning> warnings
++    ) {
++        if (!(raw instanceof Map<?, ?> block) || block.get(KEY_PERMISSION_DEFAULT) == null) {
++            return fallback;
+         }
+-        Optional<DefaultAccess> parsed = DefaultAccess.parse(block.get(KEY_CLAIM_PERMISSION_DEFAULT));
++        Optional<DefaultAccess> parsed = DefaultAccess.parse(block.get(KEY_PERMISSION_DEFAULT));
+         if (parsed.isEmpty()) {
+-            warnings.add(ConfigWarning.unusableClaimCommandValue(KEY_CLAIM_PERMISSION_DEFAULT));
++            warnings.add(unusable.apply(KEY_PERMISSION_DEFAULT));
+         }
+-        return parsed.orElse(ClaimCommandSettings.DEFAULT_PERMISSION);
++        return parsed.orElse(fallback);
+     }
+ 
+     private static AdminCommandSettings parseAdminCommand(Object raw, List<ConfigWarning> warnings) {
+@@ -1455,6 +1541,7 @@ final class ConfigLoadSupport {
+         final StorageSettings storage;
+         final ClaimCommandSettings claimCommand;
+         final AdminCommandSettings adminCommand;
++        final WikiCommandSettings wikiCommand;
+         final Map<PlacementRule, Integer> placementAttempts;
+         final List<String> bannedLootBlocks;
+         final int hologramViewRange;
+@@ -1467,6 +1554,7 @@ final class ConfigLoadSupport {
+                 StorageSettings storage,
+                 ClaimCommandSettings claimCommand,
+                 AdminCommandSettings adminCommand,
++                WikiCommandSettings wikiCommand,
+                 Map<PlacementRule, Integer> placementAttempts,
+                 List<String> bannedLootBlocks,
+                 int hologramViewRange,
+@@ -1478,6 +1566,7 @@ final class ConfigLoadSupport {
+             this.storage = storage;
+             this.claimCommand = claimCommand;
+             this.adminCommand = adminCommand;
++            this.wikiCommand = wikiCommand;
+             this.placementAttempts = placementAttempts;
+             this.bannedLootBlocks = bannedLootBlocks;
+             this.hologramViewRange = hologramViewRange;
+@@ -1492,6 +1581,7 @@ final class ConfigLoadSupport {
+                     StorageSettings.defaults(),
+                     ClaimCommandSettings.defaults(),
+                     AdminCommandSettings.defaults(),
++                    WikiCommandSettings.defaults(),
+                     SummonConfig.defaultPlacementAttempts(),
+                     DEFAULT_BANNED_LOOT_BLOCKS,
+                     HologramSettings.DEFAULT_VIEW_RANGE,
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
+index d30c6a7..d4a324e 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
+@@ -30,6 +30,7 @@ public final class ConfigSnapshot {
+     private final Map<String, String> resolvedNames;
+     private final Map<String, WorldSettings> worlds;
+     private final Map<String, Loot> loots;
++    private final Map<String, WikiSettings> wikis;
+     private final Map<String, SummonRules> summonRules;
+     private final Map<String, HologramSettings> holograms;
+     private final Map<String, VisualsSettings> visuals;
+@@ -41,6 +42,7 @@ public final class ConfigSnapshot {
+     private final StorageSettings storage;
+     private final ClaimCommandSettings claimCommand;
+     private final AdminCommandSettings adminCommand;
++    private final WikiCommandSettings wikiCommand;
+     private final MenuPage claimMenu;
+     private final MenuPage wikiListMenu;
+     private final MenuPage wikiLootMenu;
+@@ -57,6 +59,7 @@ public final class ConfigSnapshot {
+             Map<String, String> resolvedNames,
+             Map<String, WorldSettings> worlds,
+             Map<String, Loot> loots,
++            Map<String, WikiSettings> wikis,
+             Map<String, SummonRules> summonRules,
+             Map<String, HologramSettings> holograms,
+             Map<String, VisualsSettings> visuals,
+@@ -68,6 +71,7 @@ public final class ConfigSnapshot {
+             StorageSettings storage,
+             ClaimCommandSettings claimCommand,
+             AdminCommandSettings adminCommand,
++            WikiCommandSettings wikiCommand,
+             MenuPage claimMenu,
+             MenuPage wikiListMenu,
+             MenuPage wikiLootMenu,
+@@ -83,6 +87,7 @@ public final class ConfigSnapshot {
+         this.resolvedNames = Objects.requireNonNull(resolvedNames, "resolvedNames");
+         this.worlds = Objects.requireNonNull(worlds, "worlds");
+         this.loots = Objects.requireNonNull(loots, "loots");
++        this.wikis = Objects.requireNonNull(wikis, "wikis");
+         this.summonRules = Objects.requireNonNull(summonRules, "summonRules");
+         this.holograms = Objects.requireNonNull(holograms, "holograms");
+         this.visuals = Objects.requireNonNull(visuals, "visuals");
+@@ -94,6 +99,7 @@ public final class ConfigSnapshot {
+         this.storage = Objects.requireNonNull(storage, "storage");
+         this.claimCommand = Objects.requireNonNull(claimCommand, "claimCommand");
+         this.adminCommand = Objects.requireNonNull(adminCommand, "adminCommand");
++        this.wikiCommand = Objects.requireNonNull(wikiCommand, "wikiCommand");
+         this.claimMenu = Objects.requireNonNull(claimMenu, "claimMenu");
+         this.wikiListMenu = Objects.requireNonNull(wikiListMenu, "wikiListMenu");
+         this.wikiLootMenu = Objects.requireNonNull(wikiLootMenu, "wikiLootMenu");
+@@ -195,6 +201,14 @@ public final class ConfigSnapshot {
+         return Optional.ofNullable(loots.get(lootId));
+     }
+ 
++    /**
++     * Wiki settings for a loaded loot id. Held beside the loot, never on it. Absent when the loot was skipped.
++     */
++    public Optional<WikiSettings> wiki(String lootId) {
++        Objects.requireNonNull(lootId, "lootId");
++        return Optional.ofNullable(wikis.get(lootId));
++    }
++
+     /**
+      * Summon rules for a loaded loot id. Held beside the loot, never on it. Absent when the loot was skipped.
+      */
+@@ -309,6 +323,13 @@ public final class ConfigSnapshot {
+         return adminCommand;
+     }
+ 
++    /**
++     * The {@code wiki_command} block of the globals file: the name and aliases of the loots wiki command.
++     */
++    public WikiCommandSettings wikiCommand() {
++        return wikiCommand;
++    }
++
+     /**
+      * The claim menu page from {@code menus/claim.yml}, or the shipped page when the file is missing or unusable.
+      */
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+index 047ca04..85f03c6 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+@@ -43,6 +43,7 @@ public final class ConfigWarning {
+         UNUSABLE_LOOT_END,
+         UNUSABLE_DISPLAY_NAME,
+         UNUSABLE_DESCRIPTION,
++        UNUSABLE_WIKI,
+         MISSING_BLOCK,
+         UNUSABLE_HEAD_DATA,
+         UNUSABLE_ROLL,
+@@ -56,6 +57,7 @@ public final class ConfigWarning {
+         UNUSABLE_STORAGE_VALUE,
+         UNUSABLE_CLAIM_COMMAND_VALUE,
+         UNUSABLE_ADMIN_COMMAND_VALUE,
++        UNUSABLE_WIKI_COMMAND_VALUE,
+         OLD_KEY,
+         UNKNOWN_TAG,
+         UNKNOWN_GROUP,
+@@ -357,6 +359,13 @@ public final class ConfigWarning {
+         return lootHigh(Kind.UNKNOWN_KEY, lootId, Optional.empty(), Optional.of(key));
+     }
+ 
++    /**
++     * A loot's {@code wiki} value that cannot be used. The key names it; {@code wiki} means the block.
++     */
++    public static ConfigWarning unusableWikiValue(String lootId, String key) {
++        return lootHigh(Kind.UNUSABLE_WIKI, lootId, Optional.empty(), Optional.of(key));
++    }
++
+     public static ConfigWarning yamlParseRejected(String lootId) {
+         return lootHigh(Kind.YAML_PARSE_REJECTED, lootId);
+     }
+@@ -397,6 +406,15 @@ public final class ConfigWarning {
+                 Optional.of(key));
+     }
+ 
++    /**
++     * A value in the {@code wiki_command} block that cannot be used. The key names it; {@code wiki_command} means
++     * the block.
++     */
++    public static ConfigWarning unusableWikiCommandValue(String key) {
++        return new ConfigWarning(Severity.HIGH, Kind.UNUSABLE_WIKI_COMMAND_VALUE, Optional.empty(),
++                Optional.of(key));
++    }
++
+     /**
+      * A key from before the current file layout that still loads. The file is left unchanged.
+      */
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java b/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java
+index 3f7e13f..d7c06e8 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java
+@@ -44,4 +44,12 @@ public final class MenuPage {
+     public Map<String, MenuButton> buttons() {
+         return buttons;
+     }
++
++    /**
++     * A copy of this page with the given buttons. The content slots, filler, and rows stay the same; this page is not
++     * changed.
++     */
++    public MenuPage withButtons(Map<String, MenuButton> replacement) {
++        return new MenuPage(rows, contentSlots, filler, replacement);
++    }
+ }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/WikiCommandSettings.java b/src/main/java/me/rakkoon69/rakunloots/config/WikiCommandSettings.java
+new file mode 100644
+index 0000000..165433b
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/WikiCommandSettings.java
+@@ -0,0 +1,50 @@
++package me.rakkoon69.rakunloots.config;
++
++import java.util.List;
++import java.util.Objects;
++
++/**
++ * The {@code wiki_command} block of {@code config.yml}: the name and aliases the loots wiki command registers under,
++ * and who has its permission by default.
++ */
++public final class WikiCommandSettings {
++
++    public static final String DEFAULT_NAME = "loots";
++    public static final List<String> DEFAULT_ALIASES = List.of("rklloots");
++    public static final DefaultAccess DEFAULT_PERMISSION = DefaultAccess.EVERYONE;
++
++    private final String name;
++    private final List<String> aliases;
++    private final DefaultAccess permissionDefault;
++
++    WikiCommandSettings(String name, List<String> aliases, DefaultAccess permissionDefault) {
++        this.name = Objects.requireNonNull(name, "name");
++        this.aliases = List.copyOf(Objects.requireNonNull(aliases, "aliases"));
++        this.permissionDefault = Objects.requireNonNull(permissionDefault, "permissionDefault");
++    }
++
++    static WikiCommandSettings defaults() {
++        return new WikiCommandSettings(DEFAULT_NAME, DEFAULT_ALIASES, DEFAULT_PERMISSION);
++    }
++
++    /**
++     * The command's name, lower case.
++     */
++    public String name() {
++        return name;
++    }
++
++    /**
++     * The other names of the command, lower case, none equal to the name or to each other. May be empty.
++     */
++    public List<String> aliases() {
++        return aliases;
++    }
++
++    /**
++     * Who has the wiki command's permission when no permission plugin says otherwise.
++     */
++    public DefaultAccess permissionDefault() {
++        return permissionDefault;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/WikiSettings.java b/src/main/java/me/rakkoon69/rakunloots/config/WikiSettings.java
+new file mode 100644
+index 0000000..fa100f7
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/WikiSettings.java
+@@ -0,0 +1,41 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++
++import java.util.Objects;
++import java.util.Optional;
++
++/**
++ * A loot's {@code wiki} settings: whether the loots wiki lists it, and the icon it shows instead of the loot's block.
++ * Held beside the loot, never on it.
++ */
++public final class WikiSettings {
++
++    private static final WikiSettings SHOWN = new WikiSettings(true, Optional.empty());
++
++    private final boolean show;
++    private final Optional<ItemReference> icon;
++
++    WikiSettings(boolean show, Optional<ItemReference> icon) {
++        this.show = show;
++        this.icon = Objects.requireNonNull(icon, "icon");
++    }
++
++    /**
++     * The defaults: listed, with the loot's block as the icon.
++     */
++    public static WikiSettings shown() {
++        return SHOWN;
++    }
++
++    public boolean show() {
++        return show;
++    }
++
++    /**
++     * The configured icon, or empty to use the loot's block.
++     */
++    public Optional<ItemReference> icon() {
++        return icon;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+index a4000c8..9b5aa82 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
++++ b/src/main/java/me/rakkoon69/rakunloots/menu/MenuService.java
+@@ -210,6 +210,25 @@ public final class MenuService {
+         return dispatch(playerId, current.handle(), view);
+     }
+ 
++    /**
++     * Replaces the menu with a new inventory only while it is still the one opened as {@code epoch}. A refresh
++     * updates the existing inventory in place, so it cannot change the title or size; this reopens instead, which
++     * also gives the caller the new epoch. Empty when the menu was closed, reopened, or replaced since that epoch.
++     */
++    public CompletableFuture<Optional<Long>> replaceIf(UUID playerId, long epoch, MenuView view) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(view, "view");
++        MenuState expected;
++        synchronized (lock) {
++            Entry current = entries.get(playerId);
++            if (current == null || epochs.getOrDefault(playerId, 0L) != epoch) {
++                return CompletableFuture.completedFuture(Optional.empty());
++            }
++            expected = new MenuState(generation, epoch);
++        }
++        return openTracked(playerId, view, expected);
++    }
++
+     /**
+      * Closes the menu only while it is still the one opened as {@code epoch}.
+      */
+diff --git a/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java b/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
+new file mode 100644
+index 0000000..585369a
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/wiki/WikiMenu.java
+@@ -0,0 +1,381 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import me.rakkoon69.rakunloots.command.SenderLocation;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.Loot;
++import me.rakkoon69.rakunloots.config.MenuButton;
++import me.rakkoon69.rakunloots.config.MenuPage;
++import me.rakkoon69.rakunloots.config.WikiSettings;
++import me.rakkoon69.rakunloots.items.ItemResolveResult;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.lootbox.MessageText;
++import me.rakkoon69.rakunloots.menu.MenuIcon;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuView;
++import me.rakkoon69.rakunloots.roll.TimerChance;
++import me.rakkoon69.rakunloots.server.LoadedWorld;
++import me.rakkoon69.rakunloots.server.ServerAdapter;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.bukkit.inventory.meta.ItemMeta;
++
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Optional;
++import java.util.OptionalDouble;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++import java.util.function.BiConsumer;
++import java.util.function.Supplier;
++
++/**
++ * The loots wiki: every listed loot in the player's world, rarest timer chance first, then loots the timer cannot
++ * summon. An entry opens a read-only loot page whose back button returns to the same list page. Both pages render
++ * from the config snapshot read at open.
++ */
++public final class WikiMenu {
++
++    private static final String MENU_ID = "wiki";
++    private static final String BACK = "back";
++    private static final String KEY_LIST_TITLE = "menu_wiki_list_title";
++    private static final String KEY_ENTRY_NAME = "menu_wiki_list_entry_name";
++    private static final String KEY_ENTRY_LORE = "menu_wiki_list_entry_lore";
++    private static final String KEY_TIMER_CHANCE = "menu_wiki_list_timer_chance";
++    private static final String KEY_NOT_ON_TIMER = "menu_wiki_list_not_on_timer";
++    private static final String KEY_LIST_CLICK = "menu_wiki_list_click";
++    private static final String KEY_LOOT_TITLE = "menu_wiki_loot_title";
++    private static final String KEY_BACK_NAME = "menu_button_back_name";
++    private static final String KEY_BACK_LORE = "menu_button_back_lore";
++    private static final String KEY_PREFIX = "prefix";
++
++    private final ServerAdapter adapter;
++    private final Supplier<ConfigSnapshot> config;
++    private final ItemSourceRegistry items;
++    private final MenuService menus;
++    private final MenuRenderer renderer;
++    private final BiConsumer<String, Throwable> failures;
++
++    public WikiMenu(ServerAdapter adapter, Supplier<ConfigSnapshot> config, ItemSourceRegistry items,
++                    MenuService menus, MenuRenderer renderer, BiConsumer<String, Throwable> failures) {
++        this.adapter = Objects.requireNonNull(adapter, "adapter");
++        this.config = Objects.requireNonNull(config, "config");
++        this.items = Objects.requireNonNull(items, "items");
++        this.menus = Objects.requireNonNull(menus, "menus");
++        this.renderer = Objects.requireNonNull(renderer, "renderer");
++        this.failures = Objects.requireNonNull(failures, "failures");
++    }
++
++    /**
++     * Opens the wiki for the player, after reading the loaded worlds. The player's location and the config are read
++     * once; a failure to read either is reported and no menu opens.
++     */
++    public void open(UUID playerId, SenderLocation location) {
++        Objects.requireNonNull(playerId, "playerId");
++        Objects.requireNonNull(location, "location");
++        ConfigSnapshot snapshot;
++        MenuService.MenuState state;
++        try {
++            state = menus.state(playerId);
++            snapshot = config.get();
++        } catch (Throwable failure) {
++            failures.accept("could not read the config for the loots wiki of " + playerId, failure);
++            return;
++        }
++
++        CompletableFuture<List<LoadedWorld>> worlds;
++        try {
++            worlds = adapter.loadedWorlds();
++        } catch (RuntimeException failure) {
++            failures.accept("could not read the loaded worlds for the loots wiki of " + playerId, failure);
++            return;
++        }
++        worlds.whenComplete((loaded, failure) -> {
++            if (failure != null) {
++                failures.accept("could not read the loaded worlds for the loots wiki of " + playerId, unwrap(failure));
++                return;
++            }
++            try {
++                Session session = new Session(playerId, snapshot, rows(snapshot, loaded, location.worldKey()));
++                menus.openTracked(playerId, renderList(session, session.state), state)
++                        .whenComplete((epoch, openFailure) -> {
++                            if (openFailure != null) {
++                                failures.accept("could not open the loots wiki for " + playerId,
++                                        unwrap(openFailure));
++                                return;
++                            }
++                            epoch.ifPresent(session::openedAs);
++                        });
++            } catch (Throwable buildFailure) {
++                failures.accept("could not build the loots wiki for " + playerId, buildFailure);
++            }
++        });
++    }
++
++    private static List<Row> rows(ConfigSnapshot snapshot, List<LoadedWorld> worlds, UUID worldKey) {
++        Optional<String> worldName = worlds.stream()
++                .filter(world -> world.key().equals(worldKey))
++                .map(LoadedWorld::name)
++                .findFirst();
++        Map<String, Integer> weights = worldName.flatMap(snapshot::world)
++                .map(settings -> settings.loots())
++                .orElseGet(Map::of);
++        Map<String, Double> chances = TimerChance.calculate(weights, snapshot.loots().keySet());
++
++        List<Row> rows = new ArrayList<>();
++        for (Map.Entry<String, Loot> entry : snapshot.loots().entrySet()) {
++            WikiSettings wiki = snapshot.wiki(entry.getKey()).orElse(WikiSettings.shown());
++            if (!wiki.show()) {
++                continue;
++            }
++            Double chance = chances.get(entry.getKey());
++            rows.add(new Row(entry.getKey(), entry.getValue(),
++                    chance == null ? OptionalDouble.empty() : OptionalDouble.of(chance)));
++        }
++        rows.sort(Comparator
++                .comparing((Row row) -> row.chance().isEmpty())
++                .thenComparingDouble(row -> row.chance().orElse(0.0))
++                .thenComparing(Row::id));
++        return List.copyOf(rows);
++    }
++
++    private MenuView renderList(Session session, State state) {
++        ConfigSnapshot snapshot = state.snapshot;
++        MenuPage layout = snapshot.wikiListMenu();
++        List<MenuIcon> entries = new ArrayList<>();
++        for (Row row : state.rows) {
++            ItemStack item = rowIcon(snapshot, row);
++            decorate(item, text(snapshot, KEY_ENTRY_NAME, lootValues(row.loot())), entryLore(snapshot, row));
++            entries.add(new MenuIcon(item, Optional.of(() -> session.showLoot(row.id())), Optional.empty()));
++        }
++        String title = text(snapshot, KEY_LIST_TITLE, Map.of());
++        return renderer.render(MENU_ID, title, layout, entries, state.page, session::goToPage,
++                key -> snapshot.message("", key));
++    }
++
++    private MenuView renderLoot(Session session, State state, Loot loot) {
++        ConfigSnapshot snapshot = state.snapshot;
++        MenuPage layout = snapshot.wikiLootMenu();
++        Map<String, MenuButton> buttons = new LinkedHashMap<>();
++        MenuButton back = layout.buttons().get(BACK);
++        if (back != null) {
++            buttons.put(BACK, back);
++        }
++        MenuPage stub = layout.withButtons(buttons);
++        String title = text(snapshot, KEY_LOOT_TITLE, lootValues(loot));
++        MenuView view = renderer.render(MENU_ID, title, stub, List.of(), 0, page -> {
++        }, key -> snapshot.message("", key));
++        if (back == null) {
++            return view;
++        }
++        MenuIcon shown = view.icons().get(back.slot());
++        if (shown == null) {
++            return view;
++        }
++        ItemStack item = shown.item();
++        decorate(item, text(snapshot, KEY_BACK_NAME, lootValues(loot)), backLore(snapshot, loot));
++        Map<Integer, MenuIcon> icons = new LinkedHashMap<>(view.icons());
++        icons.put(back.slot(), new MenuIcon(item, Optional.of(session::showList), shown.sound()));
++        return new MenuView(view.title(), view.rows(), icons);
++    }
++
++    private ItemStack rowIcon(ConfigSnapshot snapshot, Row row) {
++        WikiSettings wiki = snapshot.wiki(row.id()).orElse(WikiSettings.shown());
++        if (wiki.icon().isPresent()) {
++            try {
++                ItemResolveResult resolved = items.resolve(wiki.icon().get());
++                if (resolved.isHit()) {
++                    return resolved.item().orElseThrow();
++                }
++            } catch (RuntimeException failure) {
++                // A source that cannot resolve here still leaves the list usable; the row shows a barrier.
++            }
++            return new ItemStack(Material.BARRIER);
++        }
++        try {
++            return adapter.blockItem(row.loot().block(), row.loot().headData())
++                    .orElseGet(() -> new ItemStack(Material.BARRIER));
++        } catch (RuntimeException failure) {
++            return new ItemStack(Material.BARRIER);
++        }
++    }
++
++    private static List<String> entryLore(ConfigSnapshot snapshot, Row row) {
++        List<String> lore = new ArrayList<>();
++        String prefix = snapshot.message("", KEY_PREFIX);
++        for (String line : snapshot.messageLines("", KEY_ENTRY_LORE)) {
++            if (line.isBlank()) {
++                continue;
++            }
++            if (line.contains("{description}")) {
++                for (String description : row.loot().description()) {
++                    if (!description.isBlank()) {
++                        lore.add(MessageText.color(replace(line.replace("{description}", description),
++                                row.loot(), prefix)));
++                    }
++                }
++                continue;
++            }
++            lore.add(MessageText.color(replace(line, row.loot(), prefix)));
++        }
++
++        Map<String, String> values = lootValues(row.loot());
++        if (row.chance().isPresent()) {
++            addIfNotBlank(lore, MessageText.render(snapshot, "", KEY_TIMER_CHANCE, values,
++                    Map.of("chance", row.chance().getAsDouble())));
++        } else {
++            addIfNotBlank(lore, MessageText.render(snapshot, "", KEY_NOT_ON_TIMER, values));
++        }
++        addIfNotBlank(lore, MessageText.render(snapshot, "", KEY_LIST_CLICK, values));
++        return lore;
++    }
++
++    private static List<String> backLore(ConfigSnapshot snapshot, Loot loot) {
++        List<String> lore = new ArrayList<>();
++        String prefix = snapshot.message("", KEY_PREFIX);
++        for (String line : snapshot.messageLines("", KEY_BACK_LORE)) {
++            if (!line.isBlank()) {
++                lore.add(MessageText.color(replace(line, loot, prefix)));
++            }
++        }
++        return lore;
++    }
++
++    private static String replace(String line, Loot loot, String prefix) {
++        return line.replace("{prefix}", prefix).replace("{loot}", loot.displayName());
++    }
++
++    private static String text(ConfigSnapshot snapshot, String key, Map<String, String> values) {
++        return MessageText.render(snapshot, "", key, values);
++    }
++
++    private static Map<String, String> lootValues(Loot loot) {
++        return Map.of("loot", loot.displayName());
++    }
++
++    private static void addIfNotBlank(List<String> lines, String line) {
++        if (!line.isBlank()) {
++            lines.add(line);
++        }
++    }
++
++    private static void decorate(ItemStack item, String name, List<String> lore) {
++        ItemMeta meta = item.getItemMeta();
++        if (meta == null) {
++            return;
++        }
++        meta.setDisplayName(name);
++        meta.setLore(lore);
++        item.setItemMeta(meta);
++    }
++
++    private static Throwable unwrap(Throwable failure) {
++        return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
++    }
++
++    private record Row(String id, Loot loot, OptionalDouble chance) {
++    }
++
++    private record State(ConfigSnapshot snapshot, List<Row> rows, int page, long epoch) {
++
++        private State withPage(int next) {
++            return new State(snapshot, rows, next, epoch);
++        }
++
++        private State withEpoch(long next) {
++            return new State(snapshot, rows, page, next);
++        }
++    }
++
++    private final class Session {
++
++        private final UUID playerId;
++        private final Object lock = new Object();
++        private State state;
++        private long revision;
++
++        private Session(UUID playerId, ConfigSnapshot snapshot, List<Row> rows) {
++            this.playerId = playerId;
++            this.state = new State(snapshot, rows, 0, -1L);
++        }
++
++        private void openedAs(long epoch) {
++            synchronized (lock) {
++                state = state.withEpoch(epoch);
++                revision++;
++            }
++        }
++
++        private void showLoot(String lootId) {
++            synchronized (lock) {
++                Loot loot = state.snapshot.loot(lootId).orElse(null);
++                if (loot == null || state.epoch < 0L) {
++                    return;
++                }
++                long expected = state.epoch;
++                long rendered = ++revision;
++                MenuView view = renderLoot(this, state, loot);
++                if (revision != rendered) {
++                    return;
++                }
++                replace(expected, view);
++            }
++        }
++
++        private void showList() {
++            synchronized (lock) {
++                if (state.epoch < 0L) {
++                    return;
++                }
++                long expected = state.epoch;
++                long rendered = ++revision;
++                MenuView view = renderList(this, state);
++                if (revision != rendered) {
++                    return;
++                }
++                replace(expected, view);
++            }
++        }
++
++        private void replace(long expected, MenuView view) {
++            menus.replaceIf(playerId, expected, view).whenComplete((epoch, failure) -> {
++                if (failure != null) {
++                    failures.accept("could not replace the loots wiki for " + playerId, unwrap(failure));
++                    return;
++                }
++                epoch.ifPresent(next -> replaced(expected, next));
++            });
++        }
++
++        private void replaced(long expected, long next) {
++            synchronized (lock) {
++                if (state.epoch != expected) {
++                    return;
++                }
++                state = state.withEpoch(next);
++                revision++;
++            }
++        }
++
++        private void goToPage(int destination) {
++            synchronized (lock) {
++                int page = renderer.clampPage(state.snapshot.wikiListMenu(), state.rows.size(), destination);
++                state = state.withPage(page);
++                if (state.epoch < 0L) {
++                    return;
++                }
++                long rendered = ++revision;
++                MenuView view = renderList(this, state);
++                if (revision != rendered) {
++                    return;
++                }
++                menus.refreshIf(playerId, state.epoch, view);
++            }
++        }
++    }
++}
+diff --git a/src/main/resources/config.yml b/src/main/resources/config.yml
+index 02f8539..6f360e0 100644
+--- a/src/main/resources/config.yml
++++ b/src/main/resources/config.yml
+@@ -75,3 +75,14 @@ claim_command:
+   aliases:
+     - rklclaim
+   permission_default: true
++
++# The loots wiki command opens a list of every listed loot in the player's world, rarest timer chance first. A loot
++# can hide itself or set an icon in its own file with its wiki settings. Names are lower case, with no space or slash.
++# Changing them needs a restart.
++# permission_default says who may run it when no permission plugin says otherwise, through the rakunloots.wiki
++# permission: true (everyone), false (nobody), op (operators), or not op (everyone but operators). A reload applies it.
++wiki_command:
++  name: loots
++  aliases:
++    - rklloots
++  permission_default: true
+diff --git a/src/main/resources/languages/en.yml b/src/main/resources/languages/en.yml
+index 27bcbbc..bd232ce 100644
+--- a/src/main/resources/languages/en.yml
++++ b/src/main/resources/languages/en.yml
+@@ -131,6 +131,7 @@ cmd_warnings_previous: "&a[< Previous]"
+ cmd_warnings_next: "&a[Next >]"
+ cmd_warnings_console_next: "&7Next page: &e{command}"
+ cmd_claim_needs_player: "{prefix} &cOnly a player can take summon items, because they go into an inventory."
++cmd_wiki_needs_player: "{prefix} &cOnly a player can open the loots wiki, because it shows the world they are in."
+ command_reload_summary: "Reloads the plugin."
+ command_reload_description: "Abandons every pending summon and gives its summon item back, then reloads the config, the loots, the languages, the world timers, and the holograms."
+ command_reload_example: "/rkl reload"
+@@ -189,3 +190,16 @@ menu_claim_missing_lore:
+ menu_button_claim_all_name: "&a[Claim all]"
+ menu_button_claim_all_lore:
+   - "&7Take every summon item that fits."
++
++# The loots wiki. {loot} is a loot's name; the chance is the world timer's.
++menu_wiki_list_title: "&8Loots wiki"
++menu_wiki_list_entry_name: "&e{loot}"
++menu_wiki_list_entry_lore:
++  - "&7{description}"
++menu_wiki_list_timer_chance: "&7Timer chance: &e{chance:2}%"
++menu_wiki_list_not_on_timer: "&7The world timer cannot summon this loot."
++menu_wiki_list_click: "&7Click to read about it."
++menu_wiki_loot_title: "&8Loot: &r{loot}"
++menu_button_back_name: "&a[Back]"
++menu_button_back_lore:
++  - "&7Back to the loots wiki."
+diff --git a/src/main/resources/languages/vi.yml b/src/main/resources/languages/vi.yml
+index 064053e..c125324 100644
+--- a/src/main/resources/languages/vi.yml
++++ b/src/main/resources/languages/vi.yml
+@@ -130,6 +130,7 @@ cmd_warnings_previous: "&a[< Truoc]"
+ cmd_warnings_next: "&a[Sau >]"
+ cmd_warnings_console_next: "&7Trang sau: &e{command}"
+ cmd_claim_needs_player: "{prefix} &cChi nguoi choi moi nhan duoc vat pham trieu hoi, vi chung vao tui do."
++cmd_wiki_needs_player: "{prefix} &cChi nguoi choi moi mo duoc wiki loot, vi no hien thi the gioi cua ban."
+ command_reload_summary: "Tai lai plugin."
+ command_reload_description: "Bo moi viec trieu hoi dang cho va tra lai vat pham trieu hoi, roi tai lai cau hinh, loot, ngon ngu, bo hen gio the gioi va hologram."
+ command_reload_example: "/rkl reload"
+@@ -188,3 +189,16 @@ menu_claim_missing_lore:
+ menu_button_claim_all_name: "&a[Nhan tat ca]"
+ menu_button_claim_all_lore:
+   - "&7Nhan moi vat pham trieu hoi vua tui."
++
++# Wiki loot. {loot} la ten loot; ti le lay tu bo hen gio the gioi.
++menu_wiki_list_title: "&8Wiki loot"
++menu_wiki_list_entry_name: "&e{loot}"
++menu_wiki_list_entry_lore:
++  - "&7{description}"
++menu_wiki_list_timer_chance: "&7Ti le hen gio: &e{chance:2}%"
++menu_wiki_list_not_on_timer: "&7Bo hen gio the gioi khong the trieu hoi loot nay."
++menu_wiki_list_click: "&7Bam de xem."
++menu_wiki_loot_title: "&8Loot: &r{loot}"
++menu_button_back_name: "&a[Quay lai]"
++menu_button_back_lore:
++  - "&7Quay lai wiki loot."
+diff --git a/src/main/resources/languages/zh.yml b/src/main/resources/languages/zh.yml
+index 7ccdc0f..1b8fb0f 100644
+--- a/src/main/resources/languages/zh.yml
++++ b/src/main/resources/languages/zh.yml
+@@ -130,6 +130,7 @@ cmd_warnings_previous: "&a[< 上一页]"
+ cmd_warnings_next: "&a[下一页 >]"
+ cmd_warnings_console_next: "&7下一页：&e{command}"
+ cmd_claim_needs_player: "{prefix} &c只有玩家可以领取召唤物品，因为它们会放入背包。"
++cmd_wiki_needs_player: "{prefix} &c只有玩家可以打开战利品 wiki，因为它显示你所在的世界。"
+ command_reload_summary: "重载插件。"
+ command_reload_description: "放弃所有待处理的召唤并退还其召唤物品，然后重载配置、战利品、语言、世界计时器和全息图。"
+ command_reload_example: "/rkl reload"
+@@ -188,3 +189,16 @@ menu_claim_missing_lore:
+ menu_button_claim_all_name: "&a[全部领取]"
+ menu_button_claim_all_lore:
+   - "&7领取所有能放进背包的召唤物品。"
++
++# 战利品 wiki。{loot} 为战利品名称；概率来自世界计时器。
++menu_wiki_list_title: "&8战利品 wiki"
++menu_wiki_list_entry_name: "&e{loot}"
++menu_wiki_list_entry_lore:
++  - "&7{description}"
++menu_wiki_list_timer_chance: "&7计时器概率：&e{chance:2}%"
++menu_wiki_list_not_on_timer: "&7世界计时器无法召唤此战利品。"
++menu_wiki_list_click: "&7点击查看。"
++menu_wiki_loot_title: "&8战利品：&r{loot}"
++menu_button_back_name: "&a[返回]"
++menu_button_back_lore:
++  - "&7返回战利品 wiki。"
+diff --git a/src/main/resources/loots/airdrops.yml b/src/main/resources/loots/airdrops.yml
+index 66e257c..033cedf 100644
+--- a/src/main/resources/loots/airdrops.yml
++++ b/src/main/resources/loots/airdrops.yml
+@@ -16,6 +16,10 @@ life: 360
+ summon_delay: 60
+ # The block of the loot box. head_data is only for a player_head block; see loots/head_trophy.yml.
+ block: barrel
++# The loots wiki lists this loot by its block. Set wiki: false to hide it, or give it another icon:
++# wiki:
++#   icon:
++#     id: emerald
+ 
+ # Whether the box's owner is told when it ends, looted or timed out. The text is the message_owner_on_remove message,
+ # which this loot can reword under messages.
+diff --git a/src/main/resources/plugin.yml b/src/main/resources/plugin.yml
+index caccf29..d337ef9 100644
+--- a/src/main/resources/plugin.yml
++++ b/src/main/resources/plugin.yml
+@@ -54,6 +54,10 @@ permissions:
+     # The plugin replaces this default with claim_command.permission_default from config.yml.
+     default: true
+     description: take the summon items you are owed with the claim command
++  rakunloots.wiki:
++    # The plugin replaces this default with wiki_command.permission_default from config.yml.
++    default: true
++    description: open the loots wiki
+   rakunloots.command.remove:
+     default: op
+     description: open the remove command, which ends loot boxes
+diff --git a/src/main/resources/warnings.yml b/src/main/resources/warnings.yml
+index d7de886..422eda8 100644
+--- a/src/main/resources/warnings.yml
++++ b/src/main/resources/warnings.yml
+@@ -31,6 +31,7 @@ UNUSABLE_SUMMON_ITEM: high
+ UNUSABLE_LOOT_END: high
+ UNUSABLE_DISPLAY_NAME: high
+ UNUSABLE_DESCRIPTION: high
++UNUSABLE_WIKI: high
+ MISSING_BLOCK: high
+ UNUSABLE_HEAD_DATA: high
+ UNUSABLE_ROLL: high
+@@ -44,6 +45,7 @@ UNKNOWN_STORAGE_TYPE: high
+ UNUSABLE_STORAGE_VALUE: high
+ UNUSABLE_CLAIM_COMMAND_VALUE: high
+ UNUSABLE_ADMIN_COMMAND_VALUE: high
++UNUSABLE_WIKI_COMMAND_VALUE: high
+ OLD_KEY: high
+ UNKNOWN_TAG: high
+ UNKNOWN_GROUP: high
+diff --git a/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java b/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
+index 5db4100..32cb71d 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/PluginEnableTest.java
+@@ -252,7 +252,7 @@ class PluginEnableTest {
+      */
+     @Test
+     @SuppressWarnings("unchecked")
+-    void pluginYmlDeclaresFoliaAndASoftDecentHologramsAndNoWikiOrBypassLocked() throws IOException {
++    void pluginYmlDeclaresFoliaAndASoftDecentHologramsAndNoRemovedPermissions() throws IOException {
+         try (InputStream in = PluginEnableTest.class.getResourceAsStream("/plugin.yml")) {
+             Map<String, Object> yml = new Yaml().load(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+ 
+@@ -261,7 +261,9 @@ class PluginEnableTest {
+             assertTrue(((List<String>) yml.get("softdepend")).contains("DecentHolograms"));
+             assertNull(yml.get("commands"));
+             Map<String, Object> permissions = (Map<String, Object>) yml.get("permissions");
+-            assertFalse(permissions.containsKey("rakunloots.wiki"));
++            assertTrue(permissions.containsKey("rakunloots.wiki"));
++            Map<String, Object> wiki = (Map<String, Object>) permissions.get("rakunloots.wiki");
++            assertEquals(Boolean.TRUE, wiki.get("default"));
+             assertFalse(permissions.containsKey("rakunloots.bypass_locked"));
+         }
+     }
+diff --git a/src/test/java/me/rakkoon69/rakunloots/WikiPermissionDefaultTest.java b/src/test/java/me/rakkoon69/rakunloots/WikiPermissionDefaultTest.java
+new file mode 100644
+index 0000000..ac527fd
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/WikiPermissionDefaultTest.java
+@@ -0,0 +1,133 @@
++package me.rakkoon69.rakunloots;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import be.seeseemelk.mockbukkit.ServerMock;
++import be.seeseemelk.mockbukkit.entity.PlayerMock;
++import me.rakkoon69.rakunloots.command.WikiCommand;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import org.bukkit.permissions.Permission;
++import org.bukkit.permissions.PermissionDefault;
++import org.bukkit.plugin.PluginDescriptionFile;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * The wiki command's permission default comes from {@code wiki_command.permission_default} in config.yml, on
++ * MockBukkit with the shipped data folder.
++ */
++class WikiPermissionDefaultTest {
++
++    private ServerMock server;
++    private RakunLootsPlugin plugin;
++    private PlayerMock player;
++    private PlayerMock operator;
++
++    @BeforeEach
++    void start() {
++        server = StreamableServerMock.mock();
++        plugin = MockBukkit.loadWith(RakunLootsPlugin.class, new PluginDescriptionFile("RakunLoots",
++                "1.0.0-SNAPSHOT", RakunLootsPlugin.class.getName()));
++        player = server.addPlayer("Steve");
++        operator = server.addPlayer("Alex");
++        operator.setOp(true);
++    }
++
++    @AfterEach
++    void stop() {
++        MockBukkit.unmock();
++    }
++
++    @Test
++    void theShippedConfigGivesTheWikiPermissionToEveryone() throws IOException {
++        String shipped = Files.readString(config());
++        assertTrue(shipped.contains("wiki_command:"));
++        assertTrue(shipped.contains("name: loots"));
++        assertTrue(shipped.contains("rklloots"));
++
++        assertGranted(true, true);
++        assertEquals(PermissionDefault.TRUE, permission().getDefault());
++    }
++
++    @Test
++    void eachValueTakesEffectOnReloadForPlayersAlreadyOnline() throws IOException {
++        for (String[] row : new String[][]{{"false", "false", "false"}, {"op", "false", "true"},
++                {"not op", "true", "false"}, {"true", "true", "true"}, {"op", "false", "true"}}) {
++            writeDefault("\"" + row[0] + "\"");
++
++            reload();
++
++            assertGranted(Boolean.parseBoolean(row[1]), Boolean.parseBoolean(row[2]), row[0]);
++        }
++    }
++
++    @Test
++    void enableAppliesTheWrittenValue() throws IOException {
++        writeDefault("\"not op\"");
++        server.getPluginManager().disablePlugin(plugin);
++        server.getPluginManager().enablePlugin(plugin);
++
++        assertTrue(plugin.isEnabled());
++        assertGranted(true, false);
++    }
++
++    @Test
++    void aBadValueKeepsTheDefaultOfEveryone() throws IOException {
++        writeDefault("\"sometimes\"");
++
++        reload();
++
++        assertGranted(true, true);
++        assertTrue(plugin.config().warnings().stream().anyMatch(warning ->
++                warning.kind() == me.rakkoon69.rakunloots.config.ConfigWarning.Kind.UNUSABLE_WIKI_COMMAND_VALUE
++                        && warning.key().equals(java.util.Optional.of("permission_default"))));
++    }
++
++    private void assertGranted(boolean playerHas, boolean operatorHas) {
++        assertGranted(playerHas, operatorHas, "");
++    }
++
++    private void assertGranted(boolean playerHas, boolean operatorHas, String value) {
++        assertEquals(playerHas, player.hasPermission(WikiCommand.PERMISSION), "player with " + value);
++        assertEquals(operatorHas, operator.hasPermission(WikiCommand.PERMISSION), "operator with " + value);
++    }
++
++    private Permission permission() {
++        return server.getPluginManager().getPermission(WikiCommand.PERMISSION);
++    }
++
++    private Path config() {
++        return plugin.getDataFolder().toPath().resolve("config.yml");
++    }
++
++    private void writeDefault(String value) throws IOException {
++        List<String> lines = new ArrayList<>();
++        boolean inWikiCommand = false;
++        for (String line : Files.readAllLines(config(), StandardCharsets.UTF_8)) {
++            if (line.startsWith("wiki_command:")) {
++                inWikiCommand = true;
++            } else if (inWikiCommand && !line.isBlank() && !line.startsWith(" ") && !line.startsWith("#")) {
++                inWikiCommand = false;
++            }
++            if (inWikiCommand && line.startsWith("  permission_default:")) {
++                line = "  permission_default: " + value;
++            }
++            lines.add(line);
++        }
++        Files.write(config(), lines, StandardCharsets.UTF_8);
++    }
++
++    private void reload() {
++        assertTrue(server.dispatchCommand(operator, "rkl reload"));
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/ShippedCommandFilesTest.java b/src/test/java/me/rakkoon69/rakunloots/command/ShippedCommandFilesTest.java
+index 56c597f..d607c7f 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/command/ShippedCommandFilesTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/command/ShippedCommandFilesTest.java
+@@ -44,7 +44,7 @@ class ShippedCommandFilesTest {
+             "cmd_summon_world_not_loaded", "cmd_summon_player_not_online",
+             "cmd_timer_done", "cmd_timer_abandoned", "cmd_timer_failed", "cmd_timer_world_unknown",
+             "cmd_timer_world_not_loaded", "cmd_timer_below_minimum_players", "cmd_timer_at_spawn_limit",
+-            "cmd_timer_no_loot", "cmd_claim_needs_player",
++            "cmd_timer_no_loot", "cmd_claim_needs_player", "cmd_wiki_needs_player",
+             "cmd_warnings_none", "cmd_warnings_header", "cmd_warnings_line", "cmd_warnings_below_level",
+             "cmd_warnings_footer", "cmd_warnings_previous", "cmd_warnings_next", "cmd_warnings_console_next",
+             "command_help_summary", "command_help_description", "command_help_example", "command_help_arg_command",
+diff --git a/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java b/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java
+new file mode 100644
+index 0000000..07b6802
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/command/WikiCommandTest.java
+@@ -0,0 +1,176 @@
++package me.rakkoon69.rakunloots.command;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import me.rakkoon69.rakunloots.wiki.WikiMenu;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class WikiCommandTest {
++
++    private static final UUID WORLD = UUID.fromString("00000000-0000-0000-0000-00000000c1a1");
++
++    private static final String LANGUAGE = """
++            prefix: ""
++            cmd_unknown: "&cUnknown command."
++            cmd_wiki_needs_player: "&cOnly players can open the loots wiki."
++            menu_wiki_list_title: "&8Loots wiki"
++            menu_wiki_list_entry_name: "&e{loot}"
++            menu_wiki_list_entry_lore:
++              - "&7{description}"
++            menu_wiki_list_timer_chance: "&7Chance: &e{chance:2}%"
++            menu_wiki_list_not_on_timer: "&7No timer"
++            menu_wiki_list_click: "&eClick"
++            menu_wiki_loot_title: "&8Loot {loot}"
++            menu_button_back_name: "&a[Back]"
++            menu_button_back_lore:
++              - "&7Back to the list"
++            menu_button_previous_page_name: "&a[Prev]"
++            menu_button_previous_page_lore: "&7{page}/{pages}"
++            menu_button_next_page_name: "&a[Next]"
++            menu_button_next_page_lore: "&7{page}/{pages}"
++            """;
++
++    private static final String WIKI_MENU = """
++            list:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                previous_page:
++                  slot: 9
++                  item:
++                    id: arrow
++                next_page:
++                  slot: 17
++                  item:
++                    id: arrow
++            loot:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                back:
++                  slot: 9
++                  item:
++                    id: oak_door
++                info:
++                  slot: 10
++                  item:
++                    id: book
++            """;
++
++    private FakeServerAdapter adapter;
++    private ConfigSnapshot config;
++    private CommandRegistry registry;
++    private UUID player;
++    private FakeCommandSender steve;
++    private final List<String> failures = new ArrayList<>();
++
++    @BeforeEach
++    void setUp() {
++        StreamableServerMock.mock();
++        adapter = new FakeServerAdapter(WORLD);
++        player = UUID.randomUUID();
++        adapter.addOnlinePlayer(player);
++        config = snapshot();
++        steve = new FakeCommandSender("Steve", WikiCommand.PERMISSION)
++                .asPlayer(player)
++                .at(new SenderLocation(WORLD, 0, 64, 0));
++        ItemSourceRegistry items = ItemSourceRegistry.create();
++        MenuRenderer renderer = new MenuRenderer(items, key -> config.message("", key), MenuWarnings.ignore);
++        MenuService menus = new MenuService(adapter, renderer);
++        WikiMenu menu = new WikiMenu(adapter, () -> config, items, menus, renderer,
++                (what, cause) -> failures.add(what));
++        registry = new CommandRegistry(new FakeCommandSources(), key -> config.message("", key), line -> {
++        });
++        registry.register(WikiCommand.node(config.wikiCommand(), menu));
++    }
++
++    @AfterEach
++    void tearDown() {
++        MockBukkit.unmock();
++        assertTrue(failures.isEmpty(), failures.toString());
++    }
++
++    @Test
++    void theRootAndItsAliasOpenTheWikiForAPlayer() {
++        registry.dispatch(steve, "loots");
++        registry.dispatch(steve, "rklloots");
++
++        assertEquals(2, adapter.menuOpens().size());
++        assertEquals("§8Loots wiki", adapter.menuOpens().get(0).title());
++        assertEquals(List.of(), steve.messages());
++    }
++
++    @Test
++    void theConsoleIsRefused() {
++        FakeCommandSender console = new FakeCommandSender("Console", WikiCommand.PERMISSION);
++
++        registry.dispatch(console, "loots");
++
++        assertEquals(List.of(message("cmd_wiki_needs_player")), console.messages());
++        assertTrue(adapter.menuOpenCalls().isEmpty());
++    }
++
++    @Test
++    void aPlayerWithoutThePermissionGetsTheUnknownCommandReply() {
++        FakeCommandSender alex = new FakeCommandSender("Alex")
++                .asPlayer(player)
++                .at(new SenderLocation(WORLD, 0, 64, 0));
++
++        registry.dispatch(alex, "loots");
++
++        assertEquals(List.of(message("cmd_unknown")), alex.messages());
++        assertTrue(adapter.menuOpenCalls().isEmpty());
++    }
++
++    private String message(String key) {
++        return config.message("", key).replace("{prefix}", config.message("", "prefix"));
++    }
++
++    private static ConfigSnapshot snapshot() {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", LANGUAGE)
++                .menu("wiki", WIKI_MENU);
++        sources.loot("demo", "display_name: 'demo'\nopen_mode: drop\nblock: barrel\n"
++                + "roll:\n  entries:\n    a:\n      item:\n        id: diamond\n");
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static NameCatalog catalog() {
++        return new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return Optional.of(writtenId.contains(":") ? writtenId : "minecraft:" + writtenId);
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return true;
++            }
++        };
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/ConfigWikiTest.java b/src/test/java/me/rakkoon69/rakunloots/config/ConfigWikiTest.java
+new file mode 100644
+index 0000000..f51d505
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/ConfigWikiTest.java
+@@ -0,0 +1,224 @@
++package me.rakkoon69.rakunloots.config;
++
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.List;
++import java.util.Optional;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class ConfigWikiTest {
++
++    private static final NameCatalog ACCEPTING = written -> Optional.of(written);
++
++    @Test
++    void aLootWithoutWikiShowsWithNoConfiguredIcon() {
++        ConfigSnapshot snapshot = load("");
++
++        WikiSettings wiki = snapshot.wiki("demo").orElseThrow();
++        assertTrue(wiki.show());
++        assertEquals(Optional.empty(), wiki.icon());
++        assertTrue(snapshot.warnings().stream().noneMatch(warning ->
++                        warning.kind() == ConfigWarning.Kind.UNUSABLE_WIKI
++                                || warning.kind() == ConfigWarning.Kind.UNKNOWN_KEY),
++                snapshot.warnings().toString());
++    }
++
++    @Test
++    void falseHidesTheLootAndAShowFalseMapKeepsItsIcon() {
++        ConfigSnapshot snapshot = load("wiki: false\n", """
++                wiki:
++                  show: false
++                  icon:
++                    id: emerald
++                """);
++
++        assertEquals(false, snapshot.wiki("off").orElseThrow().show());
++        WikiSettings hidden = snapshot.wiki("map").orElseThrow();
++        assertEquals(false, hidden.show());
++        assertEquals("emerald", hidden.icon().orElseThrow().id());
++    }
++
++    @Test
++    void anUnknownSubKeyWarnsHighAndDiscardsTheWholeMap() {
++        ConfigSnapshot snapshot = load("""
++                wiki:
++                  mystery: false
++                  show: false
++                  icon:
++                    id: emerald
++                """);
++
++        WikiSettings wiki = snapshot.wiki("demo").orElseThrow();
++        assertTrue(wiki.show());
++        assertEquals(Optional.empty(), wiki.icon());
++        assertTrue(snapshot.warnings().stream().anyMatch(warning ->
++                warning.kind() == ConfigWarning.Kind.UNKNOWN_KEY
++                        && warning.severity() == ConfigWarning.Severity.HIGH
++                        && warning.key().equals(Optional.of("wiki.mystery"))));
++    }
++
++    @Test
++    void aWikiThatIsNotABooleanOrMapWarnsHighAndShows() {
++        ConfigSnapshot snapshot = load("wiki: [false]\n");
++
++        WikiSettings wiki = snapshot.wiki("demo").orElseThrow();
++        assertTrue(wiki.show());
++        assertEquals(Optional.empty(), wiki.icon());
++        assertTrue(snapshot.warnings().stream().anyMatch(warning ->
++                warning.kind() == ConfigWarning.Kind.UNUSABLE_WIKI
++                        && warning.severity() == ConfigWarning.Severity.HIGH));
++    }
++
++    @Test
++    void aWrongTypedIconResetsTheWholeMapAndShowsWithTheBlockIcon() {
++        ConfigSnapshot snapshot = load("""
++                wiki:
++                  show: false
++                  icon: emerald
++                """);
++
++        WikiSettings wiki = snapshot.wiki("demo").orElseThrow();
++        assertTrue(wiki.show());
++        assertEquals(Optional.empty(), wiki.icon());
++        assertTrue(snapshot.warnings().stream().anyMatch(warning ->
++                warning.kind() == ConfigWarning.Kind.UNUSABLE_WIKI
++                        && warning.severity() == ConfigWarning.Severity.HIGH
++                        && warning.key().equals(Optional.of("wiki.icon"))));
++    }
++
++    @Test
++    void aWrongTypedShowResetsTheWholeMapAndShowsWithTheBlockIcon() {
++        ConfigSnapshot snapshot = load("""
++                wiki:
++                  show: nope
++                  icon:
++                    id: emerald
++                """);
++
++        WikiSettings wiki = snapshot.wiki("demo").orElseThrow();
++        assertTrue(wiki.show());
++        assertEquals(Optional.empty(), wiki.icon());
++        assertTrue(snapshot.warnings().stream().anyMatch(warning ->
++                warning.kind() == ConfigWarning.Kind.UNUSABLE_WIKI
++                        && warning.severity() == ConfigWarning.Severity.HIGH
++                        && warning.key().equals(Optional.of("wiki.show"))));
++    }
++
++    @Test
++    void shippedConfigNamesTheWikiCommandAndGivesItsPermissionToEveryone() throws IOException {
++        assertTrue(resource("/config.yml").contains("wiki_command:"));
++        ConfigSnapshot snapshot = loadShipped();
++
++        assertEquals("loots", snapshot.wikiCommand().name());
++        assertEquals(List.of("rklloots"), snapshot.wikiCommand().aliases());
++        assertEquals(DefaultAccess.EVERYONE, snapshot.wikiCommand().permissionDefault());
++        assertTrue(wikiCommandWarnings(snapshot).isEmpty(), wikiCommandWarnings(snapshot).toString());
++    }
++
++    @Test
++    void missingWikiCommandUsesTheDefaultsWithoutWarning() {
++        ConfigSnapshot snapshot = load("");
++
++        assertEquals(WikiCommandSettings.defaults().name(), snapshot.wikiCommand().name());
++        assertEquals(WikiCommandSettings.defaults().aliases(), snapshot.wikiCommand().aliases());
++        assertEquals(DefaultAccess.EVERYONE, snapshot.wikiCommand().permissionDefault());
++        assertTrue(wikiCommandWarnings(snapshot).isEmpty());
++    }
++
++    @Test
++    void wikiCommandReadsNameAliasesAndPermission() {
++        ConfigSnapshot snapshot = ConfigLoader.load(ConfigSources.builder()
++                .globals("""
++                        wiki_command:
++                          name: Loots
++                          aliases: [guide, guide, loots]
++                          permission_default: op
++                        """)
++                .language("en", "still_locked: locked\n")
++                .build(), ACCEPTING);
++
++        assertEquals("loots", snapshot.wikiCommand().name());
++        assertEquals(List.of("guide"), snapshot.wikiCommand().aliases());
++        assertEquals(DefaultAccess.OPERATORS, snapshot.wikiCommand().permissionDefault());
++        assertTrue(wikiCommandWarnings(snapshot).isEmpty());
++    }
++
++    @Test
++    void aBadWikiCommandValueWarnsHighAndUsesItsDefault() {
++        ConfigSnapshot snapshot = ConfigLoader.load(ConfigSources.builder()
++                .globals("""
++                        wiki_command:
++                          name: "two words"
++                          aliases: [guide, "bad alias"]
++                          permission_default: sometimes
++                        """)
++                .language("en", "still_locked: locked\n")
++                .build(), ACCEPTING);
++
++        assertEquals(WikiCommandSettings.defaults().name(), snapshot.wikiCommand().name());
++        assertEquals(List.of("guide"), snapshot.wikiCommand().aliases());
++        assertEquals(DefaultAccess.EVERYONE, snapshot.wikiCommand().permissionDefault());
++        List<ConfigWarning> warnings = wikiCommandWarnings(snapshot);
++        assertEquals(3, warnings.size(), warnings.toString());
++        assertTrue(warnings.stream().allMatch(warning -> warning.severity() == ConfigWarning.Severity.HIGH));
++    }
++
++    private static ConfigSnapshot load(String wiki) {
++        return load(wiki, "");
++    }
++
++    private static ConfigSnapshot load(String firstWiki, String secondWiki) {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", "still_locked: locked\n");
++        sources.loot("demo", loot(firstWiki));
++        if (!secondWiki.isBlank()) {
++            sources.loot("map", loot(secondWiki));
++        }
++        if (firstWiki.contains("false") && !secondWiki.isBlank()) {
++            sources.loot("off", loot("wiki: false\n"));
++        }
++        return ConfigLoader.load(sources.build(), ACCEPTING);
++    }
++
++    private static String loot(String wiki) {
++        return "display_name: 'demo'\n"
++                + "open_mode: drop\n"
++                + "block: barrel\n"
++                + wiki
++                + "roll:\n"
++                + "  entries:\n"
++                + "    a:\n"
++                + "      item:\n"
++                + "        id: diamond\n";
++    }
++
++    private static ConfigSnapshot loadShipped() throws IOException {
++        return ConfigLoader.load(ConfigSources.builder()
++                .globals(resource("/config.yml"))
++                .worlds("{}\n")
++                .language("en", resource("/languages/en.yml"))
++                .build(), ACCEPTING);
++    }
++
++    private static List<ConfigWarning> wikiCommandWarnings(ConfigSnapshot snapshot) {
++        return snapshot.warnings().stream()
++                .filter(warning -> warning.kind() == ConfigWarning.Kind.UNUSABLE_WIKI_COMMAND_VALUE)
++                .toList();
++    }
++
++    private static String resource(String path) throws IOException {
++        try (InputStream in = ConfigWikiTest.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/Phase9WikiSettingsAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/config/Phase9WikiSettingsAcceptanceTest.java
+new file mode 100644
+index 0000000..337295a
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/Phase9WikiSettingsAcceptanceTest.java
+@@ -0,0 +1,50 @@
++package me.rakkoon69.rakunloots.config;
++
++import org.junit.jupiter.api.Test;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.*;
++import static org.junit.jupiter.api.Assertions.*;
++
++class Phase9WikiSettingsAcceptanceTest {
++    // Known vanilla ids only; actual server-name validation is tested through BukkitNameCatalog.
++    private static final NameCatalog CATALOG = id -> Optional.of(id);
++    private static ConfigSnapshot load(String globals,String wiki) {
++        var snapshot = ConfigLoader.load(ConfigSources.builder().globals(globals)
++            .worlds("{}\n").language("en","text: test\n")
++            .loot("demo","display_name: Demo\nopen_mode: drop\nblock: barrel\n"+wiki+"\nroll:\n  entries:\n    a:\n      item:\n        id: diamond\n")
++            .build(),CATALOG);
++        assertTrue(snapshot.loot("demo").isPresent(),"fixture loot demo must load");
++        return snapshot;
++    }
++    @Test void wikiSettingsLiveBesideLootAndReadBooleanMapAndDefaults() {
++        assertTrue(load("language: en\n","").wiki("demo").orElseThrow().show());
++        assertFalse(load("language: en\n","wiki: false").wiki("demo").orElseThrow().show());
++        var mapped=load("language: en\n","wiki:\n  show: false\n  icon:\n    id: emerald");
++        assertFalse(mapped.wiki("demo").orElseThrow().show());
++        assertEquals("emerald",mapped.wiki("demo").orElseThrow().icon().orElseThrow().id());
++    }
++    @Test void malformedOrUnknownSettingsWarnAndUseShownBlockDefaults() {
++        for(String input:List.of("wiki: [false]","wiki:\n  mystery: false\n  show: false")) {
++            var config=load("language: en\n",input);
++            var wiki=config.wiki("demo").orElseThrow();
++            assertTrue(wiki.show(),input);
++            assertTrue(wiki.icon().isEmpty(),input);
++            assertTrue(config.warnings().stream().anyMatch(w->w.severity()==ConfigWarning.Severity.HIGH),input);
++        }
++    }
++    @Test void shippedCommandDefaultsAndExplicitPermissionAreParsed() throws Exception {
++        String globals;
++        try(InputStream in=getClass().getResourceAsStream("/config.yml")) {
++            assertNotNull(in); globals=new String(in.readAllBytes(),StandardCharsets.UTF_8);
++        }
++        var shipped=load(globals,"").wikiCommand();
++        assertEquals("loots",shipped.name());
++        assertEquals(List.of("rklloots"),shipped.aliases());
++        assertEquals(DefaultAccess.EVERYONE,shipped.permissionDefault());
++        var custom=load("language: en\nwiki_command:\n  name: Wiki\n  aliases: [guide]\n  permission_default: op\n","").wikiCommand();
++        assertEquals("wiki",custom.name());
++        assertEquals(List.of("guide"),custom.aliases());
++        assertEquals(DefaultAccess.OPERATORS,custom.permissionDefault());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+index 5a1899d..27803eb 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
++++ b/src/test/java/me/rakkoon69/rakunloots/summon/FakeServerAdapter.java
+@@ -101,6 +101,12 @@ public final class FakeServerAdapter implements ServerAdapter {
+     public record MenuClose(UUID playerId, MenuHandle menu) {
+     }
+ 
++    /**
++     * One block item asked for through the adapter, with the head data the caller named.
++     */
++    public record BlockItemCall(String blockId, Optional<String> headData) {
++    }
++
+     private record HeldGive(UUID playerId, ItemStack item, int amount, CompletableFuture<Integer> result) {
+     }
+ 
+@@ -189,6 +195,7 @@ public final class FakeServerAdapter implements ServerAdapter {
+     private final List<Drop> drops = new CopyOnWriteArrayList<>();
+     private final List<ParticleCall> particleCalls = new CopyOnWriteArrayList<>();
+     private final Map<ItemStack, String> blockItemHeads = new IdentityHashMap<>();
++    private final List<BlockItemCall> blockItemCalls = new CopyOnWriteArrayList<>();
+     private final Set<UUID> onlinePlayers = new HashSet<>();
+     private final List<Message> messages = new CopyOnWriteArrayList<>();
+     private final List<InventoryOpen> inventoryOpens = new CopyOnWriteArrayList<>();
+@@ -713,6 +720,7 @@ public final class FakeServerAdapter implements ServerAdapter {
+     @Override
+     public Optional<ItemStack> blockItem(String blockId, Optional<String> headData) {
+         String id = placement(blockId, headData);
++        blockItemCalls.add(new BlockItemCall(id, headData));
+         Material type = Material.matchMaterial(id);
+         if (type == null || !type.isItem()) {
+             return Optional.empty();
+@@ -722,6 +730,13 @@ public final class FakeServerAdapter implements ServerAdapter {
+         return Optional.of(item);
+     }
+ 
++    /**
++     * The block items asked for through the adapter.
++     */
++    public List<BlockItemCall> blockItemCalls() {
++        return List.copyOf(blockItemCalls);
++    }
++
+     private Optional<String> headDataOf(ItemStack stack) {
+         return Optional.ofNullable(blockItemHeads.get(stack));
+     }
+diff --git a/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java b/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java
+new file mode 100644
+index 0000000..c064972
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/wiki/WikiMenuTest.java
+@@ -0,0 +1,402 @@
++package me.rakkoon69.rakunloots.wiki;
++
++import be.seeseemelk.mockbukkit.MockBukkit;
++import me.rakkoon69.rakunloots.command.SenderLocation;
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import me.rakkoon69.rakunloots.items.ItemSourceRegistry;
++import me.rakkoon69.rakunloots.menu.MenuRenderer;
++import me.rakkoon69.rakunloots.menu.MenuService;
++import me.rakkoon69.rakunloots.menu.MenuWarnings;
++import me.rakkoon69.rakunloots.storage.StreamableServerMock;
++import me.rakkoon69.rakunloots.summon.FakeServerAdapter;
++import org.bukkit.ChatColor;
++import org.bukkit.Material;
++import org.bukkit.inventory.ItemStack;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class WikiMenuTest {
++
++    private static final UUID WORLD = UUID.fromString("00000000-0000-0000-0000-00000000c1a1");
++    private static final String HEAD_DATA = "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYWJjIn19fQ==";
++
++    private static final String LANGUAGE = """
++            prefix: ""
++            menu_wiki_list_title: "&8Loots wiki"
++            menu_wiki_list_entry_name: "&e{loot}"
++            menu_wiki_list_entry_lore:
++              - "&7{description}"
++            menu_wiki_list_timer_chance: "&7Chance: &e{chance:2}%"
++            menu_wiki_list_not_on_timer: "&7No timer"
++            menu_wiki_list_click: "&eClick"
++            menu_wiki_loot_title: "&8Loot {loot}"
++            menu_button_back_name: "&a[Back]"
++            menu_button_back_lore:
++              - "&7Back to the list"
++            menu_button_previous_page_name: "&a[Prev]"
++            menu_button_previous_page_lore: "&7{page}/{pages}"
++            menu_button_next_page_name: "&a[Next]"
++            menu_button_next_page_lore: "&7{page}/{pages}"
++            """;
++
++    private static final String WIKI_MENU = """
++            list:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                previous_page:
++                  slot: 9
++                  item:
++                    id: arrow
++                next_page:
++                  slot: 17
++                  item:
++                    id: arrow
++            loot:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                back:
++                  slot: 9
++                  item:
++                    id: oak_door
++                info:
++                  slot: 10
++                  item:
++                    id: book
++            """;
++
++    private static final String ROWS_MISMATCH_MENU = """
++            list:
++              rows: 2
++              content_slots: ["0-8"]
++              filler:
++                id: stone
++              buttons:
++                previous_page:
++                  slot: 9
++                  item:
++                    id: arrow
++                next_page:
++                  slot: 17
++                  item:
++                    id: arrow
++            loot:
++              rows: 6
++              content_slots: ["0-44"]
++              filler:
++                id: stone
++              buttons:
++                back:
++                  slot: 48
++                  item:
++                    id: oak_door
++                info:
++                  slot: 49
++                  item:
++                    id: book
++            """;
++
++    private static final List<String> SHIPPED_LOOTS = List.of(
++            "airdrops", "buried_stash", "deep_vault", "head_trophy", "sky_lantern", "sunken_treasure",
++            "treasure_chest");
++
++    private FakeServerAdapter adapter;
++    private ConfigSnapshot config;
++    private WikiMenu menu;
++    private MenuService menus;
++    private UUID player;
++    private final List<String> failures = new ArrayList<>();
++
++    @BeforeEach
++    void setUp() {
++        StreamableServerMock.mock();
++        adapter = new FakeServerAdapter(WORLD);
++        player = UUID.randomUUID();
++        adapter.addOnlinePlayer(player);
++        use(snapshot("{}", new LinkedHashMap<>()));
++    }
++
++    @AfterEach
++    void tearDown() {
++        MockBukkit.unmock();
++        assertTrue(failures.isEmpty(), failures.toString());
++    }
++
++    @Test
++    void rowsSortByTimerChanceThenIdAndHiddenLootsStayInTheDenominator() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("delta", loot("delta", "barrel", "Delta description", ""));
++        loots.put("hidden", loot("hidden", "barrel", "Hidden description", "wiki: false\n"));
++        loots.put("gamma", loot("gamma", "barrel", "Gamma description", ""));
++        loots.put("alpha", loot("alpha", "barrel", "Alpha description", ""));
++        loots.put("beta", loot("beta", "barrel", "Beta description", ""));
++        use(snapshot("""
++                worlds:
++                  world:
++                    loots:
++                      alpha: 10
++                      beta: 30
++                      gamma: 30
++                      hidden: 50
++                """, loots));
++
++        open(new SenderLocation(WORLD, 0, 64, 0));
++
++        Map<Integer, ItemStack> shown = contents(0);
++        assertEquals("alpha", named(shown.get(0)));
++        assertEquals("beta", named(shown.get(1)));
++        assertEquals("gamma", named(shown.get(2)));
++        assertEquals("delta", named(shown.get(3)));
++        assertFalse(shown.values().stream().anyMatch(item -> named(item).contains("hidden")));
++        assertTrue(lore(shown.get(0)).contains("Alpha description"), lore(shown.get(0)));
++        assertTrue(lore(shown.get(0)).contains("8.33"), lore(shown.get(0)));
++        assertTrue(lore(shown.get(1)).contains("25.00"), lore(shown.get(1)));
++        assertTrue(lore(shown.get(3)).contains("No timer"), lore(shown.get(3)));
++        assertTrue(lore(shown.get(3)).contains("Click"), lore(shown.get(3)));
++    }
++
++    @Test
++    void aConfiguredIconReplacesTheBlockAndAHeadKeepsItsData() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("alpha", loot("alpha", "barrel", null, "wiki:\n  icon:\n    id: emerald\n"));
++        loots.put("beta", loot("beta", "player_head", null, "head_data: '" + HEAD_DATA + "'\n"));
++        use(snapshot("{}", loots));
++
++        open(new SenderLocation(WORLD, 0, 64, 0));
++
++        assertEquals(Material.EMERALD, contents(0).get(0).getType());
++        assertEquals(Material.PLAYER_HEAD, contents(0).get(1).getType());
++        assertEquals(List.of(new FakeServerAdapter.BlockItemCall("minecraft:player_head", Optional.of(HEAD_DATA))),
++                adapter.blockItemCalls());
++    }
++
++    @Test
++    void anUnresolvableIconAndABlockWithoutAnItemDrawBarriers() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("alpha", loot("alpha", "barrel", null, "wiki:\n  icon:\n    id: not_an_item\n"));
++        loots.put("beta", loot("beta", "water", null, ""));
++        use(snapshot("{}", loots));
++
++        open(new SenderLocation(WORLD, 0, 64, 0));
++
++        assertEquals(Material.BARRIER, contents(0).get(0).getType());
++        assertEquals(Material.BARRIER, contents(0).get(1).getType());
++    }
++
++    @Test
++    void aLootPageHasOnlyBackAndFillerAndBackKeepsTheListPage() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        for (int index = 0; index < 10; index++) {
++            String id = String.format("loot%02d", index);
++            loots.put(id, loot(id, "barrel", null, ""));
++        }
++        use(snapshot("{}", loots));
++        open(new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals("loot00", named(contents(0).get(0)));
++
++        menus.click(player, 17).join();
++        assertEquals("loot09", named(contents(1).get(0)));
++
++        menus.click(player, 0).join();
++        assertEquals(2, adapter.menuOpens().size(), "the loot page did not replace the list page");
++        FakeServerAdapter.MenuOpen loot = adapter.menuOpens().get(1);
++        Map<Integer, ItemStack> stub = loot.contents();
++        assertEquals("§8Loot loot09", loot.title());
++        assertEquals(18, loot.size());
++        assertEquals(Material.OAK_DOOR, stub.get(9).getType());
++        assertEquals("§a[Back]", stub.get(9).getItemMeta().getDisplayName());
++        assertTrue(String.join(" ", stub.get(9).getItemMeta().getLore()).contains("Back to the list"));
++        for (int slot = 0; slot <= 8; slot++) {
++            assertFalse(stub.containsKey(slot), "unused content slot " + slot + " is empty");
++        }
++        for (int slot = 10; slot <= 17; slot++) {
++            assertEquals(Material.STONE, stub.get(slot).getType(), "slot " + slot);
++        }
++
++        int opens = adapter.menuOpens().size();
++        int updates = adapter.menuUpdates().size();
++        menus.click(player, 10).join();
++        assertEquals(opens, adapter.menuOpens().size(), "the filtered info button cannot be clicked");
++        assertEquals(updates, adapter.menuUpdates().size(), "the filtered info button cannot be clicked");
++
++        menus.click(player, 9).join();
++        assertEquals(3, adapter.menuOpens().size(), "the list page did not replace the loot page");
++        FakeServerAdapter.MenuOpen back = adapter.menuOpens().get(2);
++        assertEquals("§8Loots wiki", back.title());
++        assertEquals(18, back.size());
++        assertEquals("loot09", named(back.contents().get(0)));
++    }
++
++    @Test
++    void aLootPageWithDifferentRowsReplacesTheListInventory() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("alpha", loot("alpha", "barrel", null, ""));
++        use(snapshot("{}", loots, ROWS_MISMATCH_MENU));
++
++        open(new SenderLocation(WORLD, 0, 64, 0));
++        assertEquals(18, adapter.menuOpens().get(0).size());
++
++        menus.click(player, 0).join();
++        assertEquals(2, adapter.menuOpens().size(), "the loot page did not replace the list page");
++        FakeServerAdapter.MenuOpen loot = adapter.menuOpens().get(1);
++        assertEquals("§8Loot alpha", loot.title());
++        assertEquals(54, loot.size());
++        assertTrue(loot.contents().containsKey(48), "the back button is at the loot page's slot 48");
++
++        menus.click(player, 48).join();
++        assertEquals(3, adapter.menuOpens().size(), "the list page did not replace the loot page");
++        FakeServerAdapter.MenuOpen list = adapter.menuOpens().get(2);
++        assertEquals("§8Loots wiki", list.title());
++        assertEquals(18, list.size());
++        assertEquals("alpha", named(list.contents().get(0)));
++    }
++
++    @Test
++    void aViewerInAnotherWorldGetsNoTimerChanceAndLootsSortById() {
++        Map<String, String> loots = new LinkedHashMap<>();
++        loots.put("beta", loot("beta", "barrel", null, ""));
++        loots.put("alpha", loot("alpha", "barrel", null, ""));
++        use(snapshot("""
++                worlds:
++                  world:
++                    loots:
++                      alpha: 10
++                      beta: 90
++                """, loots));
++
++        open(new SenderLocation(UUID.randomUUID(), 0, 64, 0));
++
++        assertEquals("alpha", named(contents(0).get(0)));
++        assertEquals("beta", named(contents(0).get(1)));
++        assertTrue(lore(contents(0).get(0)).contains("No timer"), lore(contents(0).get(0)));
++        assertTrue(lore(contents(0).get(1)).contains("No timer"), lore(contents(0).get(1)));
++    }
++
++    @Test
++    void shippedWorldsAndLootsPinTheListOrder() throws IOException {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals(resource("/config.yml"))
++                .worlds(resource("/worlds.yml"))
++                .language("en", resource("/languages/en.yml"))
++                .menu("wiki", resource("/menus/wiki.yml"));
++        for (String id : SHIPPED_LOOTS) {
++            sources.loot(id, resource("/loots/" + id + ".yml"));
++        }
++        use(ConfigLoader.load(sources.build(), catalog()));
++
++        open(new SenderLocation(WORLD, 0, 64, 0));
++
++        Map<Integer, ItemStack> shown = contents(0);
++        List<String> names = new ArrayList<>();
++        for (int slot = 0; slot < SHIPPED_LOOTS.size(); slot++) {
++            names.add(named(shown.get(slot)));
++        }
++        assertEquals(List.of("Deep Vault", "Head Trophy", "Buried Stash", "Treasure Chest", "Air Supply",
++                "Sky Lantern", "Sunken Treasure"), names);
++    }
++
++    private void open(SenderLocation location) {
++        menu.open(player, location);
++        assertEquals(1, adapter.menuOpens().size(), "the menu did not open");
++    }
++
++    private Map<Integer, ItemStack> contents(int update) {
++        return update == 0 ? adapter.menuOpens().get(0).contents() : adapter.menuUpdates().get(update - 1).contents();
++    }
++
++    private static String named(ItemStack item) {
++        if (item == null || item.getItemMeta() == null || item.getItemMeta().getDisplayName() == null) {
++            return "";
++        }
++        return ChatColor.stripColor(item.getItemMeta().getDisplayName());
++    }
++
++    private static String lore(ItemStack item) {
++        if (item == null || item.getItemMeta() == null || item.getItemMeta().getLore() == null) {
++            return "";
++        }
++        return String.join(" ", item.getItemMeta().getLore());
++    }
++
++    private void use(ConfigSnapshot snapshot) {
++        config = snapshot;
++        ItemSourceRegistry items = ItemSourceRegistry.create();
++        MenuRenderer renderer = new MenuRenderer(items, key -> config.message("", key), MenuWarnings.ignore);
++        menus = new MenuService(adapter, renderer);
++        menu = new WikiMenu(adapter, () -> config, items, menus, renderer,
++                (what, cause) -> failures.add(what));
++    }
++
++    private static ConfigSnapshot snapshot(String worlds, Map<String, String> loots) {
++        return snapshot(worlds, loots, WIKI_MENU);
++    }
++
++    private static ConfigSnapshot snapshot(String worlds, Map<String, String> loots, String menu) {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\nbanned_loot_blocks: []\n")
++                .worlds(worlds)
++                .language("en", LANGUAGE)
++                .menu("wiki", menu);
++        loots.forEach(sources::loot);
++        return ConfigLoader.load(sources.build(), catalog());
++    }
++
++    private static String resource(String path) throws IOException {
++        try (InputStream in = WikiMenuTest.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        }
++    }
++
++    private static String loot(String id, String block, String description, String extra) {
++        return "display_name: '" + id + "'\n"
++                + (description == null ? "" : "description:\n  - '" + description + "'\n")
++                + "open_mode: drop\n"
++                + "block: " + block + "\n"
++                + extra
++                + "roll:\n"
++                + "  entries:\n"
++                + "    a:\n"
++                + "      item:\n"
++                + "        id: diamond\n";
++    }
++
++    private static NameCatalog catalog() {
++        return new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return Optional.of(writtenId.contains(":") ? writtenId : "minecraft:" + writtenId);
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return true;
++            }
++        };
++    }
++}

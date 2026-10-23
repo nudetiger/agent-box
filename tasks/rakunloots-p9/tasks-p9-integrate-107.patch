@@ -1,0 +1,1704 @@
+diff --git a/docs/adr/0018-own-menus-and-exact-loot-chance.md b/docs/adr/0018-own-menus-and-exact-loot-chance.md
+index a40d047..b4a3bdc 100644
+--- a/docs/adr/0018-own-menus-and-exact-loot-chance.md
++++ b/docs/adr/0018-own-menus-and-exact-loot-chance.md
+@@ -20,7 +20,7 @@ A weighted draw without repeats orders the entries as independent exponential cl
+ 
+ P(i in the first k) = ∫ w_i e^(-w_i t) · P(fewer than k others rang by t) dt, over t from 0 to infinity.
+ 
+-By time t, entry j has rung with chance 1 - e^(-w_j t), the same for every i. So one time grid serves every entry. At each point of the grid the plugin builds the count distribution over all entries once, then removes entry i from it in k steps, forward when its chance is at most one half and backward above, which keeps the division stable. Entries of equal weight join the distribution as one binomial step. The plugin counts the smaller side: fewer than k others before i is fewer than n - k others after i. The cost per loot is the grid size times the distinct weights times min(k, n - k), about 10^4 steps for a usual loot and 10^6 at the worst. The distribution gives every k at once, so averaging over [min, max] adds nothing. Every loot is worked out after each load, off the main thread.
++By time t, entry j has rung with chance 1 - e^(-w_j t), the same for every i. So one time grid serves every entry. At each point the plugin builds the full count distribution once, with equal weights grouped as binomial steps, then removes one entry per distinct weight. Removal runs forward when its chance is at most one half and backward above, dividing by the larger term to keep the calculation stable. It uses the count tail built in that direction; the smaller algebraic tail does not guarantee fewer recurrence steps. With n drawable entries and g distinct weights, the full grouped convolution and removals cost at most O(n^2 + g*n) per grid point. The total also depends on the quadrature grid needed for the accuracy bound. Counts in [min, max] share the distribution and quadrature; there is no separate integral per count. Every loot is worked out after each load, off the main thread.
+ 
+ An entry with a weight below zero is always included. An entry with weight zero is never drawn and is hidden. When the count reaches the drawable entries for every k, every drawable entry is certain.
+ 
+diff --git a/docs/rewrite/phases.md b/docs/rewrite/phases.md
+index 1f8a943..1338775 100644
+--- a/docs/rewrite/phases.md
++++ b/docs/rewrite/phases.md
+@@ -212,6 +212,8 @@ A loot page shows the loot's contents, an info item, and a back button. Each con
+ 
+ Loot chance. The chance a content entry lands in one loot box is exact, worked out from the roll rules of `LootRoller`, as ADR 0018 says. The timer chance is the loot's share of its world's timer total, over loots that are loaded and above zero, as `WorldTimers` picks. Every loot's chances are worked out after each load, off the main thread. `{chance}` shows 1 decimal and `{chance:N}` shows N decimals, from 0 to 6. A chance above zero that rounds to zero shows `<` and the smallest step, such as `<0.01%`. A chance below one never rounds up to 100, and caps at the largest step below it, such as `99.99%`. An N outside 0 to 6 warns high and uses 1.
+ 
++The chance calculation chooses its removal direction for numerical stability, not a promised smaller-side step count. For n drawable entries and g distinct weights, its full grouped convolution and removals cost at most O(n^2 + g*n) per quadrature point; the grid must be chosen to keep the required accuracy. This corrects the original cost estimate in ADR 0018. The 1e-9 absolute-error requirement and the 100-entry, 100-distinct-weight, max-50 calculation under 50 ms remain acceptance requirements.
++
+ Done when in-memory tests cover the menu files with their shipped fallback and severe warning, an unknown key, an unknown sound, paging, a claim click and claim all, clicks ignored while a claim runs, the barrier rows of a missing loot and a missing item source, wiki order by timer chance and contents order by chance, `wiki: false` and `wiki.icon`, every menu closed on reload, `{chance:N}` with its bounds, and loot chance against equal weights, one entry, a count at or above the drawable entries, entries below weight zero, and a brute-force count of every draw order on small loots. Done when `rltest` passes on Paper 26.2, Spigot 26.2, and Folia 26.2. The owner's client check of both menus follows and does not block the phase.
+ 
+ ## Later
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+index 20d6141..c96f559 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+@@ -137,7 +137,9 @@ final class ConfigLoadSupport {
+ 
+         Map<String, Map<String, String>> languages = new LinkedHashMap<>();
+         for (Map.Entry<String, String> entry : sources.languages().entrySet()) {
+-            languages.put(entry.getKey(), parseFlatStringMap("languages/" + entry.getKey() + ".yml", entry.getValue()));
++            Map<String, String> flat = parseFlatStringMap("languages/" + entry.getKey() + ".yml", entry.getValue());
++            languages.put(entry.getKey(), flat);
++            scanDecimalsInLanguage(entry.getKey(), flat, rawWarnings);
+         }
+ 
+         Map<String, Map<String, String>> lootOverrides = new LinkedHashMap<>();
+@@ -154,7 +156,9 @@ final class ConfigLoadSupport {
+             }
+             Map<String, Object> root = parsed.root();
+             parsedLootRoots.put(lootId, root);
+-            lootOverrides.put(lootId, parseLootOverrides(root));
++            Map<String, String> overrides = parseLootOverrides(root);
++            lootOverrides.put(lootId, overrides);
++            scanDecimalsInLoot(lootId, overrides, rawWarnings);
+             lootLanguages.put(lootId, parseLootLanguage(root));
+         }
+ 
+@@ -1333,6 +1337,46 @@ final class ConfigLoadSupport {
+         return overrides;
+     }
+ 
++    private static final java.util.regex.Pattern PLACEHOLDER_COLON =
++            java.util.regex.Pattern.compile("\\{([A-Za-z0-9_]+):([^}]*)}");
++
++    private static void scanDecimalsInLanguage(
++            String languageId, Map<String, String> strings, List<ConfigWarning> warnings) {
++        for (Map.Entry<String, String> entry : strings.entrySet()) {
++            if (hasUnusableDecimals(entry.getValue())) {
++                warnings.add(ConfigWarning.unusableDecimalsLanguage(languageId, entry.getKey()));
++            }
++        }
++    }
++
++    private static void scanDecimalsInLoot(
++            String lootId, Map<String, String> overrides, List<ConfigWarning> warnings) {
++        for (Map.Entry<String, String> entry : overrides.entrySet()) {
++            if (hasUnusableDecimals(entry.getValue())) {
++                warnings.add(ConfigWarning.unusableDecimalsLoot(lootId, entry.getKey()));
++            }
++        }
++    }
++
++    private static boolean hasUnusableDecimals(String text) {
++        if (text == null || !text.contains(":")) {
++            return false;
++        }
++        java.util.regex.Matcher m = PLACEHOLDER_COLON.matcher(text);
++        while (m.find()) {
++            String nStr = m.group(2);
++            try {
++                int n = Integer.parseInt(nStr);
++                if (n < 0 || n > 6) {
++                    return true;
++                }
++            } catch (NumberFormatException e) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     private static Map<String, String> parseFlatStringMap(String file, String content) {
+         Map<String, Object> root = parseRoot(file, content);
+         Map<String, String> out = new LinkedHashMap<>();
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+index c1890d3..43d9a54 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+@@ -80,7 +80,8 @@ public final class ConfigWarning {
+         SKIPPED_OPTIONAL_ENTRIES,
+         MORE_TYPOS,
+         UNKNOWN_WARNING_KIND,
+-        UNUSABLE_WARNING_SEVERITY
++        UNUSABLE_WARNING_SEVERITY,
++        UNUSABLE_DECIMALS
+     }
+ 
+     /** The typos a {@link Kind#MORE_TYPOS} warning names before it counts the rest. */
+@@ -641,6 +642,20 @@ public final class ConfigWarning {
+         return world(Kind.SMART_WITH_SKIP, worldName, Optional.of("unloaded_chunks"));
+     }
+ 
++    /**
++     * A language string or loot message override placeholder with decimals outside 0 to 6, or not a number.
++     */
++    public static ConfigWarning unusableDecimalsLanguage(String languageId, String key) {
++        return new ConfigWarning(Severity.HIGH, Kind.UNUSABLE_DECIMALS, Optional.of(languageId), Optional.of(key));
++    }
++
++    /**
++     * A loot message override placeholder with decimals outside 0 to 6, or not a number.
++     */
++    public static ConfigWarning unusableDecimalsLoot(String lootId, String key) {
++        return lootHigh(Kind.UNUSABLE_DECIMALS, lootId, Optional.empty(), Optional.of(key));
++    }
++
+     private static ConfigWarning world(Kind kind, String worldName, Optional<String> key) {
+         return new ConfigWarning(Severity.HIGH, kind, Optional.empty(), key, Optional.empty(), Optional.empty(),
+                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), List.of(),
+diff --git a/src/main/java/me/rakkoon69/rakunloots/lootbox/MessageText.java b/src/main/java/me/rakkoon69/rakunloots/lootbox/MessageText.java
+index ea90e27..c4c7ffb 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/lootbox/MessageText.java
++++ b/src/main/java/me/rakkoon69/rakunloots/lootbox/MessageText.java
+@@ -3,6 +3,9 @@ package me.rakkoon69.rakunloots.lootbox;
+ import me.rakkoon69.rakunloots.config.ConfigSnapshot;
+ import org.bukkit.ChatColor;
+ 
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.util.Locale;
+ import java.util.Map;
+ import java.util.regex.Matcher;
+ import java.util.regex.Pattern;
+@@ -15,6 +18,7 @@ public final class MessageText {
+ 
+     private static final String PREFIX_KEY = "prefix";
+     private static final Pattern HEX = Pattern.compile("<#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})>");
++    private static final Pattern PERCENT_PLACEHOLDER = Pattern.compile("\\{([A-Za-z0-9_]+)(?::([^}]*))?}");
+ 
+     private MessageText() {
+     }
+@@ -37,16 +41,84 @@ public final class MessageText {
+      * message is blank.
+      */
+     public static String render(ConfigSnapshot config, String lootId, String key, Map<String, String> values) {
++        return render(config, lootId, key, values, Map.of());
++    }
++
++    /**
++     * A loot's message with string and percent placeholders replaced.
++     */
++    public static String render(
++            ConfigSnapshot config,
++            String lootId,
++            String key,
++            Map<String, String> values,
++            Map<String, Double> percents
++    ) {
+         String text = config.message(lootId, key);
+         if (text.isBlank()) {
+             return "";
+         }
+-        for (Map.Entry<String, String> value : values.entrySet()) {
+-            text = text.replace("{" + value.getKey() + "}", value.getValue());
++        if (percents != null && !percents.isEmpty()) {
++            Matcher matcher = PERCENT_PLACEHOLDER.matcher(text);
++            StringBuilder sb = new StringBuilder();
++            while (matcher.find()) {
++                String name = matcher.group(1);
++                String colonArg = matcher.group(2);
++                if (percents.containsKey(name)) {
++                    int decimals = 1;
++                    if (colonArg != null) {
++                        try {
++                            int parsed = Integer.parseInt(colonArg);
++                            if (parsed >= 0 && parsed <= 6) {
++                                decimals = parsed;
++                            }
++                        } catch (NumberFormatException ignored) {
++                        }
++                    }
++                    matcher.appendReplacement(sb, Matcher.quoteReplacement(formatPercent(percents.get(name), decimals)));
++                } else {
++                    matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
++                }
++            }
++            matcher.appendTail(sb);
++            text = sb.toString();
++        }
++        if (values != null) {
++            for (Map.Entry<String, String> value : values.entrySet()) {
++                text = text.replace("{" + value.getKey() + "}", value.getValue());
++            }
+         }
+         return color(text.replace("{prefix}", config.message(lootId, PREFIX_KEY)));
+     }
+ 
++    /**
++     * Formats a percent value in [0, 1] into a string representation in {@code Locale.ROOT}.
++     */
++    public static String formatPercent(double chance, int decimals) {
++        BigDecimal val = BigDecimal.valueOf(chance);
++        BigDecimal hundred = BigDecimal.valueOf(100);
++        BigDecimal pct = val.multiply(hundred);
++
++        BigDecimal rounded = pct.setScale(decimals, RoundingMode.HALF_UP);
++
++        BigDecimal zero = BigDecimal.ZERO;
++        BigDecimal one = BigDecimal.ONE;
++
++        if (val.compareTo(zero) > 0 && rounded.compareTo(zero) == 0) {
++            if (decimals == 0) {
++                return "<1";
++            }
++            return "<0." + "0".repeat(decimals - 1) + "1";
++        }
++        if (val.compareTo(one) < 0 && rounded.compareTo(hundred) >= 0) {
++            if (decimals == 0) {
++                return "99";
++            }
++            return "99." + "9".repeat(decimals);
++        }
++        return rounded.toPlainString();
++    }
++
+     /**
+      * Text in legacy color codes. A hex color becomes {@code §x} followed by its six digits, each after {@code §},
+      * which servers from 1.16 show as that color; a three digit hex color doubles each digit.
+diff --git a/src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java b/src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java
+new file mode 100644
+index 0000000..b1c2550
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java
+@@ -0,0 +1,465 @@
++package me.rakkoon69.rakunloots.roll;
++
++import me.rakkoon69.rakunloots.config.ContentEntry;
++import me.rakkoon69.rakunloots.config.Roll;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++
++/**
++ * Calculates the exact chance that each content entry of a loot lands in one loot box.
++ * Takes no server, no Bukkit types, no randomness, and writes no logs.
++ *
++ * <p>Uses the method of ADR 0018:
++ * A weighted draw without replacement orders entries according to independent exponential clocks
++ * with rates equal to their weights. The probability that entry {@code i} is among the first {@code k}
++ * drawn entries is given by:
++ * <pre>
++ *   P(i in first k) = ∫ w_i * e^(-w_i * t) * P(fewer than k others rang by t) dt,  for t in [0, ∞)
++ * </pre>
++ * By time {@code t}, entry {@code j} has rung with probability {@code p_j(t) = 1 - e^(-w_j * t)}.
++ *
++ * <p><b>Quadrature and Grid:</b>
++ * The integral is evaluated using a substitution {@code x = ln(t)}, so {@code t = exp(x)} and {@code dt = t dx}.
++ * The integration domain is bounded by {@code x_min = -ln(max(w_norm)) - C} and {@code x_max = ln(45)},
++ * where weights are normalized by the minimum positive weight and
++ * {@code C = max(14, (2 ln n + ln(1e11 / 6)) / 3)} for {@code n} drawable entries.
++ * At {@code t_min = exp(x_min)}, the lower tail is handled explicitly instead of dropped. For a
++ * draw count of one, fewer than one other entry ringing means no other entry rang, so the lower tail
++ * is exact: {@code (w_i / W) * (1 - e^(-W t_min))}, where {@code W} is the total normalized weight.
++ * For a draw count of at least two, the lower tail adds the no-other-rang term; the neglected
++ * lower-tail contribution from two or more rings is at most {@code n^2 e^(-3C) / 6}, and the choice
++ * of {@code C} keeps that truncation at most {@code 1e-11}. Thus the 10,000-entry first-draw case
++ * has no lower-tail bias.
++ * For {@code t > 45}, {@code e^(-t) < 3e-20}, so the upper tail is negligible.
++ * The quadrature uses composite Simpson's rule, starting at 200 subintervals and doubling until every
++ * distinct-weight group's change between two levels is at most {@code 15 * 9.0e-10}; that is, the
++ * Richardson estimate of the remaining absolute error is at most {@code 9.0e-10}. The grid is not
++ * capped; its size depends on the accuracy the input needs. The absolute-error budget is therefore:
++ * lower-tail truncation at most {@code 1e-11}, upper tail at most {@code 3e-20}, quadrature at most
++ * {@code 9e-10}, and floating-point roundoff the remainder. The exact-oracle tests at 500 and 10,000
++ * entries verify that the combined per-entry error stays below 1e-9.
++ *
++ * <p><b>Efficiency:</b>
++ * - Equal weights are grouped as binomial steps during Poisson-binomial distribution convolution.
++ * - The full grouped convolution and the removal of one entry per distinct weight cost at most
++ *   {@code O(n^2 + g*n)} per quadrature point, where {@code g} is the number of distinct weights.
++ *   The total also depends on the grid the accuracy bound needs.
++ * - Removal runs forward when {@code p_i <= 1/2} and backward above, dividing by the larger term to
++ *   keep the calculation stable. The forward branch sums {@code P(S_{-i} < k)} and the backward
++ *   branch sums {@code 1 - P(S_{-i} >= k)}, so each branch uses the tail it built.
++ * - Every {@code k} in {@code [min, max]} is averaged from the same coefficients in one quadrature pass.
++ */
++public final class LootChance {
++
++    public enum Kind {
++        ALWAYS,
++        DRAWABLE,
++        HIDDEN
++    }
++
++    public record EntryChance(Kind kind, double probability) {
++    }
++
++    private static final int INITIAL_QUADRATURE_STEPS = 200; // Even number for Simpson's rule
++    private static final double QUADRATURE_TOLERANCE = 9.0e-10;
++
++    private LootChance() {
++    }
++
++    public static Map<String, EntryChance> calculate(Roll roll) {
++        Objects.requireNonNull(roll, "roll");
++
++        List<ContentEntry> entries = roll.entries();
++        List<ContentEntry> drawable = new ArrayList<>();
++        Map<String, EntryChance> result = new LinkedHashMap<>();
++
++        for (ContentEntry entry : entries) {
++            if (entry.weight() < 0) {
++                result.put(entry.id(), new EntryChance(Kind.ALWAYS, 1.0));
++            } else if (entry.weight() == 0) {
++                result.put(entry.id(), new EntryChance(Kind.HIDDEN, 0.0));
++            } else {
++                drawable.add(entry);
++            }
++        }
++
++        if (drawable.isEmpty()) {
++            return Collections.unmodifiableMap(result);
++        }
++
++        int n = drawable.size();
++        int min = Math.max(0, roll.min());
++        int max = Math.max(0, roll.max());
++        if (min >= max) {
++            min = max;
++        }
++
++        // Capped draw counts: each k is capped at n
++        // Check exact edges
++        if (max == 0) {
++            for (ContentEntry entry : drawable) {
++                result.put(entry.id(), new EntryChance(Kind.DRAWABLE, 0.0));
++            }
++            return Collections.unmodifiableMap(result);
++        }
++        if (min >= n) {
++            for (ContentEntry entry : drawable) {
++                result.put(entry.id(), new EntryChance(Kind.DRAWABLE, 1.0));
++            }
++            return Collections.unmodifiableMap(result);
++        }
++
++        // Weights of drawable entries
++        double[] weights = new double[n];
++        double minWeight = Double.POSITIVE_INFINITY;
++        double maxWeight = 0.0;
++        for (int i = 0; i < n; i++) {
++            double w = drawable.get(i).weight();
++            weights[i] = w;
++            if (w < minWeight) {
++                minWeight = w;
++            }
++            if (w > maxWeight) {
++                maxWeight = w;
++            }
++        }
++
++        // Distinct weight groups for binomial convolution
++        Map<Double, Integer> weightCounts = new LinkedHashMap<>();
++        for (double w : weights) {
++            weightCounts.merge(w, 1, Integer::sum);
++        }
++        double[] distinctWeights = new double[weightCounts.size()];
++        int[] distinctCounts = new int[weightCounts.size()];
++        Map<Double, Integer> weightToGroup = new LinkedHashMap<>();
++        int idx = 0;
++        for (Map.Entry<Double, Integer> e : weightCounts.entrySet()) {
++            distinctWeights[idx] = e.getKey();
++            distinctCounts[idx] = e.getValue();
++            weightToGroup.put(e.getKey(), idx);
++            idx++;
++        }
++        int[] entryGroup = new int[n];
++        for (int i = 0; i < n; i++) {
++            entryGroup[i] = weightToGroup.get(weights[i]);
++        }
++
++        // Count distribution of draws: count_weights[k] is the probability of draw count k
++        // for k in 0..n
++        double[] countProb = new double[n + 1];
++        long numK = (long) max - (long) min + 1L;
++        double uniformWeight = 1.0 / numK;
++        long individualEnd = Math.min((long) max, (long) n);
++        for (long k = min; k <= individualEnd; k++) {
++            countProb[(int) k] += uniformWeight;
++        }
++        if ((long) max > (long) n) {
++            long cappedTail = (long) max - (long) n;
++            countProb[n] += cappedTail * uniformWeight;
++        }
++
++        // If after capping all counts are n, all drawable entries are 1.0
++        if (countProb[n] == 1.0) {
++            for (ContentEntry entry : drawable) {
++                result.put(entry.id(), new EntryChance(Kind.DRAWABLE, 1.0));
++            }
++            return Collections.unmodifiableMap(result);
++        }
++
++        // If all weights are equal, every permutation is equally likely: E[k/n]
++        if (minWeight == maxWeight) {
++            double avg = 0.0;
++            for (int k = 1; k <= n; k++) {
++                avg += countProb[k] * ((double) k / n);
++            }
++            for (ContentEntry entry : drawable) {
++                result.put(entry.id(), new EntryChance(Kind.DRAWABLE, avg));
++            }
++            return Collections.unmodifiableMap(result);
++        }
++
++        // Normalization
++        double[] normWeights = new double[n];
++        for (int i = 0; i < n; i++) {
++            normWeights[i] = weights[i] / minWeight;
++        }
++        double[] normDistinctWeights = new double[distinctWeights.length];
++        for (int i = 0; i < distinctWeights.length; i++) {
++            normDistinctWeights[i] = distinctWeights[i] / minWeight;
++        }
++        double maxNormWeight = maxWeight / minWeight;
++
++        // Integration setup. C grows with n so the neglected k >= 2 lower tail stays at most 1e-11.
++        double lowerTailDecades = Math.max(14.0,
++                (2.0 * Math.log(n) + Math.log(1.0e11 / 6.0)) / 3.0);
++        double xMin = -Math.log(maxNormWeight) - lowerTailDecades;
++        double xMax = Math.log(45.0);
++        double tMin = Math.exp(xMin);
++
++        int minK = Math.max(1, Math.min(min, n));
++        int maxK = Math.min(max, n);
++        double[] logFactorial = new double[n + 1];
++        for (int i = 1; i <= n; i++) {
++            logFactorial[i] = logFactorial[i - 1] + Math.log(i);
++        }
++
++        PointEvaluator evaluator = new PointEvaluator(n, minK, maxK, countProb,
++                normDistinctWeights, distinctCounts, logFactorial);
++        double[] groupProbSum = integrate(evaluator, distinctWeights.length, xMin, xMax);
++
++        // Lower tail: k = 0 contributes nothing. For k = 1, fewer than one other ringing means no
++        // other rang, so the exact shared rate is the total normalized weight W. For k >= 2, add the
++        // no-other-rang term; the choice of xMin keeps the neglected two-or-more-rings contribution
++        // within the lower-tail error budget.
++        double probKPositive = 1.0 - countProb[0];
++        if (probKPositive > 0) {
++            double totalNormWeight = 0.0;
++            for (int g = 0; g < distinctWeights.length; g++) {
++                totalNormWeight += normDistinctWeights[g] * distinctCounts[g];
++            }
++            double probKOne = countProb[1];
++            double probKAtLeastTwo = probKPositive - probKOne;
++            if (probKAtLeastTwo < 0.0) {
++                probKAtLeastTwo = 0.0;
++            }
++            double kOneTail = -Math.expm1(-totalNormWeight * tMin);
++            for (int g = 0; g < distinctWeights.length; g++) {
++                double w = normDistinctWeights[g];
++                groupProbSum[g] += probKOne * (w / totalNormWeight) * kOneTail
++                        + probKAtLeastTwo * (-Math.expm1(-w * tMin));
++            }
++        }
++
++        for (int i = 0; i < n; i++) {
++            double prob = groupProbSum[entryGroup[i]];
++            if (prob < 0.0) {
++                prob = 0.0;
++            } else if (prob > 1.0) {
++                prob = 1.0;
++            }
++            result.put(drawable.get(i).id(), new EntryChance(Kind.DRAWABLE, prob));
++        }
++
++        return Collections.unmodifiableMap(result);
++    }
++
++    /**
++     * Evaluates the integrand for every distinct weight group at one time.
++     */
++    private static final class PointEvaluator {
++        private final int n;
++        private final int minK;
++        private final int maxK;
++        private final double[] countProb;
++        private final double[] normDistinctWeights;
++        private final int[] distinctCounts;
++        private final double[] logFactorial;
++        private final double[] D;
++        private final double[] newD;
++        private final double[] pGroup;
++        private final double[] qGroup;
++
++        private PointEvaluator(int n, int minK, int maxK, double[] countProb,
++                               double[] normDistinctWeights, int[] distinctCounts,
++                               double[] logFactorial) {
++            this.n = n;
++            this.minK = minK;
++            this.maxK = maxK;
++            this.countProb = countProb;
++            this.normDistinctWeights = normDistinctWeights;
++            this.distinctCounts = distinctCounts;
++            this.logFactorial = logFactorial;
++            this.D = new double[n + 1];
++            this.newD = new double[n + 1];
++            int groups = normDistinctWeights.length;
++            this.pGroup = new double[groups];
++            this.qGroup = new double[groups];
++        }
++
++        private void evaluate(double x, double[] out) {
++            double t = Math.exp(x);
++
++            // Build total count distribution D using distinct weight groups
++            D[0] = 1.0;
++            int curDegree = 0;
++            for (int g = 0; g < normDistinctWeights.length; g++) {
++                double w = normDistinctWeights[g];
++                int count = distinctCounts[g];
++                double expTerm = Math.exp(-w * t);
++                double p = 1.0 - expTerm;
++                double q = expTerm;
++                pGroup[g] = p;
++                qGroup[g] = q;
++
++                if (count == 1) {
++                    D[curDegree + 1] = D[curDegree] * p;
++                    for (int m = curDegree; m >= 1; m--) {
++                        D[m] = D[m] * q + D[m - 1] * p;
++                    }
++                    D[0] = D[0] * q;
++                    curDegree++;
++                } else {
++                    double[] bPoly = binomial(count, p, q, logFactorial);
++                    int nextDegree = curDegree + count;
++                    for (int m = 0; m <= nextDegree; m++) {
++                        newD[m] = 0.0;
++                    }
++                    for (int i = 0; i <= curDegree; i++) {
++                        double di = D[i];
++                        if (di != 0.0) {
++                            for (int j = 0; j <= count; j++) {
++                                newD[i + j] += di * bPoly[j];
++                            }
++                        }
++                    }
++                    System.arraycopy(newD, 0, D, 0, nextDegree + 1);
++                    curDegree = nextDegree;
++                }
++            }
++
++            // For each distinct weight group g, remove g from D
++            for (int g = 0; g < normDistinctWeights.length; g++) {
++                double pi = pGroup[g];
++                double qi = qGroup[g];
++                double wi = normDistinctWeights[g];
++
++                double probLessSum = 0.0;
++                if (pi <= 0.5) {
++                    // Forward deconvolution: P(S_{-i} = m) for m = 0..maxK-1
++                    double previous = D[0] / qi;
++                    double currentPrefix = previous;
++                    if (minK <= 1 && countProb[1] > 0) {
++                        probLessSum += countProb[1] * currentPrefix;
++                    }
++                    for (int k = 2; k <= maxK; k++) {
++                        previous = (D[k - 1] - pi * previous) / qi;
++                        currentPrefix += previous;
++                        if (k >= minK && countProb[k] > 0) {
++                            probLessSum += countProb[k] * currentPrefix;
++                        }
++                    }
++                } else {
++                    // Backward deconvolution: P(S_{-i} = m) for m = n-1 down to minK
++                    double previous = D[n] / pi;
++                    double currentSuffix = previous;
++                    if (maxK == n && countProb[n] > 0) {
++                        probLessSum += countProb[n];
++                    }
++                    if (minK <= n - 1 && maxK >= n - 1 && countProb[n - 1] > 0) {
++                        probLessSum += countProb[n - 1] * (1.0 - currentSuffix);
++                    }
++                    for (int k = n - 2; k >= minK; k--) {
++                        previous = (D[k + 1] - qi * previous) / pi;
++                        currentSuffix += previous;
++                        if (countProb[k] > 0) {
++                            probLessSum += countProb[k] * (1.0 - currentSuffix);
++                        }
++                    }
++                }
++
++                out[g] = wi * qi * probLessSum * t;
++            }
++        }
++    }
++
++    /**
++     * Integrates every group over the bounded domain with composite Simpson's rule, doubling the grid
++     * until the Richardson error estimate for every group is at most {@link #QUADRATURE_TOLERANCE}.
++     */
++    private static double[] integrate(PointEvaluator evaluator, int groups, double xMin, double xMax) {
++        int steps = INITIAL_QUADRATURE_STEPS;
++        double h = (xMax - xMin) / steps;
++        double[] values = new double[(steps + 1) * groups];
++        double[] point = new double[groups];
++        for (int i = 0; i <= steps; i++) {
++            evaluator.evaluate(xMin + i * h, point);
++            System.arraycopy(point, 0, values, i * groups, groups);
++        }
++        double[] integral = simpson(values, steps, groups, h);
++
++        while (true) {
++            int nextSteps = steps * 2;
++            double nextH = h / 2.0;
++            double[] nextValues = new double[(nextSteps + 1) * groups];
++            for (int i = 0; i <= steps; i++) {
++                System.arraycopy(values, i * groups, nextValues, 2 * i * groups, groups);
++            }
++            for (int i = 1; i < nextSteps; i += 2) {
++                evaluator.evaluate(xMin + i * nextH, point);
++                System.arraycopy(point, 0, nextValues, i * groups, groups);
++            }
++            double[] nextIntegral = simpson(nextValues, nextSteps, groups, nextH);
++
++            boolean converged = true;
++            for (int g = 0; g < groups; g++) {
++                if (Math.abs(nextIntegral[g] - integral[g]) / 15.0 > QUADRATURE_TOLERANCE) {
++                    converged = false;
++                    break;
++                }
++            }
++            values = nextValues;
++            integral = nextIntegral;
++            steps = nextSteps;
++            h = nextH;
++            if (converged) {
++                return integral;
++            }
++        }
++    }
++
++    private static double[] simpson(double[] values, int steps, int groups, double h) {
++        double[] sum = new double[groups];
++        for (int i = 0; i <= steps; i++) {
++            double weight = (i == 0 || i == steps) ? 1.0 : ((i & 1) == 1 ? 4.0 : 2.0);
++            int base = i * groups;
++            for (int g = 0; g < groups; g++) {
++                sum[g] += weight * values[base + g];
++            }
++        }
++        double factor = h / 3.0;
++        for (int g = 0; g < groups; g++) {
++            sum[g] *= factor;
++        }
++        return sum;
++    }
++
++    /**
++     * Binomial pmf for {@code count} trials with success chance {@code p}, starting at the mode so a
++     * chance near one does not begin from the underflowing {@code q^count} tail. The mode probability
++     * is formed in log space from precomputed log factorials, then the pmf is filled outward.
++     */
++    private static double[] binomial(int count, double p, double q, double[] logFactorial) {
++        double[] pmf = new double[count + 1];
++        if (p <= 0.0) {
++            pmf[0] = 1.0;
++            return pmf;
++        }
++        if (q <= 0.0) {
++            pmf[count] = 1.0;
++            return pmf;
++        }
++        int mode = (int) Math.floor((count + 1) * p);
++        if (mode > count) {
++            mode = count;
++        }
++        double logMode = logFactorial[count] - logFactorial[mode] - logFactorial[count - mode]
++                + mode * Math.log(p) + (count - mode) * Math.log(q);
++        double term = Math.exp(logMode);
++        pmf[mode] = term;
++        for (int m = mode; m < count; m++) {
++            term *= (double) (count - m) / (m + 1) * (p / q);
++            pmf[m + 1] = term;
++        }
++        term = pmf[mode];
++        for (int m = mode; m > 0; m--) {
++            term *= (double) m / (count - m + 1) * (q / p);
++            pmf[m - 1] = term;
++        }
++        return pmf;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/roll/TimerChance.java b/src/main/java/me/rakkoon69/rakunloots/roll/TimerChance.java
+new file mode 100644
+index 0000000..5efb86c
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/roll/TimerChance.java
+@@ -0,0 +1,43 @@
++package me.rakkoon69.rakunloots.roll;
++
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++
++/**
++ * Calculates timer chance for loots in a world.
++ */
++public final class TimerChance {
++
++    private TimerChance() {
++    }
++
++    /**
++     * Calculates the timer chance of each eligible loot in a world: weight over total of eligible loots.
++     * Must match {@code WorldTimers.pickLoot}: loot must be in the loaded set, and weight must be above zero.
++     */
++    public static Map<String, Double> calculate(Map<String, Integer> loots, Set<String> loadedLootIds) {
++        Objects.requireNonNull(loots, "loots");
++        Objects.requireNonNull(loadedLootIds, "loadedLootIds");
++
++        long total = 0;
++        for (Map.Entry<String, Integer> entry : loots.entrySet()) {
++            if (entry.getValue() != null && entry.getValue() > 0 && loadedLootIds.contains(entry.getKey())) {
++                total += entry.getValue();
++            }
++        }
++        if (total == 0) {
++            return Collections.emptyMap();
++        }
++
++        Map<String, Double> result = new LinkedHashMap<>();
++        for (Map.Entry<String, Integer> entry : loots.entrySet()) {
++            if (entry.getValue() != null && entry.getValue() > 0 && loadedLootIds.contains(entry.getKey())) {
++                result.put(entry.getKey(), (double) entry.getValue() / total);
++            }
++        }
++        return Collections.unmodifiableMap(result);
++    }
++}
+diff --git a/src/main/resources/warnings.yml b/src/main/resources/warnings.yml
+index 49e38ae..44b4a11 100644
+--- a/src/main/resources/warnings.yml
++++ b/src/main/resources/warnings.yml
+@@ -69,6 +69,7 @@ SKIPPED_OPTIONAL_ENTRIES: low
+ MORE_TYPOS: high
+ UNKNOWN_WARNING_KIND: low
+ UNUSABLE_WARNING_SEVERITY: high
++UNUSABLE_DECIMALS: high
+ 
+ # Loot box lifecycle
+ SLOT_MOVED: low
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/ConfigChancePrecisionWarningTest.java b/src/test/java/me/rakkoon69/rakunloots/config/ConfigChancePrecisionWarningTest.java
+new file mode 100644
+index 0000000..402d7ac
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/ConfigChancePrecisionWarningTest.java
+@@ -0,0 +1,118 @@
++package me.rakkoon69.rakunloots.config;
++
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++import java.util.Optional;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class ConfigChancePrecisionWarningTest {
++
++    @Test
++    void unusableDecimalsWarnsHighOncePerLanguageString() {
++        ConfigSnapshot snapshot = ConfigLoader.load(
++                ConfigSources.builder()
++                        .language("en",
++                                "line_nine: 'Chance is {chance:9}'\n" +
++                                "line_x: 'Chance is {chance:x}'\n" +
++                                "line_multi: 'Two bad {chance:9} and {chance:x} in one line'\n" +
++                                "line_valid: 'Valid {chance:0} and {chance:6} and {chance}'\n")
++                        .loot("demo", "language: en\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        List<ConfigWarning> decimalWarnings = snapshot.warnings().stream()
++                .filter(w -> w.kind() == ConfigWarning.Kind.UNUSABLE_DECIMALS)
++                .toList();
++
++        // 3 strings with unusable decimals: line_nine, line_x, line_multi
++        assertEquals(3, decimalWarnings.size(), decimalWarnings.toString());
++
++        for (ConfigWarning w : decimalWarnings) {
++            assertEquals(ConfigWarning.Severity.HIGH, w.severity());
++            assertEquals(Optional.of("en"), w.languageId());
++        }
++
++        List<String> keys = decimalWarnings.stream().map(w -> w.key().orElse("")).sorted().toList();
++        assertEquals(List.of("line_multi", "line_nine", "line_x"), keys);
++    }
++
++    @Test
++    void unusableDecimalsWarnsHighOncePerLootOverride() {
++        ConfigSnapshot snapshot = ConfigLoader.load(
++                ConfigSources.builder()
++                        .loot("demo",
++                                "messages:\n" +
++                                "  broadcast: 'Bad loot chance {chance:9}'\n" +
++                                "  title: 'Bad loot title {chance:x}'\n" +
++                                "  subtitle: 'Good {chance:2}'\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        List<ConfigWarning> decimalWarnings = snapshot.warnings().stream()
++                .filter(w -> w.kind() == ConfigWarning.Kind.UNUSABLE_DECIMALS)
++                .toList();
++
++        assertEquals(2, decimalWarnings.size(), decimalWarnings.toString());
++
++        for (ConfigWarning w : decimalWarnings) {
++            assertEquals(ConfigWarning.Severity.HIGH, w.severity());
++            assertEquals(Optional.of("demo"), w.lootId());
++        }
++
++        List<String> keys = decimalWarnings.stream().map(w -> w.key().orElse("")).sorted().toList();
++        assertEquals(List.of("broadcast", "title"), keys);
++    }
++
++    @Test
++    void emptyDecimalsWarnsHighForLanguageAndLootOverride() {
++        ConfigSnapshot snapshot = ConfigLoader.load(
++                ConfigSources.builder()
++                        .language("en", "empty_language: 'Chance {chance:}'\n")
++                        .loot("demo",
++                                "language: en\n" +
++                                "messages:\n" +
++                                "  empty_loot: 'Chance {chance:}'\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        List<ConfigWarning> decimalWarnings = snapshot.warnings().stream()
++                .filter(w -> w.kind() == ConfigWarning.Kind.UNUSABLE_DECIMALS)
++                .toList();
++
++        assertEquals(2, decimalWarnings.size(), decimalWarnings.toString());
++
++        ConfigWarning language = decimalWarnings.stream()
++                .filter(w -> w.languageId().isPresent()).findFirst().orElseThrow();
++        assertEquals(ConfigWarning.Severity.HIGH, language.severity());
++        assertEquals(Optional.of("empty_language"), language.key());
++
++        ConfigWarning loot = decimalWarnings.stream()
++                .filter(w -> w.lootId().isPresent()).findFirst().orElseThrow();
++        assertEquals(ConfigWarning.Severity.HIGH, loot.severity());
++        assertEquals(Optional.of("empty_loot"), loot.key());
++    }
++
++    @Test
++    void validDecimalsProduceNoWarnings() {
++        ConfigSnapshot snapshot = ConfigLoader.load(
++                ConfigSources.builder()
++                        .language("en",
++                                "all_valid: '{chance:0} {chance:1} {chance:2} {chance:3} {chance:4} {chance:5} {chance:6} {chance}'\n")
++                        .loot("demo", "language: en\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        List<ConfigWarning> decimalWarnings = snapshot.warnings().stream()
++                .filter(w -> w.kind() == ConfigWarning.Kind.UNUSABLE_DECIMALS)
++                .toList();
++
++        assertTrue(decimalWarnings.isEmpty(), decimalWarnings.toString());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/Phase9ChanceGroupUnderflowTest.java b/src/test/java/me/rakkoon69/rakunloots/config/Phase9ChanceGroupUnderflowTest.java
+new file mode 100644
+index 0000000..d02c5b4
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/Phase9ChanceGroupUnderflowTest.java
+@@ -0,0 +1,25 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.roll.LootChance;
++import org.junit.jupiter.api.Test;
++import java.util.Arrays;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++class Phase9ChanceGroupUnderflowTest {
++    @Test
++    void aLargeEqualWeightGroupKeepsItsLateProbabilityMass() {
++        int[] weights = new int[100];
++        Arrays.fill(weights, 100);
++        weights[99] = 1;
++        // With 99 identical exponential clocks of rate100, the rate1 entry is excluded only
++        // if it rings last. P(last) = product(j/(j+1/100)), j=1..99, by the beta integral.
++        double probabilityLast = 1.0;
++        for (int j = 1; j <= 99; j++) {
++            probabilityLast *= j / (j + 0.01);
++        }
++        double expected = 1.0 - probabilityLast;
++        double actual = LootChance.calculate(RawRollFixture.roll(99, 99, weights)).get("e99").probability();
++        // Red proof on the saved implementation: actual was 0.04985213027363896, below the 0.050379102187102065 product.
++        assertEquals(expected, actual, 1e-9);
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/RawRollChanceTest.java b/src/test/java/me/rakkoon69/rakunloots/config/RawRollChanceTest.java
+new file mode 100644
+index 0000000..1310f60
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/RawRollChanceTest.java
+@@ -0,0 +1,68 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++import me.rakkoon69.rakunloots.roll.LootChance;
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++import java.util.Map;
++import java.util.OptionalInt;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++class RawRollChanceTest {
++
++    private static ContentEntry entry(String id, int weight) {
++        return new ContentEntry(id, ItemReference.of("", "diamond"), 1, weight, OptionalInt.empty());
++    }
++
++    @Test
++    void rawEqualWeightsInclusionFormulaRulingThree() {
++        // Binding ruling 3:
++        // "For raw equal weights n=2, min=0, max=4, inclusion is (0 + 0.5 + 1 + 1 + 1)/5=0.7,
++        // because drawing removes the entry (WITHOUT replacement). Add this test; do not clamp raw max to n before averaging."
++        Roll roll = new Roll(0, 4, List.of(entry("e1", 10), entry("e2", 10)));
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(2, chances.size());
++        assertEquals(0.7, chances.get("e1").probability(), 1e-12);
++        assertEquals(0.7, chances.get("e2").probability(), 1e-12);
++    }
++
++    @Test
++    void rawReversedPairUsesMax() {
++        // Raw reversed pair (min >= max) uses max, clamped at 0
++        Roll roll = new Roll(4, 2, List.of(entry("e1", 1), entry("e2", 1), entry("e3", 1), entry("e4", 1)));
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        // Effective count is min=2, max=2 -> each drawn with 2/4 = 0.5
++        assertEquals(4, chances.size());
++        for (LootChance.EntryChance ec : chances.values()) {
++            assertEquals(0.5, ec.probability(), 1e-12);
++        }
++    }
++
++    @Test
++    void rawNegativeMinMaxClampedAtZero() {
++        Roll roll = new Roll(-5, -2, List.of(entry("e1", 1), entry("e2", 1)));
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(2, chances.size());
++        for (LootChance.EntryChance ec : chances.values()) {
++            assertEquals(0.0, ec.probability());
++        }
++    }
++
++    @Test
++    void rawZeroAndNegativeWeights() {
++        Roll roll = new Roll(1, 1, List.of(entry("always", -5), entry("hidden", 0), entry("draw", 10)));
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(LootChance.Kind.ALWAYS, chances.get("always").kind());
++        assertEquals(1.0, chances.get("always").probability());
++        assertEquals(LootChance.Kind.HIDDEN, chances.get("hidden").kind());
++        assertEquals(0.0, chances.get("hidden").probability());
++        assertEquals(LootChance.Kind.DRAWABLE, chances.get("draw").kind());
++        assertEquals(1.0, chances.get("draw").probability());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/RawRollExtremeChanceTest.java b/src/test/java/me/rakkoon69/rakunloots/config/RawRollExtremeChanceTest.java
+new file mode 100644
+index 0000000..fc4a850
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/RawRollExtremeChanceTest.java
+@@ -0,0 +1,98 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.roll.LootChance;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.Timeout;
++
++import java.util.Map;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++/**
++ * Raw roll ranges are averaged before each count is capped at the drawable entry count. These cases
++ * keep always-included and hidden entries beside distinct weights and a max above the entry count.
++ */
++class RawRollExtremeChanceTest {
++
++    @Test
++    @Timeout(5)
++    void rawIntegerMaxFoldsTheCappedTailWithoutIteratingToMax() {
++        Roll roll = RawRollFixture.roll(0, Integer.MAX_VALUE, -5, 0, 1, 2, 3, 4);
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(LootChance.Kind.ALWAYS, chances.get("e0").kind());
++        assertEquals(1.0, chances.get("e0").probability());
++        assertEquals(LootChance.Kind.HIDDEN, chances.get("e1").kind());
++        assertEquals(0.0, chances.get("e1").probability());
++
++        int[] drawable = {1, 2, 3, 4};
++        long numK = (long) Integer.MAX_VALUE + 1L;
++        double[] expected = new double[drawable.length];
++        for (int k = 0; k < drawable.length; k++) {
++            double[] inclusion = fixedCountInclusion(drawable, k);
++            for (int i = 0; i < drawable.length; i++) {
++                expected[i] += inclusion[i] / numK;
++            }
++        }
++        double cappedTailMass = (numK - drawable.length) / (double) numK;
++        for (int i = 0; i < drawable.length; i++) {
++            expected[i] += cappedTailMass;
++            assertEquals(expected[i], chances.get("e" + (i + 2)).probability(), 1e-9);
++        }
++    }
++
++    @Test
++    void rawMaxAboveEntryCountAveragesTheCappedCounts() {
++        Roll roll = RawRollFixture.roll(0, 8, -5, 0, 1, 2, 3);
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(LootChance.Kind.ALWAYS, chances.get("e0").kind());
++        assertEquals(1.0, chances.get("e0").probability());
++        assertEquals(LootChance.Kind.HIDDEN, chances.get("e1").kind());
++        assertEquals(0.0, chances.get("e1").probability());
++
++        int[] drawable = {1, 2, 3};
++        double[] expected = new double[drawable.length];
++        for (int k = 0; k < drawable.length; k++) {
++            double[] inclusion = fixedCountInclusion(drawable, k);
++            for (int i = 0; i < drawable.length; i++) {
++                expected[i] += inclusion[i] / 9.0;
++            }
++        }
++        for (int i = 0; i < drawable.length; i++) {
++            expected[i] += 6.0 / 9.0;
++            assertEquals(expected[i], chances.get("e" + (i + 2)).probability(), 1e-9);
++        }
++    }
++
++    private static double[] fixedCountInclusion(int[] weights, int count) {
++        double[] result = new double[weights.length];
++        enumerate(weights, new boolean[weights.length], count, 1.0, result);
++        return result;
++    }
++
++    private static void enumerate(int[] weights, boolean[] picked, int remaining,
++                                  double probability, double[] result) {
++        if (remaining == 0) {
++            for (int i = 0; i < weights.length; i++) {
++                if (picked[i]) {
++                    result[i] += probability;
++                }
++            }
++            return;
++        }
++        long total = 0;
++        for (int i = 0; i < weights.length; i++) {
++            if (!picked[i]) {
++                total += weights[i];
++            }
++        }
++        for (int i = 0; i < weights.length; i++) {
++            if (!picked[i]) {
++                picked[i] = true;
++                enumerate(weights, picked, remaining - 1, probability * weights[i] / total, result);
++                picked[i] = false;
++            }
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/RawRollFixture.java b/src/test/java/me/rakkoon69/rakunloots/config/RawRollFixture.java
+new file mode 100644
+index 0000000..dd2a7af
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/RawRollFixture.java
+@@ -0,0 +1,21 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.OptionalInt;
++
++/** Raw value fixtures: the production loader intentionally removes zero-weight entries. */
++public final class RawRollFixture {
++    private RawRollFixture() {
++    }
++
++    public static Roll roll(int min, int max, int... weights) {
++        List<ContentEntry> entries = new ArrayList<>();
++        for (int i = 0; i < weights.length; i++) {
++            entries.add(new ContentEntry("e" + i, ItemReference.of("", "diamond"), 1,
++                    weights[i], OptionalInt.empty()));
++        }
++        return new Roll(min, max, entries);
++    }
++}
+\ No newline at end of file
+diff --git a/src/test/java/me/rakkoon69/rakunloots/lootbox/MessageTextChanceTest.java b/src/test/java/me/rakkoon69/rakunloots/lootbox/MessageTextChanceTest.java
+new file mode 100644
+index 0000000..a5c686f
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/lootbox/MessageTextChanceTest.java
+@@ -0,0 +1,89 @@
++package me.rakkoon69.rakunloots.lootbox;
++
++import me.rakkoon69.rakunloots.config.ConfigLoader;
++import me.rakkoon69.rakunloots.config.ConfigSnapshot;
++import me.rakkoon69.rakunloots.config.ConfigSources;
++import me.rakkoon69.rakunloots.config.NameCatalog;
++import org.junit.jupiter.api.Test;
++
++import java.util.Map;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++class MessageTextChanceTest {
++
++    @Test
++    void formatPercentCoversN0126AndSpecialValues() {
++        // N = 0, 1, 2, 6
++        // 0
++        assertEquals("0", MessageText.formatPercent(0.0, 0));
++        assertEquals("0.0", MessageText.formatPercent(0.0, 1));
++        assertEquals("0.00", MessageText.formatPercent(0.0, 2));
++        assertEquals("0.000000", MessageText.formatPercent(0.0, 6));
++
++        // 1
++        assertEquals("100", MessageText.formatPercent(1.0, 0));
++        assertEquals("100.0", MessageText.formatPercent(1.0, 1));
++        assertEquals("100.00", MessageText.formatPercent(1.0, 2));
++        assertEquals("100.000000", MessageText.formatPercent(1.0, 6));
++
++        // 0.00004 (<0.1 at N 1, <0.01 at N 2, <1 at N 0, 0.004000 at N 6)
++        assertEquals("<1", MessageText.formatPercent(0.00004, 0));
++        assertEquals("<0.1", MessageText.formatPercent(0.00004, 1));
++        assertEquals("<0.01", MessageText.formatPercent(0.00004, 2));
++        assertEquals("0.004000", MessageText.formatPercent(0.00004, 6));
++
++        // 0.99996 (99.9 at N 1, never 100.0, 99 at N 0, 99.99 at N 2, 99.996000 at N 6)
++        assertEquals("99", MessageText.formatPercent(0.99996, 0));
++        assertEquals("99.9", MessageText.formatPercent(0.99996, 1));
++        assertEquals("99.99", MessageText.formatPercent(0.99996, 2));
++        assertEquals("99.996000", MessageText.formatPercent(0.99996, 6));
++
++        // half-up rounding at 0.125 with N 2
++        assertEquals("12.50", MessageText.formatPercent(0.125, 2));
++        // half-up rounding at 0.125 with N 0
++        assertEquals("13", MessageText.formatPercent(0.125, 0));
++    }
++
++    @Test
++    void renderWithBothChanceAndChanceWithDecimals() {
++        ConfigSnapshot config = ConfigLoader.load(
++                ConfigSources.builder()
++                        .language("en", "chances: 'Default {chance}% vs precise {chance:2}%'\n")
++                        .loot("demo", "language: en\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        String rendered = MessageText.render(
++                config,
++                "demo",
++                "chances",
++                Map.of(),
++                Map.of("chance", 0.125)
++        );
++
++        assertEquals("Default 12.5% vs precise 12.50%", rendered);
++    }
++
++    @Test
++    void renderInvalidPrecisionPlaceholderFallsBackToOneDecimal() {
++        ConfigSnapshot config = ConfigLoader.load(
++                ConfigSources.builder()
++                        .language("en", "invalid: '{chance:9} | {chance:x} | {chance:-1} | {chance:}'\n")
++                        .loot("demo", "language: en\n")
++                        .build(),
++                NameCatalog.empty()
++        );
++
++        String rendered = MessageText.render(
++                config,
++                "demo",
++                "invalid",
++                Map.of(),
++                Map.of("chance", 0.125)
++        );
++
++        assertEquals("12.5 | 12.5 | 12.5 | 12.5", rendered);
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceLargeGroupAccuracyTest.java b/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceLargeGroupAccuracyTest.java
+new file mode 100644
+index 0000000..a457ea6
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceLargeGroupAccuracyTest.java
+@@ -0,0 +1,203 @@
++package me.rakkoon69.rakunloots.roll;
++
++import me.rakkoon69.rakunloots.config.RawRollFixture;
++import org.junit.jupiter.api.Test;
++
++import java.math.BigDecimal;
++import java.math.MathContext;
++import java.util.Map;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * The acceptance test covers brute-force oracles up to 7 entries only. These cases have closed-form
++ * last-place probabilities for large equal-weight groups, including near-n draw counts and the
++ * maximum 10^6 weight ratio.
++ */
++class LootChanceLargeGroupAccuracyTest {
++
++    private static final MathContext MC = new MathContext(60);
++    private static final BigDecimal ONE = BigDecimal.ONE;
++
++    @Test
++    void weightRatioMillionKeepsTheLightEntry() {
++        int heavy = 50;
++        double rateRatio = 1e-6;
++        double probabilityLast = 1.0;
++        for (int j = 1; j <= heavy; j++) {
++            probabilityLast *= j / (j + rateRatio);
++        }
++        double expected = 1.0 - probabilityLast;
++
++        int[] weights = new int[heavy + 1];
++        java.util.Arrays.fill(weights, 0, heavy, 1_000_000);
++        weights[heavy] = 1;
++        double actual = LootChance.calculate(RawRollFixture.roll(heavy, heavy, weights))
++                .get("e" + heavy).probability();
++
++        assertEquals(expected, actual, 1e-9);
++    }
++
++    @Test
++    void firstDrawChancesAreRateShares() {
++        int heavy = 99;
++        int heavyWeight = 100;
++        int[] weights = new int[heavy + 1];
++        java.util.Arrays.fill(weights, 0, heavy, heavyWeight);
++        weights[heavy] = 1;
++
++        Map<String, LootChance.EntryChance> chances =
++                LootChance.calculate(RawRollFixture.roll(1, 1, weights));
++
++        double total = (double) heavy * heavyWeight + 1;
++        assertEquals(1.0 / total, chances.get("e" + heavy).probability(), 1e-9);
++        assertEquals(heavyWeight / total, chances.get("e0").probability(), 1e-9);
++    }
++
++    @Test
++    void twoLargeEqualWeightGroupsNearFullDraw() {
++        int first = 50;
++        int second = 50;
++        int draw = first + second - 1;
++        int[] weights = new int[first + second];
++        java.util.Arrays.fill(weights, 0, first, 1000);
++        java.util.Arrays.fill(weights, first, first + second, 1);
++
++        Map<String, LootChance.EntryChance> chances =
++                LootChance.calculate(RawRollFixture.roll(draw, draw, weights));
++
++        double expectedFirst = 1.0 - lastProbability(first, 1000, second, 1).doubleValue();
++        double expectedSecond = 1.0 - lastProbability(second, 1, first, 1000).doubleValue();
++        assertEquals(expectedFirst, chances.get("e0").probability(), 1e-9);
++        assertEquals(expectedSecond, chances.get("e" + first).probability(), 1e-9);
++    }
++
++    @Test
++    void midDrawOracleChecksBothLargeWeightGroups() {
++        int heavy = 99;
++        int heavyWeight = 2;
++        int draw = 49;
++        int[] weights = new int[heavy + 1];
++        java.util.Arrays.fill(weights, 0, heavy, heavyWeight);
++        weights[heavy] = 1;
++
++        Map<String, LootChance.EntryChance> chances =
++                LootChance.calculate(RawRollFixture.roll(draw, draw, weights));
++
++        double expectedLight = 1.0 - excludedProbability(heavy, heavyWeight, draw).doubleValue();
++        double expectedHeavy = (draw - expectedLight) / heavy;
++        assertEquals(expectedLight, chances.get("e" + heavy).probability(), 1e-9);
++        assertEquals(expectedHeavy, chances.get("e0").probability(), 1e-9);
++    }
++
++    @Test
++    void fiveHundredEntriesAtRatioTwoConserveTheDrawCount() {
++        int half = 250;
++        int[] weights = new int[2 * half];
++        java.util.Arrays.fill(weights, 0, half, 1);
++        java.util.Arrays.fill(weights, half, 2 * half, 2);
++
++        Map<String, LootChance.EntryChance> chances =
++                LootChance.calculate(RawRollFixture.roll(half, half, weights));
++
++        // Positive-transition DP at 100 digits; every transition and addition is positive.
++        BigDecimal expectedLight = new BigDecimal(
++                "0.3819011757791990872427928223493954386171071878239884694100944106895279080331371995134761188860986619");
++        BigDecimal expectedHeavy = new BigDecimal(
++                "0.618098824220800912757207177650604561382892812176011530589905589310472091966862800486523881113901338");
++        assertEquals(expectedLight.doubleValue(), chances.get("e0").probability(), 1e-9);
++        assertEquals(expectedHeavy.doubleValue(), chances.get("e250").probability(), 1e-9);
++
++        double total = 0.0;
++        for (LootChance.EntryChance chance : chances.values()) {
++            assertEquals(LootChance.Kind.DRAWABLE, chance.kind());
++            assertTrue(Double.isFinite(chance.probability()));
++            assertTrue(chance.probability() >= 0.0 && chance.probability() <= 1.0);
++            total += chance.probability();
++        }
++        assertEquals(half, total, chances.size() * 1e-9);
++    }
++
++    @Test
++    void tenThousandEntriesFirstDrawMatchesTheExactWeightShare() {
++        int light = 9900;
++        int n = 10000;
++        int[] weights = new int[n];
++        java.util.Arrays.fill(weights, 0, light, 1);
++        java.util.Arrays.fill(weights, light, n, 2);
++
++        Map<String, LootChance.EntryChance> chances =
++                LootChance.calculate(RawRollFixture.roll(1, 1, weights));
++
++        double totalWeight = light + 2.0 * (n - light);
++        double maxError = 0.0;
++        for (int i = 0; i < n; i++) {
++            double expected = (i < light ? 1.0 : 2.0) / totalWeight;
++            maxError = Math.max(maxError,
++                    Math.abs(expected - chances.get("e" + i).probability()));
++        }
++        assertEquals(0.0, maxError, 1e-9, "first draw is the exact weighted share");
++    }
++
++    @Test
++    void hundredEqualWeightsNearFullDraw() {
++        int[] weights = new int[100];
++        java.util.Arrays.fill(weights, 1);
++        for (LootChance.EntryChance chance
++                : LootChance.calculate(RawRollFixture.roll(99, 99, weights)).values()) {
++            assertEquals(0.99, chance.probability(), 1e-12);
++        }
++    }
++
++    /**
++     * The chance the light entry is outside the first {@code draw} entries when {@code heavy}
++     * entries of weight {@code heavyWeight} race against it. Expand the binomial upper tail and
++     * integrate each exponential term exactly.
++     */
++    private static BigDecimal excludedProbability(int heavy, double heavyWeight, int draw) {
++        BigDecimal w = BigDecimal.valueOf(heavyWeight);
++        BigDecimal sum = BigDecimal.ZERO;
++        for (int r = draw; r <= heavy; r++) {
++            BigDecimal heavyWays = combination(heavy, r);
++            for (int s = 0; s <= r; s++) {
++                BigDecimal denominator = ONE.add(w.multiply(BigDecimal.valueOf(heavy - r + s)));
++                BigDecimal term = heavyWays.multiply(combination(r, s)).divide(denominator, MC);
++                sum = ((s & 1) == 0) ? sum.add(term) : sum.subtract(term);
++            }
++        }
++        return sum;
++    }
++
++    /**
++     * The chance an entry from the first group is last when that group has {@code first} entries
++     * and the second group has {@code second} entries. Expanding the product of
++     * {@code (1 - e^(-w t))} gives an exact alternating sum of rational terms.
++     */
++    static BigDecimal lastProbability(int first, double firstWeight, int second, double secondWeight) {
++        BigDecimal wa = BigDecimal.valueOf(firstWeight);
++        BigDecimal wb = BigDecimal.valueOf(secondWeight);
++        BigDecimal sum = BigDecimal.ZERO;
++        for (int r = 0; r <= first - 1; r++) {
++            for (int s = 0; s <= second; s++) {
++                BigDecimal denominator = wa.multiply(BigDecimal.valueOf(1L + r))
++                        .add(wb.multiply(BigDecimal.valueOf(s)));
++                BigDecimal term = combination(first - 1, r)
++                        .multiply(combination(second, s))
++                        .multiply(wa)
++                        .divide(denominator, MC);
++                sum = ((r + s) & 1) == 0 ? sum.add(term) : sum.subtract(term);
++            }
++        }
++        return sum;
++    }
++
++    private static BigDecimal combination(int n, int k) {
++        BigDecimal value = BigDecimal.ONE;
++        for (int i = 0; i < k; i++) {
++            value = value.multiply(BigDecimal.valueOf(n - i))
++                    .divide(BigDecimal.valueOf(i + 1), MC);
++        }
++        return value;
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceTest.java b/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceTest.java
+new file mode 100644
+index 0000000..4592471
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/roll/LootChanceTest.java
+@@ -0,0 +1,126 @@
++package me.rakkoon69.rakunloots.roll;
++
++import me.rakkoon69.rakunloots.config.RawRollFixture;
++import me.rakkoon69.rakunloots.config.Roll;
++import org.junit.jupiter.api.Test;
++
++import java.util.Map;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class LootChanceTest {
++
++    /**
++     * A loot of 100 entries with 100 distinct weights and max 50 finishes in under 50 ms.
++     * Measured 23 ms on the test machine: three warm-up runs, then one measured run.
++     */
++    @Test
++    void performance100Entries100DistinctWeightsMax50() {
++        int[] weights = new int[100];
++        for (int i = 0; i < 100; i++) {
++            weights[i] = i + 1;
++        }
++        Roll roll = RawRollFixture.roll(0, 50, weights);
++
++        // Warm up JIT
++        for (int i = 0; i < 3; i++) {
++            LootChance.calculate(roll);
++        }
++
++        long start = System.nanoTime();
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
++
++        assertEquals(100, chances.size());
++        assertTrue(elapsedMs < 50, "Expected under 50 ms but was " + elapsedMs + " ms");
++    }
++
++    @Test
++    void equalWeightsFixedKMatchesFraction() {
++        // n entries of weight 1 with fixed k gives each entry exactly k/n within 1e-12
++        int n = 5;
++        int k = 2;
++        int[] weights = new int[n];
++        for (int i = 0; i < n; i++) {
++            weights[i] = 1;
++        }
++        Roll roll = RawRollFixture.roll(k, k, weights);
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(n, chances.size());
++        double expected = (double) k / n;
++        for (LootChance.EntryChance chance : chances.values()) {
++            assertEquals(LootChance.Kind.DRAWABLE, chance.kind());
++            assertEquals(expected, chance.probability(), 1e-12);
++        }
++
++        // Another check: n = 10, k = 3
++        int n2 = 10;
++        int k2 = 3;
++        int[] weights2 = new int[n2];
++        for (int i = 0; i < n2; i++) {
++            weights2[i] = 1;
++        }
++        Roll roll2 = RawRollFixture.roll(k2, k2, weights2);
++        Map<String, LootChance.EntryChance> chances2 = LootChance.calculate(roll2);
++        double expected2 = (double) k2 / n2;
++        for (LootChance.EntryChance chance : chances2.values()) {
++            assertEquals(expected2, chance.probability(), 1e-12);
++        }
++    }
++
++    @Test
++    void groupedWeightsProduceIdenticalChances() {
++        // Entries with identical weights among distinct weights have identical chances
++        Roll roll = RawRollFixture.roll(2, 3, 10, 10, 20, 20, 50);
++        Map<String, LootChance.EntryChance> chances = LootChance.calculate(roll);
++
++        assertEquals(5, chances.size());
++        assertEquals(chances.get("e0").probability(), chances.get("e1").probability(), 1e-12);
++        assertEquals(chances.get("e2").probability(), chances.get("e3").probability(), 1e-12);
++        assertTrue(chances.get("e0").probability() < chances.get("e2").probability());
++        assertTrue(chances.get("e2").probability() < chances.get("e4").probability());
++    }
++
++    @Test
++    void exactEdgesAndSpecialEntries() {
++        // min >= n returns exactly 1.0 (assert ==, not tolerance)
++        Roll rollAll = RawRollFixture.roll(3, 4, 1, 2, 3);
++        Map<String, LootChance.EntryChance> allChances = LootChance.calculate(rollAll);
++        for (LootChance.EntryChance ec : allChances.values()) {
++            assertEquals(1.0, ec.probability());
++        }
++
++        // max = 0 returns exactly 0.0 (assert ==, not tolerance)
++        Roll rollNone = RawRollFixture.roll(0, 0, 1, 2, 3);
++        Map<String, LootChance.EntryChance> noneChances = LootChance.calculate(rollNone);
++        for (LootChance.EntryChance ec : noneChances.values()) {
++            assertEquals(0.0, ec.probability());
++        }
++
++        // One drawable entry with min 0 and max 1 gives 0.5. With min 1 it gives exactly 1.0.
++        Roll rollSingleMin0 = RawRollFixture.roll(0, 1, 5);
++        assertEquals(0.5, LootChance.calculate(rollSingleMin0).get("e0").probability(), 1e-12);
++
++        Roll rollSingleMin1 = RawRollFixture.roll(1, 1, 5);
++        assertEquals(1.0, LootChance.calculate(rollSingleMin1).get("e0").probability());
++
++        // A weight below zero returns always, and weight zero returns hidden, whatever the count
++        Roll rollSpecial0 = RawRollFixture.roll(0, 0, -1, 0, 10);
++        Map<String, LootChance.EntryChance> special0 = LootChance.calculate(rollSpecial0);
++        assertEquals(LootChance.Kind.ALWAYS, special0.get("e0").kind());
++        assertEquals(1.0, special0.get("e0").probability());
++        assertEquals(LootChance.Kind.HIDDEN, special0.get("e1").kind());
++        assertEquals(0.0, special0.get("e1").probability());
++        assertEquals(0.0, special0.get("e2").probability());
++
++        Roll rollSpecialHigh = RawRollFixture.roll(5, 5, -1, 0, 10);
++        Map<String, LootChance.EntryChance> specialHigh = LootChance.calculate(rollSpecialHigh);
++        assertEquals(LootChance.Kind.ALWAYS, specialHigh.get("e0").kind());
++        assertEquals(1.0, specialHigh.get("e0").probability());
++        assertEquals(LootChance.Kind.HIDDEN, specialHigh.get("e1").kind());
++        assertEquals(0.0, specialHigh.get("e1").probability());
++        assertEquals(1.0, specialHigh.get("e2").probability());
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/roll/Phase9ChanceAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/roll/Phase9ChanceAcceptanceTest.java
+new file mode 100644
+index 0000000..ab1dd20
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/roll/Phase9ChanceAcceptanceTest.java
+@@ -0,0 +1,57 @@
++package me.rakkoon69.rakunloots.roll;
++
++import me.rakkoon69.rakunloots.config.*;
++import me.rakkoon69.rakunloots.lootbox.MessageText;
++import org.junit.jupiter.api.Test;
++import java.util.*;
++import static org.junit.jupiter.api.Assertions.*;
++
++/** Independent issue #107 acceptance: oracle enumerates every weighted draw order. */
++class Phase9ChanceAcceptanceTest {
++    private static Roll roll(int min, int max, int... weights) {
++        StringBuilder yaml = new StringBuilder("language: en\nblock: barrel\nopen_mode: drop\nroll:\n  min: " + min + "\n  max: " + max + "\n  entries:\n");
++        for (int i=0; i<weights.length; i++) yaml.append("    e").append(i).append(":\n      weight: ").append(weights[i]).append("\n      item:\n        id: diamond\n");
++        return ConfigLoader.load(ConfigSources.builder().globals("language: en\n").language("en", "text: test\n").loot("demo", yaml.toString()).build(), written -> Optional.of(written)).loot("demo").orElseThrow().roll();
++    }
++    private static void enumerate(int[] w, boolean[] picked, int remaining, double probability, double[] result) {
++        if (remaining==0) { for (int i=0;i<w.length;i++) if(picked[i]) result[i]+=probability; return; }
++        long total=0; for(int i=0;i<w.length;i++) if(!picked[i] && w[i]>0) total+=w[i];
++        if(total==0) { enumerate(w,picked,0,probability,result); return; }
++        for(int i=0;i<w.length;i++) if(!picked[i] && w[i]>0) { picked[i]=true; enumerate(w,picked,remaining-1,probability*w[i]/total,result); picked[i]=false; }
++    }
++    @Test void probabilitiesMatchEveryDrawOrder() {
++        int[][] cases={{1,2,3},{1,1000,3,7},{1,1000000,4},{1,1,1,1,1,1,1}};
++        int[][] ranges={{0,1},{1,1},{1,3},{0,10},{2,5},{3,2},{8,9},{0,0}};
++        for(int[] weights:cases) for(int[] range:ranges) {
++            // Use the loaded roll's corrected min/max, as the player-facing config loader does.
++            Roll r=roll(range[0],range[1],weights);
++            double[] expected=new double[weights.length];
++            int min=Math.max(0,r.min()), max=Math.max(0,r.max()); if(min>=max) min=max;
++            for(int k=min;k<=max;k++) enumerate(weights,new boolean[weights.length],Math.min(k,weights.length),1.0/(max-min+1),expected);
++            Map<String,LootChance.EntryChance> actual=LootChance.calculate(r);
++            for(int i=0;i<weights.length;i++) assertEquals(expected[i],actual.get("e"+i).probability(),1e-9,Arrays.toString(weights)+" "+Arrays.toString(range)+" entry "+i);
++        }
++    }
++    @Test void exactEdgesAndSpecialEntries() {
++        assertEquals(0.5,LootChance.calculate(roll(0,1,1)).get("e0").probability());
++        assertEquals(1.0,LootChance.calculate(roll(8,9,1,2)).get("e0").probability());
++        assertEquals(0.0,LootChance.calculate(roll(0,0,1,2)).get("e1").probability());
++        var special=LootChance.calculate(RawRollFixture.roll(1,1,-1,0,2));
++        assertEquals(LootChance.Kind.ALWAYS,special.get("e0").kind());
++        assertEquals(LootChance.Kind.HIDDEN,special.get("e1").kind());
++        for(var entry:LootChance.calculate(roll(2,2,1,1,1,1,1)).values()) assertEquals(0.4,entry.probability(),1e-12);
++    }
++    @Test void timerEligibilityAndTotalMatchWorldTimer() {
++        var weights=Map.of("airdrops",100,"treasure_chest",30,"buried_stash",30,"head_trophy",20,"deep_vault",10,"missing",500,"zero",0,"negative",-5);
++        var actual=TimerChance.calculate(weights,Set.of("airdrops","treasure_chest","buried_stash","head_trophy","deep_vault","zero","negative"));
++        assertEquals(5,actual.size()); assertEquals(100.0/190,actual.get("airdrops"));
++    }
++    @Test void percentValuesPreserveRareAndUncertainChances() {
++        var config=ConfigLoader.load(ConfigSources.builder().globals("language: en\n").language("en","percent: '{chance}|{chance:2}|{chance:0}|{chance:6}|{label}'\n").build(), written -> Optional.of(written));
++        assertEquals("<0.1|<0.01|<1|0.004000|ok",MessageText.render(config,"demo","percent",Map.of("label","ok"),Map.of("chance",0.00004)));
++        assertEquals("99.9|99.99|99|99.996000|ok",MessageText.render(config,"demo","percent",Map.of("label","ok"),Map.of("chance",0.99996)));
++        assertEquals("0.0|0.00|0|0.000000|ok",MessageText.render(config,"demo","percent",Map.of("label","ok"),Map.of("chance",0.0)));
++        assertEquals("100.0|100.00|100|100.000000|ok",MessageText.render(config,"demo","percent",Map.of("label","ok"),Map.of("chance",1.0)));
++        assertEquals("12.5|12.50|13|12.500000|ok",MessageText.render(config,"demo","percent",Map.of("label","ok"),Map.of("chance",0.125)));
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/roll/TimerChanceTest.java b/src/test/java/me/rakkoon69/rakunloots/roll/TimerChanceTest.java
+new file mode 100644
+index 0000000..28ee270
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/roll/TimerChanceTest.java
+@@ -0,0 +1,63 @@
++package me.rakkoon69.rakunloots.roll;
++
++import org.junit.jupiter.api.Test;
++
++import java.util.Map;
++import java.util.Set;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class TimerChanceTest {
++
++    @Test
++    void weightsAndLoadedLootsMatchingWorldTimers() {
++        Map<String, Integer> weights = Map.of(
++                "airdrops", 100,
++                "treasure_chest", 30,
++                "buried_stash", 30,
++                "head_trophy", 20,
++                "deep_vault", 10,
++                "missing_unloaded", 50,
++                "zero_weight", 0,
++                "negative_weight", -5
++        );
++        Set<String> loaded = Set.of(
++                "airdrops",
++                "treasure_chest",
++                "buried_stash",
++                "head_trophy",
++                "deep_vault",
++                "zero_weight",
++                "negative_weight"
++        );
++
++        Map<String, Double> chances = TimerChance.calculate(weights, loaded);
++
++        // Eligible loots sum to 100 + 30 + 30 + 20 + 10 = 190
++        assertEquals(5, chances.size());
++        assertEquals(100.0 / 190.0, chances.get("airdrops"), 1e-12);
++        assertEquals(30.0 / 190.0, chances.get("treasure_chest"), 1e-12);
++        assertEquals(30.0 / 190.0, chances.get("buried_stash"), 1e-12);
++        assertEquals(20.0 / 190.0, chances.get("head_trophy"), 1e-12);
++        assertEquals(10.0 / 190.0, chances.get("deep_vault"), 1e-12);
++
++        // Missing, zero, and negative are absent and excluded from total
++        assertFalse(chances.containsKey("missing_unloaded"));
++        assertFalse(chances.containsKey("zero_weight"));
++        assertFalse(chances.containsKey("negative_weight"));
++    }
++
++    @Test
++    void emptyEligibleWeightsYieldsEmptyMap() {
++        // No loaded loots
++        assertTrue(TimerChance.calculate(Map.of("airdrop", 10), Set.of()).isEmpty());
++
++        // Zero and negative weights only
++        assertTrue(TimerChance.calculate(Map.of("zero", 0, "neg", -10), Set.of("zero", "neg")).isEmpty());
++
++        // Empty map
++        assertTrue(TimerChance.calculate(Map.of(), Set.of("airdrop")).isEmpty());
++    }
++}

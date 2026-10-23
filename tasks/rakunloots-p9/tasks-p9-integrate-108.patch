@@ -1,0 +1,2003 @@
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigFolder.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigFolder.java
+index 74301cc..4932650 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigFolder.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigFolder.java
+@@ -11,9 +11,9 @@ import java.util.stream.Stream;
+ 
+ /**
+  * Reads the plugin's data folder into {@link ConfigSources}: {@code config.yml}, {@code worlds.yml},
+- * {@code blocks.yml}, {@code animations.yml}, {@code warnings.yml}, every file of {@code languages/}, and every file of {@code loots/}, the
+- * id of a language or a loot being its file name without {@code .yml}. A file that is missing is left out of the
+- * sources, and the loader reports it.
++ * {@code blocks.yml}, {@code animations.yml}, {@code warnings.yml}, every file of {@code languages/}, every file of
++ * {@code loots/}, and every file of {@code menus/}, the id of a language, a loot, or a menu being its file name
++ * without {@code .yml}. A file that is missing is left out of the sources, and the loader reports it.
+  */
+ public final class ConfigFolder {
+ 
+@@ -26,6 +26,8 @@ public final class ConfigFolder {
+             "blocks.yml",
+             "animations.yml",
+             "warnings.yml",
++            "menus/claim.yml",
++            "menus/wiki.yml",
+             "languages/en.yml",
+             "languages/vi.yml",
+             "languages/zh.yml",
+@@ -58,6 +60,9 @@ public final class ConfigFolder {
+         for (Path loot : yamlFiles(dataFolder.resolve("loots"))) {
+             sources.loot(id(loot), file(loot));
+         }
++        for (Path menu : yamlFiles(dataFolder.resolve("menus"))) {
++            sources.menu(id(menu), file(menu));
++        }
+         return sources.build();
+     }
+ 
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+index c96f559..bd3b508 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigLoadSupport.java
+@@ -228,6 +228,7 @@ final class ConfigLoadSupport {
+ 
+         blockLists.warnSkippedOptional();
+         addQuoteHints(rawWarnings, resolver);
++        MenuConfig.Menus menus = MenuConfig.parse(sources, nameCatalog, resolvedNames, rawWarnings);
+ 
+         Map<String, Optional<String>> immutableLootLanguages =
+                 Collections.unmodifiableMap(new LinkedHashMap<>(lootLanguages));
+@@ -261,6 +262,9 @@ final class ConfigLoadSupport {
+                 globals.storage,
+                 globals.claimCommand,
+                 globals.adminCommand,
++                menus.claim(),
++                menus.wikiList(),
++                menus.wikiLoot(),
+                 rawWarnings
+         );
+     }
+@@ -747,7 +751,7 @@ final class ConfigLoadSupport {
+         }
+     }
+ 
+-    private static Optional<ItemReference> parseItemReference(
++    static Optional<ItemReference> parseItemReference(
+             String lootId,
+             String entryId,
+             Object raw,
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
+index dbb9d28..d30c6a7 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSnapshot.java
+@@ -41,6 +41,9 @@ public final class ConfigSnapshot {
+     private final StorageSettings storage;
+     private final ClaimCommandSettings claimCommand;
+     private final AdminCommandSettings adminCommand;
++    private final MenuPage claimMenu;
++    private final MenuPage wikiListMenu;
++    private final MenuPage wikiLootMenu;
+     private final List<ConfigWarning> warnings;
+ 
+     ConfigSnapshot(
+@@ -65,6 +68,9 @@ public final class ConfigSnapshot {
+             StorageSettings storage,
+             ClaimCommandSettings claimCommand,
+             AdminCommandSettings adminCommand,
++            MenuPage claimMenu,
++            MenuPage wikiListMenu,
++            MenuPage wikiLootMenu,
+             List<ConfigWarning> warnings
+     ) {
+         this.activeLanguage = Objects.requireNonNull(activeLanguage, "activeLanguage");
+@@ -88,6 +94,9 @@ public final class ConfigSnapshot {
+         this.storage = Objects.requireNonNull(storage, "storage");
+         this.claimCommand = Objects.requireNonNull(claimCommand, "claimCommand");
+         this.adminCommand = Objects.requireNonNull(adminCommand, "adminCommand");
++        this.claimMenu = Objects.requireNonNull(claimMenu, "claimMenu");
++        this.wikiListMenu = Objects.requireNonNull(wikiListMenu, "wikiListMenu");
++        this.wikiLootMenu = Objects.requireNonNull(wikiLootMenu, "wikiLootMenu");
+         this.warnings = Objects.requireNonNull(warnings, "warnings");
+     }
+ 
+@@ -300,6 +309,27 @@ public final class ConfigSnapshot {
+         return adminCommand;
+     }
+ 
++    /**
++     * The claim menu page from {@code menus/claim.yml}, or the shipped page when the file is missing or unusable.
++     */
++    public MenuPage claimMenu() {
++        return claimMenu;
++    }
++
++    /**
++     * The wiki's list page from {@code menus/wiki.yml}, or the shipped page when it is missing or the wiki fell back.
++     */
++    public MenuPage wikiListMenu() {
++        return wikiListMenu;
++    }
++
++    /**
++     * The wiki's loot page from {@code menus/wiki.yml}, or the shipped page when it is missing or the wiki fell back.
++     */
++    public MenuPage wikiLootMenu() {
++        return wikiLootMenu;
++    }
++
+     /**
+      * The warnings of the load as {@code warnings.yml} judges them: each at the severity the file gives its kind, an
+      * off kind dropped, and only what the warning level admits.
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSources.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSources.java
+index 48c1a8f..866a5b8 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigSources.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigSources.java
+@@ -18,6 +18,7 @@ public final class ConfigSources {
+     private final Optional<String> warnings;
+     private final Map<String, String> languages;
+     private final Map<String, String> loots;
++    private final Map<String, String> menus;
+ 
+     private ConfigSources(
+             Optional<String> globals,
+@@ -26,7 +27,8 @@ public final class ConfigSources {
+             Optional<String> animations,
+             Optional<String> warnings,
+             Map<String, String> languages,
+-            Map<String, String> loots
++            Map<String, String> loots,
++            Map<String, String> menus
+     ) {
+         this.globals = globals;
+         this.worlds = worlds;
+@@ -35,6 +37,7 @@ public final class ConfigSources {
+         this.warnings = warnings;
+         this.languages = languages;
+         this.loots = loots;
++        this.menus = menus;
+     }
+ 
+     public Optional<String> globals() {
+@@ -73,6 +76,13 @@ public final class ConfigSources {
+         return loots;
+     }
+ 
++    /**
++     * The content of each {@code menus/} file, keyed by the file name without {@code .yml}.
++     */
++    public Map<String, String> menus() {
++        return menus;
++    }
++
+     public static Builder builder() {
+         return new Builder();
+     }
+@@ -85,6 +95,7 @@ public final class ConfigSources {
+         private Optional<String> warnings = Optional.empty();
+         private final Map<String, String> languages = new LinkedHashMap<>();
+         private final Map<String, String> loots = new LinkedHashMap<>();
++        private final Map<String, String> menus = new LinkedHashMap<>();
+ 
+         public Builder globals(String content) {
+             this.globals = Optional.ofNullable(content);
+@@ -125,6 +136,13 @@ public final class ConfigSources {
+             return this;
+         }
+ 
++        public Builder menu(String id, String content) {
++            Objects.requireNonNull(id, "id");
++            Objects.requireNonNull(content, "content");
++            menus.put(id, content);
++            return this;
++        }
++
+         public ConfigSources build() {
+             return new ConfigSources(
+                     globals,
+@@ -133,7 +151,8 @@ public final class ConfigSources {
+                     animations,
+                     warnings,
+                     Collections.unmodifiableMap(new LinkedHashMap<>(languages)),
+-                    Collections.unmodifiableMap(new LinkedHashMap<>(loots))
++                    Collections.unmodifiableMap(new LinkedHashMap<>(loots)),
++                    Collections.unmodifiableMap(new LinkedHashMap<>(menus))
+             );
+         }
+     }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+index 43d9a54..047ca04 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/ConfigWarning.java
+@@ -81,7 +81,19 @@ public final class ConfigWarning {
+         MORE_TYPOS,
+         UNKNOWN_WARNING_KIND,
+         UNUSABLE_WARNING_SEVERITY,
+-        UNUSABLE_DECIMALS
++        UNUSABLE_DECIMALS,
++        UNUSABLE_MENU_ROWS,
++        REJECTED_MENU_SLOT,
++        MENU_BUTTON_ON_CONTENT,
++        DUPLICATE_MENU_BUTTON_SLOT,
++        UNKNOWN_MENU_BUTTON,
++        UNKNOWN_MENU_FILE,
++        UNKNOWN_MENU_KEY,
++        UNUSABLE_MENU_VOLUME,
++        UNUSABLE_MENU_PITCH,
++        UNKNOWN_MENU_SOUND,
++        UNUSABLE_MENU_BUTTONS,
++        MENU_FALLBACK
+     }
+ 
+     /** The typos a {@link Kind#MORE_TYPOS} warning names before it counts the rest. */
+@@ -656,6 +668,104 @@ public final class ConfigWarning {
+         return lootHigh(Kind.UNUSABLE_DECIMALS, lootId, Optional.empty(), Optional.of(key));
+     }
+ 
++    /**
++     * A menu file's {@code rows} that cannot be used. The shipped value is used in its place.
++     */
++    public static ConfigWarning unusableMenuRows(String menuId, String key) {
++        return menu(Severity.HIGH, Kind.UNUSABLE_MENU_ROWS, menuId, key);
++    }
++
++    /**
++     * A menu slot that cannot be used, or is outside the page. It is dropped.
++     */
++    public static ConfigWarning rejectedMenuSlot(String menuId, String key) {
++        return menu(Severity.HIGH, Kind.REJECTED_MENU_SLOT, menuId, key);
++    }
++
++    /**
++     * A button on a content slot. The button stays, and the slot leaves the content.
++     */
++    public static ConfigWarning menuButtonOnContent(String menuId, String button) {
++        return menu(Severity.HIGH, Kind.MENU_BUTTON_ON_CONTENT, menuId, button);
++    }
++
++    /**
++     * Two buttons on one slot. The later button is dropped.
++     */
++    public static ConfigWarning duplicateMenuButtonSlot(String menuId, String button) {
++        return menu(Severity.HIGH, Kind.DUPLICATE_MENU_BUTTON_SLOT, menuId, button);
++    }
++
++    /**
++     * A button name the page does not have. The button is dropped.
++     */
++    public static ConfigWarning unknownMenuButton(String menuId, String button) {
++        return menu(Severity.HIGH, Kind.UNKNOWN_MENU_BUTTON, menuId, button);
++    }
++
++    /**
++     * A {@code menus/} file whose id no menu has. The file is ignored.
++     */
++    public static ConfigWarning unknownMenuFile(String menuId) {
++        return menu(Severity.HIGH, Kind.UNKNOWN_MENU_FILE, menuId, null);
++    }
++
++    /**
++     * A key in a menu file that no menu, page, button, or sound has. The key is ignored.
++     */
++    public static ConfigWarning unknownMenuKey(String menuId, String key) {
++        return menu(Severity.HIGH, Kind.UNKNOWN_MENU_KEY, menuId, key);
++    }
++
++    /**
++     * A button sound value that cannot be used. It is {@code 1.0} in its place.
++     */
++    public static ConfigWarning unusableMenuSoundValue(Kind kind, String menuId, String button) {
++        return menu(Severity.HIGH, kind, menuId, button);
++    }
++
++    /**
++     * A sound key that is missing, unusable, or unknown to the server. The button plays nothing.
++     */
++    public static ConfigWarning unknownMenuSound(String menuId, String button) {
++        return menu(Severity.HIGH, Kind.UNKNOWN_MENU_SOUND, menuId, button);
++    }
++
++    /**
++     * A menu's {@code buttons} block, or one button in it, that is not a section. No button loads from it.
++     */
++    public static ConfigWarning unusableMenuButtons(String menuId) {
++        return menu(Severity.HIGH, Kind.UNUSABLE_MENU_BUTTONS, menuId, "buttons");
++    }
++
++    /**
++     * A menu file that cannot be read, whose root is not a map, or whose page ends with no content slot. The whole
++     * menu uses the shipped layout.
++     */
++    public static ConfigWarning menuFallback(String menuId) {
++        return menu(Severity.SEVERE, Kind.MENU_FALLBACK, menuId, menuId);
++    }
++
++    private static ConfigWarning menu(Severity severity, Kind kind, String menuId, String key) {
++        return new ConfigWarning(
++                severity,
++                kind,
++                Optional.empty(),
++                Optional.ofNullable(key),
++                Optional.empty(),
++                Optional.empty(),
++                Optional.empty(),
++                Optional.empty(),
++                Optional.empty(),
++                Optional.ofNullable(menuId),
++                Optional.empty(),
++                List.of(),
++                Optional.empty(),
++                List.of(),
++                List.of()
++        );
++    }
++
+     private static ConfigWarning world(Kind kind, String worldName, Optional<String> key) {
+         return new ConfigWarning(Severity.HIGH, kind, Optional.empty(), key, Optional.empty(), Optional.empty(),
+                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), List.of(),
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/MenuButton.java b/src/main/java/me/rakkoon69/rakunloots/config/MenuButton.java
+new file mode 100644
+index 0000000..95a33bd
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/MenuButton.java
+@@ -0,0 +1,34 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++
++import java.util.Objects;
++import java.util.Optional;
++
++/**
++ * One button of a menu page: its slot, its item reference, and the sound it plays when clicked.
++ */
++public final class MenuButton {
++
++    private final int slot;
++    private final ItemReference item;
++    private final Optional<MenuSound> sound;
++
++    MenuButton(int slot, ItemReference item, Optional<MenuSound> sound) {
++        this.slot = slot;
++        this.item = Objects.requireNonNull(item, "item");
++        this.sound = Objects.requireNonNull(sound, "sound");
++    }
++
++    public int slot() {
++        return slot;
++    }
++
++    public ItemReference item() {
++        return item;
++    }
++
++    public Optional<MenuSound> sound() {
++        return sound;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/MenuConfig.java b/src/main/java/me/rakkoon69/rakunloots/config/MenuConfig.java
+new file mode 100644
+index 0000000..3d08e60
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/MenuConfig.java
+@@ -0,0 +1,540 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++import org.yaml.snakeyaml.error.YAMLException;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.UncheckedIOException;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.OptionalInt;
++import java.util.Set;
++
++import static me.rakkoon69.rakunloots.config.ConfigValues.strictInt;
++import static me.rakkoon69.rakunloots.config.ConfigValues.textValue;
++import static me.rakkoon69.rakunloots.config.ConfigValues.yaml;
++
++/**
++ * The {@code menus/} files: each known menu id becomes a page layout, each page with its shipped default. A file that
++ * cannot be read, whose root is not a map, or whose page ends with no content slot falls back to the shipped layout
++ * with one severe warning.
++ */
++final class MenuConfig {
++
++    private static final String CLAIM = "claim";
++    private static final String WIKI = "wiki";
++    private static final String LIST = "list";
++    private static final String LOOT = "loot";
++    private static final Set<String> MENU_IDS = Set.of(CLAIM, WIKI);
++    private static final Set<String> WIKI_KEYS = Set.of(LIST, LOOT);
++    private static final Set<String> PAGE_KEYS = Set.of("rows", "content_slots", "filler", "buttons");
++    private static final Set<String> BUTTON_KEYS = Set.of("slot", "item", "sound");
++    private static final Set<String> SOUND_KEYS = Set.of("key", "volume", "pitch");
++    private static final int MIN_ROWS = 1;
++    private static final int MAX_ROWS = 6;
++    private static final double DEFAULT_SOUND_VALUE = 1.0;
++    private static final double MIN_PITCH = 0.5;
++    private static final double MAX_PITCH = 2.0;
++
++    /**
++     * Reads the shipped files without checking their names: they are the product a new server runs.
++     */
++    private static final NameCatalog SHIPPED_CATALOG = new NameCatalog() {
++        @Override
++        public Optional<String> currentId(String writtenId) {
++            return Optional.of(writtenId);
++        }
++
++        @Override
++        public boolean soundExists(String key) {
++            return true;
++        }
++    };
++
++    private static final Menus SHIPPED = loadShipped();
++
++    private MenuConfig() {
++    }
++
++    static Menus parse(
++            ConfigSources sources,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        MenuPage claim = SHIPPED.claim();
++        MenuPage wikiList = SHIPPED.wikiList();
++        MenuPage wikiLoot = SHIPPED.wikiLoot();
++
++        for (Map.Entry<String, String> entry : sources.menus().entrySet()) {
++            String menuId = entry.getKey();
++            if (!MENU_IDS.contains(menuId)) {
++                warnings.add(ConfigWarning.unknownMenuFile(menuId));
++                continue;
++            }
++
++            List<ConfigWarning> found = new ArrayList<>();
++            if (CLAIM.equals(menuId)) {
++                Optional<MenuPage> page = parsePageFile(
++                        menuId, entry.getValue(), SHIPPED.claim(), nameCatalog, resolvedNames, found);
++                if (page.isEmpty()) {
++                    warnings.add(ConfigWarning.menuFallback(menuId));
++                } else {
++                    claim = page.get();
++                    warnings.addAll(found);
++                }
++            } else {
++                Optional<WikiPages> pages = parseWikiFile(
++                        entry.getValue(), SHIPPED, nameCatalog, resolvedNames, found);
++                if (pages.isEmpty()) {
++                    warnings.add(ConfigWarning.menuFallback(menuId));
++                } else {
++                    wikiList = pages.get().list();
++                    wikiLoot = pages.get().loot();
++                    warnings.addAll(found);
++                }
++            }
++        }
++        return new Menus(claim, wikiList, wikiLoot);
++    }
++
++    record Menus(MenuPage claim, MenuPage wikiList, MenuPage wikiLoot) {
++    }
++
++    private record WikiPages(MenuPage list, MenuPage loot) {
++    }
++
++    private static Optional<MenuPage> parsePageFile(
++            String menuId,
++            String content,
++            MenuPage shipped,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        Optional<Map<String, Object>> root = parseRoot(content);
++        if (root.isEmpty()) {
++            return Optional.empty();
++        }
++        return parsePage(menuId, root.get(), shipped, nameCatalog, resolvedNames, warnings);
++    }
++
++    private static Optional<WikiPages> parseWikiFile(
++            String content,
++            Menus shipped,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        Optional<Map<String, Object>> parsed = parseRoot(content);
++        if (parsed.isEmpty()) {
++            return Optional.empty();
++        }
++        Map<String, Object> root = parsed.get();
++        warnUnknownKeys(WIKI, "", root, WIKI_KEYS, warnings);
++
++        MenuPage list = shipped.wikiList();
++        Object rawList = root.get(LIST);
++        if (rawList != null) {
++            if (!(rawList instanceof Map<?, ?>)) {
++                return Optional.empty();
++            }
++            Optional<MenuPage> parsedList = parsePage(
++                    WIKI, asMap(rawList), shipped.wikiList(), nameCatalog, resolvedNames, warnings);
++            if (parsedList.isEmpty()) {
++                return Optional.empty();
++            }
++            list = parsedList.get();
++        }
++
++        MenuPage loot = shipped.wikiLoot();
++        Object rawLoot = root.get(LOOT);
++        if (rawLoot != null) {
++            if (!(rawLoot instanceof Map<?, ?>)) {
++                return Optional.empty();
++            }
++            Optional<MenuPage> parsedLoot = parsePage(
++                    WIKI, asMap(rawLoot), shipped.wikiLoot(), nameCatalog, resolvedNames, warnings);
++            if (parsedLoot.isEmpty()) {
++                return Optional.empty();
++            }
++            loot = parsedLoot.get();
++        }
++        return Optional.of(new WikiPages(list, loot));
++    }
++
++    private static Optional<MenuPage> parsePage(
++            String menuId,
++            Map<String, Object> root,
++            MenuPage shipped,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        warnUnknownKeys(menuId, "", root, PAGE_KEYS, warnings);
++        int rows = parseRows(menuId, root.get("rows"), shipped.rows(), warnings);
++        int limit = rows * 9;
++        LinkedHashSet<Integer> content = parseContentSlots(
++                menuId, root.get("content_slots"), shipped.contentSlots(), limit, warnings);
++        ItemReference filler = parseFiller(menuId, root, shipped.filler(), nameCatalog, resolvedNames, warnings);
++        Map<String, MenuButton> buttons = parseButtons(
++                menuId, root, limit, shipped, nameCatalog, resolvedNames, warnings);
++
++        Set<Integer> used = new LinkedHashSet<>();
++        Map<String, MenuButton> kept = new LinkedHashMap<>();
++        for (Map.Entry<String, MenuButton> entry : buttons.entrySet()) {
++            MenuButton button = entry.getValue();
++            if (!used.add(button.slot())) {
++                warnings.add(ConfigWarning.duplicateMenuButtonSlot(menuId, entry.getKey()));
++                continue;
++            }
++            if (content.remove(button.slot())) {
++                warnings.add(ConfigWarning.menuButtonOnContent(menuId, entry.getKey()));
++            }
++            kept.put(entry.getKey(), button);
++        }
++
++        if (content.isEmpty()) {
++            return Optional.empty();
++        }
++        return Optional.of(new MenuPage(rows, content, filler, kept));
++    }
++
++    private static int parseRows(String menuId, Object raw, int shipped, List<ConfigWarning> warnings) {
++        if (raw == null) {
++            return shipped;
++        }
++        OptionalInt parsed = strictInt(raw);
++        if (parsed.isEmpty() || parsed.getAsInt() < MIN_ROWS || parsed.getAsInt() > MAX_ROWS) {
++            warnings.add(ConfigWarning.unusableMenuRows(menuId, "rows"));
++            return shipped;
++        }
++        return parsed.getAsInt();
++    }
++
++    private static LinkedHashSet<Integer> parseContentSlots(
++            String menuId,
++            Object raw,
++            List<Integer> shipped,
++            int limit,
++            List<ConfigWarning> warnings
++    ) {
++        LinkedHashSet<Integer> slots = new LinkedHashSet<>();
++        if (raw == null) {
++            for (int slot : shipped) {
++                if (slot < limit) {
++                    slots.add(slot);
++                }
++            }
++            return slots;
++        }
++        if (!(raw instanceof List<?> list)) {
++            warnings.add(ConfigWarning.rejectedMenuSlot(menuId, "content_slots"));
++            for (int slot : shipped) {
++                if (slot < limit) {
++                    slots.add(slot);
++                }
++            }
++            return slots;
++        }
++
++        for (Object entry : list) {
++            if (entry instanceof String text) {
++                addRangeOrSlot(menuId, text.trim(), limit, slots, warnings);
++            } else {
++                OptionalInt parsed = strictInt(entry);
++                if (parsed.isPresent() && parsed.getAsInt() >= 0 && parsed.getAsInt() < limit) {
++                    slots.add(parsed.getAsInt());
++                } else {
++                    warnings.add(ConfigWarning.rejectedMenuSlot(menuId, String.valueOf(entry)));
++                }
++            }
++        }
++        return slots;
++    }
++
++    private static void addRangeOrSlot(
++            String menuId,
++            String text,
++            int limit,
++            LinkedHashSet<Integer> slots,
++            List<ConfigWarning> warnings
++    ) {
++        int dash = text.indexOf('-', 1);
++        if (dash < 0) {
++            OptionalInt slot = strictInt(text);
++            if (slot.isPresent() && slot.getAsInt() >= 0 && slot.getAsInt() < limit) {
++                slots.add(slot.getAsInt());
++            } else {
++                warnings.add(ConfigWarning.rejectedMenuSlot(menuId, text));
++            }
++            return;
++        }
++
++        OptionalInt start = strictInt(text.substring(0, dash).trim());
++        OptionalInt end = strictInt(text.substring(dash + 1).trim());
++        if (start.isEmpty() || end.isEmpty() || start.getAsInt() > end.getAsInt()) {
++            warnings.add(ConfigWarning.rejectedMenuSlot(menuId, text));
++            return;
++        }
++        boolean outside = start.getAsInt() < 0 || end.getAsInt() >= limit;
++        if (outside) {
++            warnings.add(ConfigWarning.rejectedMenuSlot(menuId, text));
++        }
++        for (int slot = Math.max(0, start.getAsInt()); slot <= Math.min(end.getAsInt(), limit - 1); slot++) {
++            slots.add(slot);
++        }
++    }
++
++    private static ItemReference parseFiller(
++            String menuId,
++            Map<String, Object> root,
++            ItemReference shipped,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        Object raw = root.get("filler");
++        if (raw == null) {
++            return shipped;
++        }
++        List<ConfigWarning> found = new ArrayList<>();
++        Optional<ItemReference> parsed = ConfigLoadSupport.parseItemReference(
++                menuId, "filler", raw, nameCatalog, resolvedNames, found);
++        warnings.addAll(found);
++        return parsed.orElse(shipped);
++    }
++
++    private static Map<String, MenuButton> parseButtons(
++            String menuId,
++            Map<String, Object> root,
++            int limit,
++            MenuPage shipped,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        Object raw = root.get("buttons");
++        if (raw == null) {
++            return Map.of();
++        }
++        if (!(raw instanceof Map<?, ?> map)) {
++            warnings.add(ConfigWarning.unusableMenuButtons(menuId));
++            return Map.of();
++        }
++
++        Map<String, MenuButton> buttons = new LinkedHashMap<>();
++        for (Map.Entry<?, ?> entry : map.entrySet()) {
++            String name = String.valueOf(entry.getKey());
++            MenuButton defaults = shipped.buttons().get(name);
++            if (defaults == null) {
++                warnings.add(ConfigWarning.unknownMenuButton(menuId, name));
++                continue;
++            }
++            Object rawButton = entry.getValue();
++            if (rawButton != null && !(rawButton instanceof Map<?, ?>)) {
++                warnings.add(ConfigWarning.unusableMenuButtons(menuId));
++                continue;
++            }
++            MenuButton parsed = parseButton(
++                    menuId, name, rawButton == null ? Map.of() : asMap(rawButton), defaults, limit, nameCatalog,
++                    resolvedNames, warnings);
++            if (parsed != null) {
++                buttons.put(name, parsed);
++            }
++        }
++        return buttons;
++    }
++
++    private static MenuButton parseButton(
++            String menuId,
++            String name,
++            Map<String, Object> root,
++            MenuButton shipped,
++            int limit,
++            NameCatalog nameCatalog,
++            Map<String, String> resolvedNames,
++            List<ConfigWarning> warnings
++    ) {
++        warnUnknownKeys(menuId, "buttons." + name + ".", root, BUTTON_KEYS, warnings);
++
++        int slot = shipped.slot();
++        Object rawSlot = root.get("slot");
++        if (rawSlot != null) {
++            OptionalInt parsed = strictInt(rawSlot);
++            if (parsed.isEmpty()) {
++                warnings.add(ConfigWarning.rejectedMenuSlot(menuId, name));
++                return null;
++            }
++            slot = parsed.getAsInt();
++        }
++        if (slot < 0 || slot >= limit) {
++            warnings.add(ConfigWarning.rejectedMenuSlot(menuId, name));
++            return null;
++        }
++
++        ItemReference item = shipped.item();
++        Object rawItem = root.get("item");
++        if (rawItem != null) {
++            List<ConfigWarning> found = new ArrayList<>();
++            Optional<ItemReference> parsed = ConfigLoadSupport.parseItemReference(
++                    menuId, name, rawItem, nameCatalog, resolvedNames, found);
++            warnings.addAll(found);
++            if (parsed.isPresent()) {
++                item = parsed.get();
++            }
++        }
++
++        Optional<MenuSound> sound = Optional.empty();
++        Object rawSound = root.get("sound");
++        if (rawSound != null) {
++            sound = parseSound(menuId, name, rawSound, nameCatalog, warnings);
++        }
++        return new MenuButton(slot, item, sound);
++    }
++
++    private static Optional<MenuSound> parseSound(
++            String menuId,
++            String name,
++            Object raw,
++            NameCatalog nameCatalog,
++            List<ConfigWarning> warnings
++    ) {
++        if (!(raw instanceof Map<?, ?>)) {
++            warnings.add(ConfigWarning.unknownMenuSound(menuId, name));
++            return Optional.empty();
++        }
++        Map<String, Object> root = asMap(raw);
++        warnUnknownKeys(menuId, "buttons." + name + ".sound.", root, SOUND_KEYS, warnings);
++
++        Optional<String> key = textValue(root.get("key")).map(String::trim).filter(text -> !text.isEmpty());
++        if (key.isEmpty() || !nameCatalog.soundExists(key.get())) {
++            warnings.add(ConfigWarning.unknownMenuSound(menuId, name));
++            return Optional.empty();
++        }
++
++        double volume = parseSoundValue(
++                menuId, name, root.get("volume"), ConfigWarning.Kind.UNUSABLE_MENU_VOLUME, 0.0, Double.MAX_VALUE,
++                warnings);
++        double pitch = parseSoundValue(
++                menuId, name, root.get("pitch"), ConfigWarning.Kind.UNUSABLE_MENU_PITCH, MIN_PITCH, MAX_PITCH,
++                warnings);
++        return Optional.of(new MenuSound(key.get(), volume, pitch));
++    }
++
++    private static double parseSoundValue(
++            String menuId,
++            String name,
++            Object raw,
++            ConfigWarning.Kind kind,
++            double min,
++            double max,
++            List<ConfigWarning> warnings
++    ) {
++        if (raw == null) {
++            return DEFAULT_SOUND_VALUE;
++        }
++        Optional<Double> parsed = number(raw);
++        if (parsed.isEmpty() || !Double.isFinite(parsed.get()) || parsed.get() < min || parsed.get() > max) {
++            warnings.add(ConfigWarning.unusableMenuSoundValue(kind, menuId, name));
++            return DEFAULT_SOUND_VALUE;
++        }
++        return parsed.get();
++    }
++
++    private static Optional<Double> number(Object raw) {
++        if (raw instanceof Number value) {
++            return Optional.of(value.doubleValue());
++        }
++        if (raw instanceof String text) {
++            try {
++                return Optional.of(Double.parseDouble(text.trim()));
++            } catch (NumberFormatException unsupported) {
++                return Optional.empty();
++            }
++        }
++        return Optional.empty();
++    }
++
++    private static void warnUnknownKeys(
++            String menuId,
++            String prefix,
++            Map<String, Object> root,
++            Set<String> known,
++            List<ConfigWarning> warnings
++    ) {
++        for (String key : root.keySet()) {
++            if (!known.contains(key)) {
++                warnings.add(ConfigWarning.unknownMenuKey(menuId, prefix + key));
++            }
++        }
++    }
++
++    @SuppressWarnings("unchecked")
++    private static Map<String, Object> asMap(Object raw) {
++        return raw instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
++    }
++
++    private static Optional<Map<String, Object>> parseRoot(String content) {
++        if (content == null || content.isBlank()) {
++            return Optional.empty();
++        }
++        try {
++            Object loaded = yaml().load(content);
++            if (!(loaded instanceof Map<?, ?> map)) {
++                return Optional.empty();
++            }
++            return Optional.of(asMap(map));
++        } catch (YAMLException unreadable) {
++            return Optional.empty();
++        }
++    }
++
++    private static Menus loadShipped() {
++        List<ConfigWarning> ignored = new ArrayList<>();
++        Map<String, String> names = new LinkedHashMap<>();
++        MenuPage claim = parsePageFile(
++                CLAIM, resource("/menus/claim.yml"),
++                basePage("previous_page", "next_page", "claim_all"),
++                SHIPPED_CATALOG, names, ignored).orElseThrow(
++                        () -> new IllegalStateException("The shipped menus/claim.yml has no content"));
++        WikiPages wiki = parseWikiFile(
++                resource("/menus/wiki.yml"),
++                new Menus(claim,
++                        basePage("previous_page", "next_page"),
++                        basePage("previous_page", "next_page", "back", "info")),
++                SHIPPED_CATALOG, names, ignored).orElseThrow(
++                        () -> new IllegalStateException("The shipped menus/wiki.yml cannot be read"));
++        return new Menus(claim, wiki.list(), wiki.loot());
++    }
++
++    /**
++     * The layout the shipped parser inherits what a shipped file leaves out from. The shipped files write every key,
++     * so it never reaches a menu.
++     */
++    private static MenuPage basePage(String... buttonNames) {
++        ItemReference barrier = ItemReference.of("vanilla", "barrier");
++        Map<String, MenuButton> buttons = new LinkedHashMap<>();
++        for (String name : buttonNames) {
++            buttons.put(name, new MenuButton(0, barrier, Optional.empty()));
++        }
++        return new MenuPage(MAX_ROWS, List.of(), barrier, buttons);
++    }
++
++    private static String resource(String path) {
++        try (InputStream in = MenuConfig.class.getResourceAsStream(path)) {
++            if (in == null) {
++                throw new IllegalStateException("Missing shipped resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        } catch (IOException failure) {
++            throw new UncheckedIOException(failure);
++        }
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java b/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java
+new file mode 100644
+index 0000000..3f7e13f
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/MenuPage.java
+@@ -0,0 +1,47 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++
++import java.util.Collection;
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++
++/**
++ * One page of a menu file: its rows, its ordered content slots, its filler, and its buttons by name.
++ */
++public final class MenuPage {
++
++    private final int rows;
++    private final List<Integer> contentSlots;
++    private final ItemReference filler;
++    private final Map<String, MenuButton> buttons;
++
++    MenuPage(int rows, Collection<Integer> contentSlots, ItemReference filler, Map<String, MenuButton> buttons) {
++        this.rows = rows;
++        this.contentSlots = List.copyOf(contentSlots);
++        this.filler = Objects.requireNonNull(filler, "filler");
++        this.buttons = Collections.unmodifiableMap(new LinkedHashMap<>(Objects.requireNonNull(buttons, "buttons")));
++    }
++
++    public int rows() {
++        return rows;
++    }
++
++    /**
++     * The slots the menu's entries fill, in the order written, with ranges expanded. A button's slot is not here.
++     */
++    public List<Integer> contentSlots() {
++        return contentSlots;
++    }
++
++    public ItemReference filler() {
++        return filler;
++    }
++
++    public Map<String, MenuButton> buttons() {
++        return buttons;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/MenuSound.java b/src/main/java/me/rakkoon69/rakunloots/config/MenuSound.java
+new file mode 100644
+index 0000000..e16a9fa
+--- /dev/null
++++ b/src/main/java/me/rakkoon69/rakunloots/config/MenuSound.java
+@@ -0,0 +1,31 @@
++package me.rakkoon69.rakunloots.config;
++
++import java.util.Objects;
++
++/**
++ * A button's click sound: a namespaced key the server knows, with its volume and pitch.
++ */
++public final class MenuSound {
++
++    private final String key;
++    private final double volume;
++    private final double pitch;
++
++    MenuSound(String key, double volume, double pitch) {
++        this.key = Objects.requireNonNull(key, "key");
++        this.volume = volume;
++        this.pitch = pitch;
++    }
++
++    public String key() {
++        return key;
++    }
++
++    public double volume() {
++        return volume;
++    }
++
++    public double pitch() {
++        return pitch;
++    }
++}
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/NameCatalog.java b/src/main/java/me/rakkoon69/rakunloots/config/NameCatalog.java
+index 166859a..9468ee6 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/NameCatalog.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/NameCatalog.java
+@@ -19,6 +19,14 @@ public interface NameCatalog {
+         return Set.of();
+     }
+ 
++    /**
++     * Whether the server knows this namespaced sound key. A catalog that does not say is strict: an unknown sound is
++     * rejected. The real catalog checks the server's sound registry.
++     */
++    default boolean soundExists(String key) {
++        return false;
++    }
++
+     static NameCatalog empty() {
+         return writtenId -> Optional.empty();
+     }
+diff --git a/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java b/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
+index a7d9708..0e82875 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
++++ b/src/main/java/me/rakkoon69/rakunloots/config/WarningKinds.java
+@@ -47,7 +47,7 @@ public final class WarningKinds {
+                         Set.of("LOOT_LANGUAGE_CLASH", "LOOT_LANGUAGE_MISSING", "OLD_NAME", "NEGATIVE_LIFE",
+                                 "EMPTY_GROUP", "SKIPPED_OPTIONAL_ENTRIES",
+                                 "UNKNOWN_WARNING_KIND"),
+-                        Set.of("MISSING_ENGLISH_KEY", "GROUP_CYCLE")),
++                        Set.of("MISSING_ENGLISH_KEY", "GROUP_CYCLE", "MENU_FALLBACK")),
+                 new Group("LIFECYCLE", LifecycleWarning.Kind.values(),
+                         Set.of("SLOT_MOVED"), Set.of("LOAD_FAILED", "SAVE_FAILED")),
+                 new Group("STORAGE", LootBoxWarning.Kind.values(),
+diff --git a/src/main/java/me/rakkoon69/rakunloots/server/BukkitNameCatalog.java b/src/main/java/me/rakkoon69/rakunloots/server/BukkitNameCatalog.java
+index 863848a..5129b2a 100644
+--- a/src/main/java/me/rakkoon69/rakunloots/server/BukkitNameCatalog.java
++++ b/src/main/java/me/rakkoon69/rakunloots/server/BukkitNameCatalog.java
+@@ -4,6 +4,8 @@ import me.rakkoon69.rakunloots.config.NameCatalog;
+ import org.bukkit.Bukkit;
+ import org.bukkit.Material;
+ import org.bukkit.NamespacedKey;
++import org.bukkit.Registry;
++import org.bukkit.Sound;
+ import org.bukkit.Tag;
+ 
+ import java.util.LinkedHashSet;
+@@ -47,6 +49,29 @@ public final class BukkitNameCatalog implements NameCatalog {
+         return Optional.empty();
+     }
+ 
++    @Override
++    public boolean soundExists(String key) {
++        NamespacedKey soundKey;
++        try {
++            soundKey = NamespacedKey.fromString(key);
++        } catch (RuntimeException invalid) {
++            return false;
++        }
++        if (soundKey == null) {
++            return false;
++        }
++        try {
++            return Registry.SOUNDS.get(soundKey) != null;
++        } catch (RuntimeException | LinkageError noRegistry) {
++            for (Sound sound : Sound.values()) {
++                if (sound.getKey().equals(soundKey)) {
++                    return true;
++                }
++            }
++            return false;
++        }
++    }
++
+     @Override
+     public Set<String> tagMembers(String namespacedTag) {
+         try {
+diff --git a/src/main/resources/menus/claim.yml b/src/main/resources/menus/claim.yml
+new file mode 100644
+index 0000000..7070c66
+--- /dev/null
++++ b/src/main/resources/menus/claim.yml
+@@ -0,0 +1,45 @@
++# The claim menu. Each key is documented here and in menus/wiki.yml; the two files use the same layout shape.
++#
++# rows: how many rows of nine slots the menu has, from 1 to 6. Missing uses this value; an unusable value warns high
++# and uses this value.
++rows: 6
++
++# content_slots: the slots the unclaimed summon items fill, in order. Write a slot number or a "first-last" range.
++# A slot outside the page warns high and is dropped. A button on a content slot warns high and takes the slot out.
++content_slots:
++  - "0-44"
++
++# filler: the item shown in every slot that is neither content nor a button. Write an item reference as in a loot
++# file, with source, id, and the vanilla additions. Missing uses this item; an unusable reference warns and uses it.
++filler:
++  id: gray_stained_glass_pane
++
++# buttons: the clickable items by name. A button this page does not know warns high and is dropped. A button left out
++# is not shown. A known button with no slot or item inherits this file's value.
++buttons:
++  # previous_page and next_page page the entries. claim_all takes every loot's items that fit.
++  previous_page:
++    # slot: where the button sits, inside this page. Missing inherits the shipped slot; an unusable slot drops it.
++    slot: 45
++    item:
++      id: arrow
++    sound:
++      # key: a namespaced sound key the server knows. An unknown key warns high and the button plays nothing. A
++      # button with no sound block also plays nothing.
++      key: minecraft:ui.button.click
++      # volume: 0 or more; missing is 1.0. A bad value warns high and uses 1.0.
++      volume: 1.0
++      # pitch: 0.5 to 2.0; missing is 1.0. A bad value warns high and uses 1.0.
++      pitch: 1.0
++  claim_all:
++    slot: 49
++    item:
++      id: chest_minecart
++    sound:
++      key: minecraft:ui.button.click
++  next_page:
++    slot: 53
++    item:
++      id: arrow
++    sound:
++      key: minecraft:ui.button.click
+diff --git a/src/main/resources/menus/wiki.yml b/src/main/resources/menus/wiki.yml
+new file mode 100644
+index 0000000..57fca50
+--- /dev/null
++++ b/src/main/resources/menus/wiki.yml
+@@ -0,0 +1,58 @@
++# The loots wiki, with two pages: list shows every loot, and loot shows one loot's contents.
++# Each page has the same keys as menus/claim.yml: rows, content_slots, filler, and buttons.
++list:
++  # rows: 1 to 6; missing inherits this value, an unusable value warns high and uses it.
++  rows: 6
++  # content_slots: the slots the loots fill, in order; a slot or a "first-last" range. A button on a content slot
++  # warns high and takes the slot out.
++  content_slots:
++    - "0-44"
++  # filler: the item in every slot that is neither content nor a button.
++  filler:
++    id: gray_stained_glass_pane
++  # previous_page and next_page page the loots.
++  buttons:
++    previous_page:
++      slot: 45
++      item:
++        id: arrow
++      sound:
++        key: minecraft:ui.button.click
++    next_page:
++      slot: 53
++      item:
++        id: arrow
++      sound:
++        key: minecraft:ui.button.click
++loot:
++  rows: 6
++  content_slots:
++    - "0-44"
++  filler:
++    id: gray_stained_glass_pane
++  # back returns to the list. info shows the loot's details and has no sound block, so a click on it plays nothing.
++  # Each button has a slot, an item, and an optional sound block with a key, a volume, and a pitch, as menus/claim.yml
++  # explains. A known button with no slot or item inherits this file's value; an unknown button warns high and drops.
++  buttons:
++    previous_page:
++      slot: 45
++      item:
++        id: arrow
++      sound:
++        key: minecraft:ui.button.click
++    back:
++      slot: 48
++      item:
++        id: oak_door
++      sound:
++        key: minecraft:ui.button.click
++    info:
++      slot: 49
++      item:
++        id: book
++    next_page:
++      slot: 53
++      item:
++        id: arrow
++      sound:
++        key: minecraft:ui.button.click
+diff --git a/src/main/resources/warnings.yml b/src/main/resources/warnings.yml
+index 44b4a11..cef1b8b 100644
+--- a/src/main/resources/warnings.yml
++++ b/src/main/resources/warnings.yml
+@@ -71,6 +71,20 @@ UNKNOWN_WARNING_KIND: low
+ UNUSABLE_WARNING_SEVERITY: high
+ UNUSABLE_DECIMALS: high
+ 
++# Menu files
++UNUSABLE_MENU_ROWS: high
++REJECTED_MENU_SLOT: high
++MENU_BUTTON_ON_CONTENT: high
++DUPLICATE_MENU_BUTTON_SLOT: high
++UNKNOWN_MENU_BUTTON: high
++UNKNOWN_MENU_FILE: high
++UNKNOWN_MENU_KEY: high
++UNUSABLE_MENU_VOLUME: high
++UNUSABLE_MENU_PITCH: high
++UNKNOWN_MENU_SOUND: high
++UNUSABLE_MENU_BUTTONS: high
++MENU_FALLBACK: severe
++
+ # Loot box lifecycle
+ SLOT_MOVED: low
+ NO_ROOM: high
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/ConfigFolderTest.java b/src/test/java/me/rakkoon69/rakunloots/config/ConfigFolderTest.java
+index ec0799e..710d8bf 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/config/ConfigFolderTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/config/ConfigFolderTest.java
+@@ -8,6 +8,7 @@ import java.io.InputStream;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.util.Optional;
++import java.util.Set;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+@@ -31,13 +32,28 @@ class ConfigFolderTest {
+         }
+ 
+         ConfigSources sources = ConfigFolder.read(folder);
+-        ConfigSnapshot snapshot = ConfigLoader.load(sources, written -> Optional.of(written));
++        ConfigSnapshot snapshot = ConfigLoader.load(sources, new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return Optional.of(writtenId);
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return "minecraft:ui.button.click".equals(key);
++            }
++        });
+ 
+         assertTrue(sources.animations().isPresent());
+-        assertEquals(java.util.Set.of("en", "vi", "zh"), sources.languages().keySet());
++        assertEquals(Set.of("claim", "wiki"), sources.menus().keySet());
++        assertEquals(Set.of("en", "vi", "zh"), sources.languages().keySet());
+         assertEquals(java.util.Set.of("airdrops", "buried_stash", "deep_vault", "head_trophy", "sky_lantern",
+                 "sunken_treasure", "treasure_chest"), sources.loots().keySet());
+         assertTrue(snapshot.animation("RED_SPHERE").isPresent());
++        assertEquals(6, snapshot.claimMenu().rows());
++        assertEquals(49, snapshot.claimMenu().buttons().get("claim_all").slot());
++        assertEquals(6, snapshot.wikiListMenu().rows());
++        assertEquals(49, snapshot.wikiLootMenu().buttons().get("info").slot());
+         for (String lootId : sources.loots().keySet()) {
+             assertTrue(snapshot.loot(lootId).isPresent(), lootId);
+         }
+@@ -50,5 +66,6 @@ class ConfigFolderTest {
+         assertEquals(Optional.empty(), sources.globals());
+         assertEquals(Optional.empty(), sources.animations());
+         assertTrue(sources.loots().isEmpty());
++        assertTrue(sources.menus().isEmpty());
+     }
+ }
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/ConfigMenuFileTest.java b/src/test/java/me/rakkoon69/rakunloots/config/ConfigMenuFileTest.java
+new file mode 100644
+index 0000000..d00e576
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/ConfigMenuFileTest.java
+@@ -0,0 +1,505 @@
++package me.rakkoon69.rakunloots.config;
++
++import me.rakkoon69.rakunloots.items.ItemReference;
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++/**
++ * The {@code menus/} files through the config load: the shipped layouts, the validation rules, and the whole-menu
++ * fallback.
++ */
++class ConfigMenuFileTest {
++
++    private static final String CLICK = "minecraft:ui.button.click";
++    private static final Set<ConfigWarning.Kind> MENU_KINDS = Set.of(
++            ConfigWarning.Kind.UNUSABLE_MENU_ROWS,
++            ConfigWarning.Kind.REJECTED_MENU_SLOT,
++            ConfigWarning.Kind.MENU_BUTTON_ON_CONTENT,
++            ConfigWarning.Kind.DUPLICATE_MENU_BUTTON_SLOT,
++            ConfigWarning.Kind.UNKNOWN_MENU_BUTTON,
++            ConfigWarning.Kind.UNKNOWN_MENU_FILE,
++            ConfigWarning.Kind.UNKNOWN_MENU_KEY,
++            ConfigWarning.Kind.UNUSABLE_MENU_VOLUME,
++            ConfigWarning.Kind.UNUSABLE_MENU_PITCH,
++            ConfigWarning.Kind.UNKNOWN_MENU_SOUND,
++            ConfigWarning.Kind.UNUSABLE_MENU_BUTTONS,
++            ConfigWarning.Kind.MENU_FALLBACK);
++
++    /**
++     * A catalog that knows the shipped click sound and only that sound.
++     */
++    private static final NameCatalog CLICK_CATALOG = new NameCatalog() {
++        @Override
++        public Optional<String> currentId(String writtenId) {
++            return Optional.of(writtenId);
++        }
++
++        @Override
++        public boolean soundExists(String key) {
++            return CLICK.equals(key);
++        }
++    };
++
++    private static String resource(String path) throws IOException {
++        try (InputStream in = ConfigMenuFileTest.class.getResourceAsStream("/" + path)) {
++            if (in == null) {
++                throw new IOException("missing resource " + path);
++            }
++            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
++        }
++    }
++
++    private static ConfigSnapshot load(String claim, String wiki) {
++        return load(CLICK_CATALOG, claim, wiki);
++    }
++
++    private static ConfigSnapshot load(NameCatalog catalog, String claim, String wiki) {
++        ConfigSources.Builder sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", "text: test\n");
++        if (claim != null) {
++            sources.menu("claim", claim);
++        }
++        if (wiki != null) {
++            sources.menu("wiki", wiki);
++        }
++        return ConfigLoader.load(sources.build(), catalog);
++    }
++
++    private static long count(ConfigSnapshot snapshot, ConfigWarning.Kind kind) {
++        return snapshot.warnings().stream().filter(w -> w.kind() == kind).count();
++    }
++
++    private static List<ConfigWarning> menuWarnings(ConfigSnapshot snapshot) {
++        return snapshot.warnings().stream().filter(warning -> MENU_KINDS.contains(warning.kind())).toList();
++    }
++
++    private static List<ConfigWarning.Kind> kinds(ConfigSnapshot snapshot) {
++        return menuWarnings(snapshot).stream().map(ConfigWarning::kind).toList();
++    }
++
++    private static ConfigWarning single(ConfigSnapshot snapshot, ConfigWarning.Kind kind) {
++        List<ConfigWarning> found = snapshot.warnings().stream().filter(w -> w.kind() == kind).toList();
++        assertEquals(1, found.size(), found.toString());
++        return found.get(0);
++    }
++
++    private static void assertShippedClaim(ConfigSnapshot snapshot) {
++        MenuPage claim = snapshot.claimMenu();
++        assertEquals(6, claim.rows());
++        assertEquals(45, claim.contentSlots().size());
++        assertEquals("gray_stained_glass_pane", claim.filler().id());
++        assertEquals(45, claim.buttons().get("previous_page").slot());
++        assertEquals(49, claim.buttons().get("claim_all").slot());
++        assertEquals(53, claim.buttons().get("next_page").slot());
++    }
++
++    private static void assertShippedWikiLoot(ConfigSnapshot snapshot) {
++        MenuPage loot = snapshot.wikiLootMenu();
++        assertEquals(6, loot.rows());
++        assertEquals(45, loot.contentSlots().size());
++        assertEquals(48, loot.buttons().get("back").slot());
++        assertEquals(49, loot.buttons().get("info").slot());
++        assertTrue(loot.buttons().get("info").sound().isEmpty());
++    }
++
++    @Test
++    void theShippedMenuFilesGiveTheSpecifiedLayoutsQuietly() throws IOException {
++        ConfigSnapshot snapshot = load(resource("menus/claim.yml"), resource("menus/wiki.yml"));
++
++        assertEquals(List.of(), kinds(snapshot));
++        assertShippedClaim(snapshot);
++        MenuPage list = snapshot.wikiListMenu();
++        assertEquals(6, list.rows());
++        assertEquals(45, list.contentSlots().size());
++        assertEquals("gray_stained_glass_pane", list.filler().id());
++        assertEquals(45, list.buttons().get("previous_page").slot());
++        assertEquals(53, list.buttons().get("next_page").slot());
++        assertShippedWikiLoot(snapshot);
++        assertEquals("arrow", snapshot.claimMenu().buttons().get("previous_page").item().id());
++        assertEquals("chest_minecart", snapshot.claimMenu().buttons().get("claim_all").item().id());
++        assertEquals("oak_door", snapshot.wikiLootMenu().buttons().get("back").item().id());
++        assertEquals("book", snapshot.wikiLootMenu().buttons().get("info").item().id());
++        assertEquals(CLICK, snapshot.claimMenu().buttons().get("claim_all").sound().orElseThrow().key());
++        assertEquals(1.0, snapshot.claimMenu().buttons().get("claim_all").sound().orElseThrow().volume());
++        assertEquals(1.0, snapshot.claimMenu().buttons().get("claim_all").sound().orElseThrow().pitch());
++    }
++
++    @Test
++    void aMissingMenuFileUsesTheShippedLayoutSilentlyEvenWithAnEmptyCatalog() {
++        ConfigSnapshot snapshot = load(NameCatalog.empty(), null, null);
++
++        assertEquals(List.of(), kinds(snapshot));
++        assertShippedClaim(snapshot);
++        assertEquals(45, snapshot.wikiListMenu().contentSlots().size());
++        assertShippedWikiLoot(snapshot);
++    }
++
++    @Test
++    void rowsOutsideOneToSixWarnsHighAndUsesTheShippedValue() {
++        for (String rows : List.of("0", "7", "'six'", "[3]")) {
++            ConfigSnapshot snapshot = load("rows: " + rows + "\n", null);
++
++            assertEquals(6, snapshot.claimMenu().rows(), rows);
++            ConfigWarning warning = single(snapshot, ConfigWarning.Kind.UNUSABLE_MENU_ROWS);
++            assertEquals(ConfigWarning.Severity.HIGH, warning.severity(), rows);
++        }
++    }
++
++    @Test
++    void defaultContentSlotsFollowAShrunkPageWithoutAWarning() {
++        ConfigSnapshot snapshot = load("rows: 3\n", null);
++
++        assertEquals(3, snapshot.claimMenu().rows());
++        assertEquals(27, snapshot.claimMenu().contentSlots().size());
++        assertEquals(26, snapshot.claimMenu().contentSlots().get(26));
++        assertEquals(0, count(snapshot, ConfigWarning.Kind.UNUSABLE_MENU_ROWS));
++        assertEquals(0, count(snapshot, ConfigWarning.Kind.REJECTED_MENU_SLOT));
++    }
++
++    @Test
++    void anExplicitSlotOutsideThePageWarnsHighAndIsDropped() {
++        ConfigSnapshot snapshot = load("""
++                rows: 3
++                content_slots: [0, 27]
++                filler: {id: gray_stained_glass_pane}
++                """, null);
++
++        assertEquals(List.of(0), new ArrayList<>(snapshot.claimMenu().contentSlots()));
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.REJECTED_MENU_SLOT).severity());
++    }
++
++    @Test
++    void contentRangesExpandInOrderAndKeepTheirOrder() {
++        ConfigSnapshot snapshot = load("""
++                rows: 3
++                content_slots: ['0-2', 1, '4-5']
++                filler: {id: gray_stained_glass_pane}
++                """, null);
++
++        assertEquals(List.of(0, 1, 2, 4, 5), new ArrayList<>(snapshot.claimMenu().contentSlots()));
++        assertEquals(List.of(), kinds(snapshot));
++    }
++
++    @Test
++    void aButtonOnAContentSlotWarnsHighAndTakesTheSlotOut() {
++        ConfigSnapshot snapshot = load("""
++                rows: 2
++                content_slots: [0, 1, 2]
++                filler: {id: gray_stained_glass_pane}
++                buttons:
++                  claim_all:
++                    slot: 1
++                    item: {id: chest_minecart}
++                """, null);
++
++        assertEquals(List.of(0, 2), new ArrayList<>(snapshot.claimMenu().contentSlots()));
++        assertEquals(1, snapshot.claimMenu().buttons().get("claim_all").slot());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.MENU_BUTTON_ON_CONTENT).severity());
++    }
++
++    @Test
++    void twoButtonsOnOneSlotWarnHighAndTheLaterOneIsDropped() {
++        ConfigSnapshot snapshot = load("""
++                rows: 6
++                content_slots: ['0-44']
++                filler: {id: gray_stained_glass_pane}
++                buttons:
++                  claim_all:
++                    slot: 49
++                    item: {id: chest_minecart}
++                  previous_page:
++                    slot: 49
++                    item: {id: arrow}
++                """, null);
++
++        assertTrue(snapshot.claimMenu().buttons().containsKey("claim_all"));
++        assertFalse(snapshot.claimMenu().buttons().containsKey("previous_page"));
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.DUPLICATE_MENU_BUTTON_SLOT).severity());
++    }
++
++    @Test
++    void anUnknownButtonNameWarnsHighAndTheRestOfThePageStays() {
++        ConfigSnapshot snapshot = load("""
++                buttons:
++                  mystery:
++                    slot: 49
++                    item: {id: stone}
++                """, null);
++
++        assertEquals(List.of(), new ArrayList<>(snapshot.claimMenu().buttons().keySet()));
++        assertEquals(45, snapshot.claimMenu().contentSlots().size());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNKNOWN_MENU_BUTTON).severity());
++    }
++
++    @Test
++    void aKnownButtonInheritsAnOmittedSlotAndItemSilently() {
++        ConfigSnapshot snapshot = load("buttons:\n  claim_all: {}\n", null);
++
++        MenuButton button = snapshot.claimMenu().buttons().get("claim_all");
++        assertEquals(49, button.slot());
++        assertEquals("chest_minecart", button.item().id());
++        assertTrue(button.sound().isEmpty());
++        assertEquals(List.of(), kinds(snapshot));
++    }
++
++    @Test
++    void aKnownButtonWithAnInvalidSlotWarnsHighAndIsDropped() {
++        ConfigSnapshot snapshot = load("buttons:\n  claim_all:\n    slot: 99\n", null);
++
++        assertFalse(snapshot.claimMenu().buttons().containsKey("claim_all"));
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.REJECTED_MENU_SLOT).severity());
++    }
++
++    @Test
++    void anInheritedButtonSlotOutsideAShrunkPageWarnsHighAndIsDropped() {
++        ConfigSnapshot snapshot = load(
++                "rows: 1\ncontent_slots: [0, 1]\nbuttons:\n  claim_all: {}\n", null);
++
++        assertEquals(1, snapshot.claimMenu().rows());
++        assertEquals(List.of(0, 1), snapshot.claimMenu().contentSlots());
++        assertFalse(snapshot.claimMenu().buttons().containsKey("claim_all"));
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.REJECTED_MENU_SLOT).severity());
++    }
++
++    @Test
++    void aKnownButtonWithAnUnusableItemWarnsAndUsesTheShippedItem() {
++        ConfigSnapshot snapshot = load("buttons:\n  claim_all:\n    item: stone\n", null);
++
++        assertEquals("chest_minecart", snapshot.claimMenu().buttons().get("claim_all").item().id());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.SKIPPED_CONTENT_ENTRY).severity());
++    }
++
++    @Test
++    void aValidItemThatTheCatalogDoesNotKnowStaysForTheRendererToBarrier() {
++        NameCatalog rejecting = new NameCatalog() {
++            @Override
++            public Optional<String> currentId(String writtenId) {
++                return writtenId.equals("gray_stained_glass_pane") ? Optional.of(writtenId) : Optional.empty();
++            }
++
++            @Override
++            public boolean soundExists(String key) {
++                return CLICK.equals(key);
++            }
++        };
++        ConfigSnapshot snapshot = load(rejecting,
++                "buttons:\n  claim_all:\n    item: {id: not_installed}\n", null);
++
++        assertEquals("not_installed", snapshot.claimMenu().buttons().get("claim_all").item().id());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNKNOWN_NAME).severity());
++    }
++
++    @Test
++    void anItemReferenceWithVanillaAdditionsParsesAsInALootFile() {
++        ConfigSnapshot snapshot = load("""
++                filler:
++                  id: gray_stained_glass_pane
++                  name: '&7Pane'
++                  custom_model_data: 7
++                  unbreakable: true
++                """, null);
++
++        ItemReference filler = snapshot.claimMenu().filler();
++        assertEquals("vanilla", filler.source());
++        assertEquals("gray_stained_glass_pane", filler.id());
++        assertEquals(Optional.of("&7Pane"), filler.additions().name());
++        assertEquals(Optional.of(7), filler.additions().customModelData());
++        assertEquals(Optional.of(true), filler.additions().unbreakable());
++    }
++
++    @Test
++    void anUnknownKeyAnywhereWarnsHighAndChangesNothing() {
++        ConfigSnapshot root = load("mystery: true\n", null);
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(root, ConfigWarning.Kind.UNKNOWN_MENU_KEY).severity());
++        assertEquals(6, root.claimMenu().rows());
++        assertTrue(root.claimMenu().buttons().isEmpty());
++
++        for (String claim : List.of(
++                "buttons:\n  claim_all:\n    slot: 49\n    item: {id: chest_minecart}\n    mystery: true\n",
++                "buttons:\n  claim_all:\n    slot: 49\n    item: {id: chest_minecart}\n"
++                        + "    sound:\n      key: minecraft:ui.button.click\n      mystery: true\n")) {
++            ConfigSnapshot snapshot = load(claim, null);
++
++            assertEquals(ConfigWarning.Severity.HIGH,
++                    single(snapshot, ConfigWarning.Kind.UNKNOWN_MENU_KEY).severity(), claim);
++            assertEquals(49, snapshot.claimMenu().buttons().get("claim_all").slot(), claim);
++        }
++    }
++
++    @Test
++    void anUnknownMenuFileWarnsHighAndIsIgnored() {
++        ConfigSources sources = ConfigSources.builder()
++                .globals("language: en\n")
++                .worlds("{}\n")
++                .language("en", "text: test\n")
++                .menu("minigame", "rows: 1\n")
++                .build();
++
++        ConfigSnapshot snapshot = ConfigLoader.load(sources, CLICK_CATALOG);
++
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNKNOWN_MENU_FILE).severity());
++        assertShippedClaim(snapshot);
++    }
++
++    @Test
++    void aBadVolumeOrPitchWarnsHighAndUsesOne() {
++        ConfigSnapshot snapshot = load("""
++                buttons:
++                  claim_all:
++                    slot: 49
++                    item: {id: chest_minecart}
++                    sound:
++                      key: minecraft:ui.button.click
++                      volume: -1
++                      pitch: 2.5
++                """, null);
++
++        MenuSound sound = snapshot.claimMenu().buttons().get("claim_all").sound().orElseThrow();
++        assertEquals(1.0, sound.volume());
++        assertEquals(1.0, sound.pitch());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNUSABLE_MENU_VOLUME).severity());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNUSABLE_MENU_PITCH).severity());
++    }
++
++    @Test
++    void aGoodSoundKeepsItsVolumeAndPitch() {
++        ConfigSnapshot snapshot = load("""
++                buttons:
++                  claim_all:
++                    slot: 49
++                    item: {id: chest_minecart}
++                    sound:
++                      key: minecraft:ui.button.click
++                      volume: 0
++                      pitch: 0.5
++                """, null);
++
++        MenuSound sound = snapshot.claimMenu().buttons().get("claim_all").sound().orElseThrow();
++        assertEquals(0.0, sound.volume());
++        assertEquals(0.5, sound.pitch());
++        assertEquals(List.of(), kinds(snapshot));
++    }
++
++    @Test
++    void anUnknownSoundWarnsHighAndLeavesTheButtonSilent() {
++        ConfigSnapshot snapshot = load("""
++                buttons:
++                  claim_all:
++                    slot: 49
++                    item: {id: chest_minecart}
++                    sound:
++                      key: minecraft:no_such_sound
++                """, null);
++
++        assertTrue(snapshot.claimMenu().buttons().get("claim_all").sound().isEmpty());
++        assertEquals(ConfigWarning.Severity.HIGH,
++                single(snapshot, ConfigWarning.Kind.UNKNOWN_MENU_SOUND).severity());
++    }
++
++    @Test
++    void anOmittedSoundIsSilentWithoutAWarning() {
++        ConfigSnapshot snapshot = load("""
++                buttons:
++                  claim_all:
++                    slot: 49
++                    item: {id: chest_minecart}
++                """, null);
++
++        assertTrue(snapshot.claimMenu().buttons().get("claim_all").sound().isEmpty());
++        assertEquals(List.of(), kinds(snapshot));
++    }
++
++    @Test
++    void aPresentSoundWithoutAUsableKeyWarnsHighAndLeavesTheButtonSilent() {
++        for (String sound : List.of("{}", "{key: 5}", "{key: '  '}")) {
++            ConfigSnapshot snapshot = load("""
++                    buttons:
++                      claim_all:
++                        slot: 49
++                        item: {id: chest_minecart}
++                        sound: %s
++                    """.formatted(sound), null);
++
++            assertTrue(snapshot.claimMenu().buttons().get("claim_all").sound().isEmpty(), sound);
++            assertEquals(ConfigWarning.Severity.HIGH,
++                    single(snapshot, ConfigWarning.Kind.UNKNOWN_MENU_SOUND).severity(), sound);
++        }
++    }
++
++    @Test
++    void aMissingWikiPageUsesItsShippedPageAndKeepsTheOtherCustomised() {
++        ConfigSnapshot snapshot = load(null, """
++                list:
++                  rows: 3
++                  content_slots: [0, 1, 2]
++                  filler: {id: gray_stained_glass_pane}
++                """);
++
++        assertEquals(3, snapshot.wikiListMenu().rows());
++        assertEquals(List.of(0, 1, 2), new ArrayList<>(snapshot.wikiListMenu().contentSlots()));
++        assertEquals(6, snapshot.wikiLootMenu().rows());
++        assertEquals(45, snapshot.wikiLootMenu().contentSlots().size());
++        assertEquals(49, snapshot.wikiLootMenu().buttons().get("info").slot());
++        assertEquals(List.of(), kinds(snapshot));
++    }
++
++    @Test
++    void aWikiPageThatEndsWithoutContentFallsBackTheWholeWiki() {
++        ConfigSnapshot snapshot = load(null, """
++                list:
++                  rows: 1
++                  content_slots: [99]
++                loot:
++                  rows: 1
++                  content_slots: [99]
++                """);
++
++        assertEquals(6, snapshot.wikiListMenu().rows());
++        assertEquals(45, snapshot.wikiListMenu().contentSlots().size());
++        assertShippedWikiLoot(snapshot);
++        assertEquals(1, count(snapshot, ConfigWarning.Kind.MENU_FALLBACK));
++        assertEquals(1, menuWarnings(snapshot).size(), menuWarnings(snapshot).toString());
++        assertEquals(ConfigWarning.Severity.SEVERE,
++                single(snapshot, ConfigWarning.Kind.MENU_FALLBACK).severity());
++    }
++
++    @Test
++    void anUnreadableRootOrAPageWithNoContentFallsBackToTheShippedClaimLayoutWithOneSevereWarning() {
++        for (String broken : List.of(
++                "rows: [\n",
++                "- invalid-root\n",
++                "rows: 1\ncontent_slots: [99]\nfiller: {id: stone}\n")) {
++            ConfigSnapshot snapshot = load(broken, null);
++
++            assertShippedClaim(snapshot);
++            assertEquals(1, menuWarnings(snapshot).size(), broken + " " + menuWarnings(snapshot));
++            ConfigWarning warning = single(snapshot, ConfigWarning.Kind.MENU_FALLBACK);
++            assertEquals(ConfigWarning.Severity.SEVERE, warning.severity(), broken);
++        }
++    }
++}
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/Phase9MenuFilesAcceptanceTest.java b/src/test/java/me/rakkoon69/rakunloots/config/Phase9MenuFilesAcceptanceTest.java
+new file mode 100644
+index 0000000..3e196a3
+--- /dev/null
++++ b/src/test/java/me/rakkoon69/rakunloots/config/Phase9MenuFilesAcceptanceTest.java
+@@ -0,0 +1,66 @@
++package me.rakkoon69.rakunloots.config;
++
++import org.junit.jupiter.api.Test;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.*;
++import java.util.stream.IntStream;
++import static org.junit.jupiter.api.Assertions.*;
++
++/** Issue #108: exercise the same shipped resources a new server loads.
++ * Name catalogs accept these known fixture ids to isolate layout validation; unknown-name checks belong to separate tests.
++ */
++class Phase9MenuFilesAcceptanceTest {
++    private static final NameCatalog CATALOG = new NameCatalog() {
++        @Override
++        public Optional<String> currentId(String id) {
++            return Optional.of(id);
++        }
++
++        @Override
++        public boolean soundExists(String key) {
++            return "minecraft:ui.button.click".equals(key);
++        }
++    };
++    private static String shipped(String path) throws Exception {
++        try(InputStream in=Phase9MenuFilesAcceptanceTest.class.getResourceAsStream("/"+path)) {
++            assertNotNull(in,"missing shipped resource: "+path);
++            return new String(in.readAllBytes(),StandardCharsets.UTF_8);
++        }
++    }
++    private static ConfigSnapshot load(String claim) {
++        return ConfigLoader.load(ConfigSources.builder().globals("language: en\n").worlds("{}\n").language("en","text: test\n").menu("claim",claim).build(), CATALOG);
++    }
++    @Test void shippedLayoutsHaveTheSpecifiedSlotsItemsAndSounds() throws Exception {
++        var sources=ConfigSources.builder().globals("language: en\n").worlds("{}\n").language("en",shipped("languages/en.yml")).menu("claim",shipped("menus/claim.yml")).menu("wiki",shipped("menus/wiki.yml")).build();
++        var config=ConfigLoader.load(sources,CATALOG);
++        var claim=config.claimMenu();
++        assertEquals(6,claim.rows());
++        assertEquals(IntStream.range(0,45).boxed().toList(),new ArrayList<>(claim.contentSlots()));
++        assertEquals("gray_stained_glass_pane",claim.filler().id());
++        assertEquals(45,claim.buttons().get("previous_page").slot());
++        assertEquals(49,claim.buttons().get("claim_all").slot());
++        assertEquals(53,claim.buttons().get("next_page").slot());
++        assertEquals("minecraft:ui.button.click",claim.buttons().get("claim_all").sound().orElseThrow().key());
++        assertEquals(48,config.wikiLootMenu().buttons().get("back").slot());
++        assertEquals(49,config.wikiLootMenu().buttons().get("info").slot());
++        assertTrue(config.wikiLootMenu().buttons().get("info").sound().isEmpty());
++        assertEquals(45,config.wikiListMenu().contentSlots().size());
++        assertTrue(ConfigFolder.DEFAULT_RESOURCES.containsAll(List.of("menus/claim.yml","menus/wiki.yml")));
++    }
++    @Test void rangesKeepOrderAndConflictingButtonRemovesContentSlot() {
++        var config=load("rows: 3\ncontent_slots: ['0-8', 10, '12-13']\nfiller: {id: gray_stained_glass_pane}\nbuttons:\n  claim_all:\n    slot: 10\n    item: {id: chest_minecart}\n");
++        assertEquals(List.of(0,1,2,3,4,5,6,7,8,12,13),new ArrayList<>(config.claimMenu().contentSlots()));
++        assertEquals(10,config.claimMenu().buttons().get("claim_all").slot());
++        assertTrue(config.warnings().stream().anyMatch(w -> w.severity()==ConfigWarning.Severity.HIGH));
++    }
++    @Test void unusableFilesFallBackToTheWholeShippedLayoutWithOneSevereWarning() {
++        for(String broken:List.of("rows: [\n", "- invalid-root\n", "rows: 1\ncontent_slots: [99]\nfiller: {id: stone}\n")) {
++            var config=load(broken);
++            assertEquals(6,config.claimMenu().rows());
++            assertEquals(45,config.claimMenu().contentSlots().size());
++            assertEquals(49,config.claimMenu().buttons().get("claim_all").slot());
++            assertEquals(1,config.warnings().stream().filter(w -> w.severity()==ConfigWarning.Severity.SEVERE).count(),broken);
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/src/test/java/me/rakkoon69/rakunloots/config/ShippedConfigQuietTest.java b/src/test/java/me/rakkoon69/rakunloots/config/ShippedConfigQuietTest.java
+index b3be994..9095dea 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/config/ShippedConfigQuietTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/config/ShippedConfigQuietTest.java
+@@ -8,9 +8,12 @@ import org.junit.jupiter.api.Test;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
+ import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
++import java.util.stream.Stream;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+@@ -41,6 +44,11 @@ class ShippedConfigQuietTest {
+         public Set<String> tagMembers(String namespacedTag) {
+             return Set.of("minecraft:" + namespacedTag.replace(':', '_'));
+         }
++
++        @Override
++        public boolean soundExists(String key) {
++            return "minecraft:ui.button.click".equals(key);
++        }
+     };
+ 
+     private static ConfigSources.Builder shippedSources() throws IOException {
+@@ -50,6 +58,8 @@ class ShippedConfigQuietTest {
+                 .blocks(resource("/blocks.yml"))
+                 .animations(resource("/animations.yml"))
+                 .warnings(resource("/warnings.yml"))
++                .menu("claim", resource("/menus/claim.yml"))
++                .menu("wiki", resource("/menus/wiki.yml"))
+                 .language("en", resource("/languages/en.yml"))
+                 .language("vi", resource("/languages/vi.yml"))
+                 .language("zh", resource("/languages/zh.yml"));
+@@ -86,6 +96,28 @@ class ShippedConfigQuietTest {
+         assertEquals(SHIPPED_LOOTS, saved);
+     }
+ 
++    /**
++     * Every file in the jar's menus folder is saved on first start, and the other way round.
++     */
++    @Test
++    void everyShippedMenuFileIsASavedDefault() throws Exception {
++        Path folder = Path.of(ShippedConfigQuietTest.class.getResource("/menus").toURI());
++        List<String> onDisk;
++        try (Stream<Path> files = Files.list(folder)) {
++            onDisk = files.map(path -> path.getFileName().toString())
++                    .map(name -> name.substring(0, name.length() - ".yml".length()))
++                    .sorted()
++                    .toList();
++        }
++        List<String> saved = ConfigFolder.DEFAULT_RESOURCES.stream()
++                .filter(path -> path.startsWith("menus/"))
++                .map(path -> path.substring("menus/".length(), path.length() - ".yml".length()))
++                .sorted()
++                .toList();
++        assertEquals(List.of("claim", "wiki"), onDisk);
++        assertEquals(List.of("claim", "wiki"), saved);
++    }
++
+     /**
+      * Each shipped loot is on the timer in worlds.yml, or is named above as summon item only; the timer names no loot
+      * that is not shipped.
+@@ -126,6 +158,11 @@ class ShippedConfigQuietTest {
+                 .orElse("");
+         assertTrue(warnings.isEmpty(), warnings);
+ 
++        assertEquals(6, snapshot.claimMenu().rows());
++        assertEquals(49, snapshot.claimMenu().buttons().get("claim_all").slot());
++        assertEquals(6, snapshot.wikiListMenu().rows());
++        assertEquals(49, snapshot.wikiLootMenu().buttons().get("info").slot());
++
+         assertEquals(PlacementRule.TOP_SURFACE, snapshot.summonRules("airdrops").orElseThrow().rule());
+         assertTrue(snapshot.summonRules("airdrops").orElseThrow().replaceableBlocks().contains("minecraft:grass"));
+         assertTrue(snapshot.summonRules("airdrops").orElseThrow().replaceableBlocks().contains("minecraft:cactus"));
+diff --git a/src/test/java/me/rakkoon69/rakunloots/server/BukkitNameCatalogTest.java b/src/test/java/me/rakkoon69/rakunloots/server/BukkitNameCatalogTest.java
+index e9bdd3a..671eb24 100644
+--- a/src/test/java/me/rakkoon69/rakunloots/server/BukkitNameCatalogTest.java
++++ b/src/test/java/me/rakkoon69/rakunloots/server/BukkitNameCatalogTest.java
+@@ -1,10 +1,17 @@
+ package me.rakkoon69.rakunloots.server;
+ 
++import be.seeseemelk.mockbukkit.MockBukkit;
++import be.seeseemelk.mockbukkit.MockUnsafeValues;
++import be.seeseemelk.mockbukkit.ServerMock;
++import org.bukkit.Keyed;
++import org.bukkit.Registry;
+ import org.junit.jupiter.api.Test;
+ 
+ import java.util.Optional;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ /**
+  * The catalog over the Bukkit material list on the test class path (Minecraft 1.18): a current name stays as written,
+@@ -14,6 +21,24 @@ class BukkitNameCatalogTest {
+ 
+     private final BukkitNameCatalog catalog = new BukkitNameCatalog();
+ 
++    /**
++     * A server whose unsafe values leave the structure registry empty, so the 1.18 {@link Registry} class can
++     * initialise and its sound registry can answer without a real server.
++     */
++    private static final class RegistryServerMock extends ServerMock {
++        private final MockUnsafeValues unsafe = new MockUnsafeValues() {
++            @Override
++            public <T extends Keyed> Registry<T> registryFor(Class<T> type) {
++                return null;
++            }
++        };
++
++        @Override
++        public MockUnsafeValues getUnsafe() {
++            return unsafe;
++        }
++    }
++
+     @Test
+     void aCurrentNameStaysAsWritten() {
+         assertEquals(Optional.of("barrel"), catalog.currentId("barrel"));
+@@ -36,4 +61,16 @@ class BukkitNameCatalogTest {
+     void aTagTheServerCannotGiveIsEmpty() {
+         assertEquals(java.util.Set.of(), catalog.tagMembers("minecraft:no_such_tag"));
+     }
++
++    @Test
++    void aSoundKeyTheServerKnowsIsPresentAndAnUnknownOneIsNot() {
++        MockBukkit.mock(new RegistryServerMock());
++        try {
++            assertTrue(catalog.soundExists("minecraft:ui.button.click"));
++            assertFalse(catalog.soundExists("minecraft:no_such_sound"));
++            assertFalse(catalog.soundExists("not a sound"));
++        } finally {
++            MockBukkit.unmock();
++        }
++    }
+ }

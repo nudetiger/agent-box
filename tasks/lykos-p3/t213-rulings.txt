@@ -1,0 +1,5 @@
+1: A. A new boolean, computed after the read-only rewrite.
+2: B. Explicit only when the list actually seeds the request: tools_mode override, a caller's tools, or the read-only list. Append mode and neutralHead are unchanged. No docs change for §1.4 beyond one sentence saying an explicit list is exact, extension tools included.
+3: B. A resident extension tool named in tools_remove is dropped, as the docs promise.
+4: B. Membership is tested against the effective request list after deltas.
+5: A. Wire only: skip the resident join; keep T147's customTools.push.

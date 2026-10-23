@@ -1,0 +1,3 @@
+1: Prune only seals whose seal commit is reachable from the new seal's base. Never prune an active seal.
+2: The prune deletions are part of the signed seal commit create makes; no separate commit.
+3: The hook resolves the lykos command the same way the sealed test invokes it; if the test passes an explicit command, follow the test.

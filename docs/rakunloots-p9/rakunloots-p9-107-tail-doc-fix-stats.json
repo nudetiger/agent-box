@@ -1,0 +1,152 @@
+{
+  "query": "rakunloots/p9-107-tail-doc-fix",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "c348dd26",
+    "ts": "2026-10-22T17:41:53Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-107-tail-doc-fix",
+    "role": "implement-hard",
+    "model": "deepseek/deepseek-flash-max",
+    "harness": "4e312604",
+    "mode": "implement",
+    "parent": "p9-107-reboot-tail-fix2",
+    "round": 4,
+    "task": "cd92a5e5",
+    "title": "Continue SAMEworker; narrow final correction. Highreview p9-107-reboot-review co",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "5c671a9fbd",
+    "head": "669ebbe4ac",
+    "effort": null,
+    "seconds": {
+      "total": 437,
+      "setup": 11,
+      "agent": 409,
+      "test": 3
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": 0,
+      "first_test": 0
+    },
+    "steps": 13,
+    "tools": 14,
+    "tool_s": 224,
+    "tokens": {
+      "input": 149412,
+      "output": 32051,
+      "reasoning": 0,
+      "cache_read": 1048576,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 9,
+    "diff": {
+      "files": 16,
+      "insertions": 1469,
+      "deletions": 6
+    },
+    "verdict": "pass",
+    "flags": [
+      {
+        "flag": "OUT-OF-SCOPE",
+        "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md"
+      }
+    ],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": {
+      "status": "done",
+      "tests": [
+        "Focused exact gate: BUILD SUCCESSFUL in 51s; 544 tests, 0 failures, 0 errors, 0 skipped, 64 classes.",
+        "Unfiltered root suite also run: BUILD SUCCESSFUL in 39s; 1321 tests, 0 failures, 0 errors, 35 skipped, 128 classes.",
+        "New RawRoll10000 regression (9999 weight-1 + 1 weight-2, fixed k=2): all 10,000 closed-form inclusion assertions pass in 0.487 s; no behavioral RED was claimed.",
+        "Root adjudication: overcount 2.3899424902947e-12 <= 9.5825371071559e-12 bound; the reviewer's 1.7236435996e-9 was the exactly-one-other integral already included by the unconditional addition.",
+        "Retained 500-entry per-entry oracle, 10,000-entry k=1 exact-share regression, original 543 tests, seals, and strict performance test all pass.",
+        "Performance test: 0.176 s testcase in the exact gate and 0.146 s in the full suite; original three warm-ups, 50 ms threshold, and reported 23 ms measurement unchanged."
+      ],
+      "context_gaps": [
+        "None for #107. The Highreview finding is resolved by the corrected comment wording, the root's bound adjudication, and the passing regression."
+      ],
+      "decisions": [
+        "Corrected both class and implementation comments only; the production algorithm, C, grid, tolerance, and performance warm-ups are unchanged.",
+        "For k>=2 the implementation adds the unconditional self-ring marginal 1 - e^(-w_i*t_min), ignoring other clocks. This includes exactly-one-other mass; overcount is the >=k-others event.",
+        "Bound: P(>=2 others) <= sum_{a<b} p_a p_b <= (sum_{j!=i} w_j)^2 t^2 / 2; integrated over [0,t_min] this is at most w_i (sum_{j!=i} w_j)^2 t_min^3 / 6 <= n^2 e^(-3C)/6 <= 1e-11. Count mixture preserves the bound.",
+        "Only the k=1 first-draw case has no lower-tail bias; k>=2 carries the stated bound and total quadrature error still remains.",
+        "Added the all-entry RawRoll10000 closed-form regression using exact two-draw inclusion, not a duplicate implementation oracle.",
+        "Committed as one issue commit 669ebbe on agent/p9-107-tail-doc-fix; working tree clean."
+      ]
+    },
+    "steps_budget": 100
+  },
+  "contextGaps": [
+    "None for #107. The Highreview finding is resolved by the corrected comment wording, the root's bound adjudication, and the passing regression."
+  ],
+  "trust": null,
+  "verdictLabel": null,
+  "flags": [
+    {
+      "flag": "OUT-OF-SCOPE",
+      "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md",
+      "needsReason": true,
+      "label": {
+        "cause": "scope_too_narrow",
+        "source": "orchestrator",
+        "why": "Inherited owner-approved c4ebfac cost docs, currentfix onlymathcomments and exacttwo-draw regression. Full diff read; algorithm unchanged.",
+        "worker": null,
+        "orchestrator": "scope_too_narrow"
+      }
+    }
+  ],
+  "labels": [
+    {
+      "id": "99406e11",
+      "ts": "2026-10-22T17:41:53Z",
+      "refs": [
+        "c348dd26#OUT-OF-SCOPE"
+      ],
+      "cause": "worker_scope_creep",
+      "source": "auto",
+      "why": "Changed files outside `files:`, `scope:` and their tests."
+    },
+    {
+      "id": "5192089e",
+      "ts": "2026-10-22T17:42:06Z",
+      "refs": [
+        "c348dd26#OUT-OF-SCOPE"
+      ],
+      "cause": "scope_too_narrow",
+      "source": "orchestrator",
+      "why": "Inherited owner-approved c4ebfac cost docs, currentfix onlymathcomments and exacttwo-draw regression. Full diff read; algorithm unchanged."
+    }
+  ],
+  "reviews": [
+    {
+      "id": "503d8688",
+      "run": "p9-107-tail-doc-review",
+      "model": "deepseek/deepseek-flash-high",
+      "verdict": "clean",
+      "ts": "2026-10-22T17:46:05Z",
+      "findings": []
+    }
+  ],
+  "outcome": {
+    "result": "accepted",
+    "cause": null,
+    "why": "Full original/fix diffs and reports read. Same High reviewer final [] after owner cost ruling, raw MAX/count-oracle fixes, independent500/10000 accuracy proofs and exactk2 coverage. Host final integrated root1480 tests0fail/errors35existing skips, full phasecheck passed before comment-only followup. Original3warm50ms unchanged.",
+    "ts": "2026-10-22T17:47:53Z"
+  },
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}

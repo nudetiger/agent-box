@@ -1,0 +1,115 @@
+{
+  "query": "rakunloots/p9-107-tail-doc-review",
+  "found": true,
+  "event": {
+    "v": 1,
+    "id": "d99b5325",
+    "ts": "2026-10-22T17:46:05Z",
+    "type": "run",
+    "project": "rakunloots",
+    "run": "p9-107-tail-doc-review",
+    "role": "review-both-alt",
+    "model": "deepseek/deepseek-flash-high",
+    "harness": "4e312604",
+    "mode": "review",
+    "parent": "p9-107-reboot-review",
+    "round": 3,
+    "task": "17f215df",
+    "title": "Review ONLY dc6ec63..HEAD final two-file correction, same session, not a new ful",
+    "feature": null,
+    "ticket": null,
+    "bench": null,
+    "base": "f849b2849c",
+    "head": "669ebbe4ac",
+    "effort": null,
+    "seconds": {
+      "total": 205,
+      "setup": 13,
+      "agent": 163,
+      "test": 0
+    },
+    "exits": {
+      "setup": 0,
+      "agent": 0,
+      "test": -1,
+      "first_test": -1
+    },
+    "steps": 9,
+    "tools": 8,
+    "tool_s": 95,
+    "tokens": {
+      "input": 7044,
+      "output": 7545,
+      "reasoning": 0,
+      "cache_read": 1144448,
+      "cache_write": 0
+    },
+    "cost": 0,
+    "commits": 5,
+    "diff": {
+      "files": 6,
+      "insertions": 390,
+      "deletions": 64
+    },
+    "verdict": "review",
+    "flags": [
+      {
+        "flag": "OUT-OF-SCOPE",
+        "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md, src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java, src/test/java/me/rakkoon69/rakunloots/roll/LootChanceTest.java"
+      }
+    ],
+    "autofix": 0,
+    "self_check": false,
+    "provider_error": null,
+    "questions": {
+      "asked": 0,
+      "answered": 0
+    },
+    "report": null,
+    "steps_budget": null
+  },
+  "contextGaps": [],
+  "trust": "delegate.sh accept|reject rakunloots p9-107-tail-doc-review --why \"...\"",
+  "verdictLabel": null,
+  "flags": [
+    {
+      "flag": "OUT-OF-SCOPE",
+      "detail": "docs/adr/0018-own-menus-and-exact-loot-chance.md, docs/rewrite/phases.md, src/main/java/me/rakkoon69/rakunloots/roll/LootChance.java, src/test/java/me/rakkoon69/rakunloots/roll/LootChanceTest.java",
+      "needsReason": true,
+      "label": {
+        "cause": "env",
+        "source": "orchestrator",
+        "why": "Readonly cumulative-diff attribution, review_violation=false; owner-authorized cost docs and #107 math/test fix files. Final own-finding recheck completed []205s.",
+        "worker": null,
+        "orchestrator": "env"
+      }
+    }
+  ],
+  "labels": [
+    {
+      "id": "67bfa80e",
+      "ts": "2026-10-22T17:46:05Z",
+      "refs": [
+        "d99b5325#OUT-OF-SCOPE"
+      ],
+      "cause": "worker_scope_creep",
+      "source": "auto",
+      "why": "Changed files outside `files:`, `scope:` and their tests."
+    },
+    {
+      "id": "d4c34764",
+      "ts": "2026-10-22T17:47:52Z",
+      "refs": [
+        "d99b5325#OUT-OF-SCOPE"
+      ],
+      "cause": "env",
+      "source": "orchestrator",
+      "why": "Readonly cumulative-diff attribution, review_violation=false; owner-authorized cost docs and #107 math/test fix files. Final own-finding recheck completed []205s."
+    }
+  ],
+  "reviews": [],
+  "outcome": null,
+  "bench": [],
+  "needs": [],
+  "continuedBy": []
+}
