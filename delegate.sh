@@ -135,6 +135,8 @@ Usage: delegate.sh <command> ...
 Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Build once per engine.
 Parallel: at most AGENT_BOX_SLOTS containers at once (default 4); each slot has its own CACHES volumes.
 PROJECT_SLOTS=N in a project's .env caps that project's containers (checks and base suites included).
+An npm repo set up by the default `npm ci` keeps node_modules per slot (NODE_MODULES_CACHE=0: off).
+A run's launch cleans runs/ (gc --yes) at most once a day (AUTO_GC=0: off).
 
 <repo> is the repo's path; a bare name works when projects/<name>.env sets REPO_PATH.
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
@@ -291,12 +293,24 @@ cmd_show() {
 }
 
 # Shared by run and baseline.
+# `gc --yes` at most once a day, in the background, from a run's launch (runs/ had grown to 1.4 GB,
+# 2026-10-23; gc was manual). Its report is runs/.gc.log. AUTO_GC=0 turns it off.
+auto_gc() {
+  [ "${AUTO_GC:-1}" != 0 ] || return 0
+  local stamp="$BOX/runs/.gc-last"
+  [ -n "$(find "$stamp" -mmin -1440 2>/dev/null)" ] && return 0
+  mkdir -p "$BOX/runs"; touch "$stamp"
+  echo "agent-box: daily cleanup of runs/ in the background (session archives older than 14 days; AUTO_GC=0 turns it off): runs/.gc.log" >&2
+  (node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" --yes >"$BOX/runs/.gc.log" 2>&1 &)
+}
+
 launch() {
   local name="$1" task="$2" base="$3" skip_agent="$4"
   local run_dir="$BOX/runs/$PROJECT/$name" branch="agent/$name"
   [ -e "$run_dir" ] && die "run $name already exists"
   git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" && die "branch $branch already exists in $REPO"
   engine_up
+  auto_gc
   mkdir -p "$run_dir"
   # `wait` and `watch` know the run is over by <run>/ended, written however launch exits; launcher.pid
   # covers a launcher killed outright. A run stopped before its summary never woke `wait` (RakunLoots
@@ -386,6 +400,12 @@ launch() {
     fi
   fi
   cache_volumes
+  # node_modules kept per project and slot, for a repo set up by the default `npm ci` (run-task.sh
+  # skips the install while the tree matches package-lock.json). NODE_MODULES_CACHE=0 turns it off.
+  if [ "${NODE_MODULES_CACHE:-1}" != 0 ] && [ -z "${SETUP_CMD:-}" ] && [ -n "$SLOT" ] \
+     && git -C "$REPO" cat-file -e "$start_sha:package-lock.json" 2>/dev/null; then
+    CACHE_ARGS+=(-v "$NS-$PROJECT-nm${SLOT##*/}-cache:/work/repo/node_modules")
+  fi
   # The real OpenCode TUI attaches to the worker when herdr shows the run (AGENT_BOX_TUI=0: feed only).
   TUI=0
   if [ "$skip_agent" != 1 ] && [ "${AGENT_BOX_TUI:-1}" != 0 ] && herdr_ok; then TUI=1; fi
@@ -411,15 +431,20 @@ launch() {
       "${CACHE_ARGS[@]}" "${extra_env[@]}" -e OMNIROUTE_API_KEY -e OMNIROUTE_BASE_URL "${runenv[@]}" \
       "$IMAGE" >/dev/null
   fi
-  dk cp "$(winpath "$run_dir/in.bundle")" "$cname:/in/repo.bundle"
-  [ -n "${HIDDEN_DIR:-}" ] && dk cp "$(winpath "$HIDDEN_DIR")/." "$cname:/in/hidden"
+  # The inputs go in as one tar stream: each `cp` into the engine's VM cost 0.7 s (podman machine,
+  # 2026-10-23), and a run made three or four. The bundle is moved, not copied: nothing reads it after.
+  local stage="$run_dir/.in"
+  mkdir -p "$stage" && mv "$run_dir/in.bundle" "$stage/repo.bundle"
+  [ -n "${HIDDEN_DIR:-}" ] && mkdir -p "$stage/hidden" && cp -r "$HIDDEN_DIR/." "$stage/hidden/"
   if [ -n "${CONTINUE_SESSION:-}" ]; then
-    dk cp "$(winpath "$run_dir/message.md")" "$cname:/in/task.md"
-    [ "$reuse" = 1 ] || dk cp "$(winpath "$CONTINUE_FROM/opencode-data.tgz")" "$cname:/in/opencode-data.tgz"
+    cp "$run_dir/message.md" "$stage/task.md"
+    [ "$reuse" = 1 ] || cp "$CONTINUE_FROM/opencode-data.tgz" "$stage/opencode-data.tgz"
   elif [ -n "$task" ]; then
-    dk cp "$(winpath "$run_dir/task-body.md")" "$cname:/in/task.md"
-    dk cp "$(winpath "$run_dir/context.md")" "$cname:/in/context.md"
+    cp "$run_dir/task-body.md" "$stage/task.md"
+    cp "$run_dir/context.md" "$stage/context.md"
   fi
+  tar -C "$stage" -cf - . | dk exec -i "$cname" tar -xf - -C /in || die "could not copy the inputs into $cname"
+  rm -rf "$stage"
 
   [ "$skip_agent" = 1 ] || herdr_open "$name"
   echo "agent-box: $name started ($ENGINE container $cname$([ "$reuse" = 1 ] && echo ", reused from ${CONTINUE_FROM##*/}"), base ${base_sha:0:10}, model ${MODEL:-none})" >&2

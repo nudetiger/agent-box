@@ -270,8 +270,12 @@ Composer (misreported tool results, research/findings.md §6). Every worker has 
 ## Housekeeping
 
 - `delegate.sh gc` shows what disk it would free (model lists, session archives older than 14 days,
-  untagged images); `gc --yes` frees it. Ask the user before `--yes`: an old run's session can no
-  longer be continued afterwards.
+  untagged images); `gc --yes` frees it. A run's launch already does `gc --yes` once a day in the
+  background (`runs/.gc.log`; `AUTO_GC=0` turns it off).
+  Ask the user before any other `--yes`, such as `--days 3`.
+- An npm repo set up by the default `npm ci` keeps `node_modules` in a volume per slot; a run
+  reinstalls only when `package-lock.json` or the installed tree changed (`NODE_MODULES_CACHE=0`: off).
+  After `build`, rebuild project images (`build <repo>`) too: they start FROM the base image.
 - `delegate.sh stats` prices runs from `prices.conf` (USD per 1M tokens per model). Unpriced models
   show as unpriced; report token counts then, never $0.
 - `PROJECT_SLOTS=N` in `projects/<repo>.env` caps one project's containers (checks and base suites

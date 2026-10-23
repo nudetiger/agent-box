@@ -16,8 +16,10 @@ log() { printf '[run-task %s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/harn
 phase() { printf '%s %s\n' "$1" "$autofix" >"$OUT/phase"; }
 phase setup
 node /opt/agent-box/progress.mjs >/dev/null 2>&1 &
-serve_pid=""
-trap 'phase done; [ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null' EXIT
+serve_pid="" prep_pid=""
+# The server may still be prep's (step 1b) when the run stops early: its pid file covers that, so a
+# parked container never keeps a server holding port 4096 for its next round.
+trap 'phase done; kill $prep_pid $serve_pid $(cat /tmp/prep.serve 2>/dev/null) 2>/dev/null' EXIT
 
 # 1. Clone. The container owns this .git; nothing here is ever executed on the host.
 # START_SHA: where the worker starts (a continued run starts on its previous round's head). BASE_SHA
@@ -36,7 +38,10 @@ if [ "${REUSE:-0}" = 1 ] && [ -d /work/repo/.git ]; then
   reuse_changed="$(git diff --name-only "$prev_head" "$START_SHA" 2>/dev/null)"
   log "reused container: $prev_head -> $START_SHA"
 else
-  git -c advice.detachedHead=false clone -q /in/repo.bundle /work/repo || { log "clone failed"; exit 10; }
+  # /work/repo already exists when node_modules is a cache volume mounted inside it, and git clones
+  # only into an empty folder: the clone goes to /tmp and its .git moves in.
+  git -c advice.detachedHead=false clone -q --no-checkout /in/repo.bundle /tmp/clone || { log "clone failed"; exit 10; }
+  mkdir -p /work/repo && mv /tmp/clone/.git /work/repo/.git && rm -rf /tmp/clone
   cd /work/repo
   git checkout -q -b "$BRANCH" "$START_SHA" || { log "checkout of $START_SHA failed"; exit 11; }
 fi
@@ -48,6 +53,60 @@ git config user.name "agent-box (${MODEL:-none})"
 git config user.email "agent-box@localhost"
 git remote remove origin 2>/dev/null || true
 
+# 1b. Model list, OpenCode config and server, in the background while setup and the red check run:
+#     the list alone took 8 s (OmniRoute builds 1 MB, 2026-10-23), and each stage waited for the one
+#     before it. The server starts after the config: one started before it ran no agent turn.
+#     Results come back in /tmp/prep.*; the agent step waits for them.
+attach_args=() agent_name=""
+prep() {
+  # The model list stays in the container: make-config reads limits from it, nothing else does.
+  # Tried a few times: a gateway restarting answers 503 for a moment (Lykos L212 fix1-2, 2026-10-20).
+  # Unreachable after that: the run stops before the agent, without the tests (they cost 3 minutes).
+  local try
+  for try in 1 2 3 4; do
+    curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" >/tmp/models.json 2>/tmp/models.err && break
+    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL (try $try): $(cat /tmp/models.err)"
+    [ "$try" = 4 ] && { echo unreachable >/tmp/prep.status; return; }
+    sleep $(( try * 10 ))
+  done
+  # A model missing from the key's list is named in the log; the run goes on (a combo may not be
+  # listed). A model that answers nothing is caught on the host (lib/ledger.mjs noOutput).
+  jq -e --arg m "$MODEL" '[.data[]?.id] | index($m)' /tmp/models.json >/dev/null 2>&1 \
+    || log "warning: model $MODEL is not in the OmniRoute key's model list"
+  node /opt/agent-box/make-config.mjs >/tmp/prep.agent || { echo config >/tmp/prep.status; return; }
+  # A local OpenCode server, so `delegate.sh tui` (herdr) can attach the real OpenCode TUI to this
+  # worker's session. The worker's `run` talks to it; without it, `run` starts its own in-process.
+  if [ "${TUI:-0}" = 1 ]; then
+    opencode serve --hostname 127.0.0.1 --port 4096 >"$OUT/serve.log" 2>&1 &
+    echo $! >/tmp/prep.serve
+  fi
+  echo ok >/tmp/prep.status
+}
+if [ "${SKIP_AGENT:-0}" != "1" ]; then
+  : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
+  mkdir -p ~/.config/opencode
+  rm -f /tmp/prep.status /tmp/prep.agent /tmp/prep.serve
+  if [ -n "${CONTINUE_SESSION:-}" ]; then
+    # Follow-up round: the previous round's session store comes back (before the server opens it),
+    # and the worker resumes with everything it read and tried.
+    mkdir -p ~/.local/share
+    if [ "${REUSE:-0}" = 1 ] && [ -d ~/.local/share/opencode ]; then log "session store kept from the parked container"
+    else tar xzf /in/opencode-data.tgz -C ~/.local/share || { log "session restore failed"; exit 13; }; fi
+  fi
+  prep & prep_pid=$!
+fi
+# The agent step's side of prep: wait for it and take its results.
+prep_done() {
+  [ -n "$prep_pid" ] || return 0
+  wait "$prep_pid"; prep_pid=""
+  serve_pid="$(cat /tmp/prep.serve 2>/dev/null)"
+  case "$(cat /tmp/prep.status 2>/dev/null)" in
+    ok) agent_name="$(cat /tmp/prep.agent)" ;;
+    unreachable) SKIP_AGENT=unreachable ;;
+    *) log "config generation failed"; exit 12 ;;
+  esac
+}
+
 # 2. Dependencies.
 if [ -z "$SETUP_CMD" ] && [ -f package-lock.json ]; then SETUP_CMD="npm ci --no-audit --no-fund"; fi
 setup_exit=0 t0=$(date +%s)
@@ -56,6 +115,24 @@ MANIFESTS='(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|(build|setting
 if [ "$reuse_changed" != all ] && ! grep -qE "$MANIFESTS" <<<"$reuse_changed"; then
   [ -n "$SETUP_CMD" ] && log "setup skipped: reused container, no manifest changed"
   SETUP_CMD=""
+fi
+# node_modules as a cache volume (delegate.sh, NODE_MODULES_CACHE): the default `npm ci` runs only when
+# the installed tree no longer matches. The stamp holds package-lock.json's hash, npm's own record of
+# the tree (node_modules/.package-lock.json, rewritten by any `npm install`) and the Node and npm
+# versions. `npm ci` took 22 s of each Lykos run (2026-10-23). The stamp goes before an install starts,
+# so a failed one is never taken for a match. A parked container's tree may have been replaced by
+# another run on its slot: the check runs on a reused clone too.
+nm_stamp() { printf '%s %s %s %s\n' "$(sha256sum package-lock.json | cut -c1-64)" \
+  "$(sha256sum node_modules/.package-lock.json 2>/dev/null | cut -c1-64)" "$(node -v)" "$(npm -v 2>/dev/null)"; }
+nm_cache=0
+if [ -f package-lock.json ] && [ "${SETUP_CMD:-npm ci --no-audit --no-fund}" = "npm ci --no-audit --no-fund" ] \
+   && mountpoint -q /work/repo/node_modules 2>/dev/null; then
+  nm_cache=1
+  if [ -s node_modules/.agent-box-stamp ] && [ "$(nm_stamp)" = "$(cat node_modules/.agent-box-stamp)" ]; then
+    log "setup skipped: the node_modules cache matches package-lock.json"; SETUP_CMD=""
+  else
+    rm -f node_modules/.agent-box-stamp; SETUP_CMD="npm ci --no-audit --no-fund"
+  fi
 fi
 if [ -n "$SETUP_CMD" ]; then
   log "setup: $SETUP_CMD"
@@ -68,6 +145,7 @@ if [ -n "$SETUP_CMD" ]; then
     bash -lc "$SETUP_CMD" >"$OUT/setup.log" 2>&1; setup_exit=$?
   fi
   log "setup exit $setup_exit"
+  [ "$nm_cache" = 1 ] && [ "$setup_exit" = 0 ] && nm_stamp >node_modules/.agent-box-stamp
   [ "$setup_exit" = 0 ] || log "setup failed: \`$SETUP_CMD\` exited $setup_exit: $(tail -n 3 "$OUT/setup.log" | tr '\n' ' ' | cut -c1-300)"
 fi
 setup_s=$(( $(date +%s) - t0 ))
@@ -88,39 +166,16 @@ if [ -n "${RED_CMD:-}" ] && [ "$setup_exit" = 0 ] && [ -z "${CONTINUE_SESSION:-}
 fi
 
 # 3. Agent.
-agent_exit=-1 agent_s=0 session_id="" attach_args=() variant_args=() agent_name=""
+agent_exit=-1 agent_s=0 session_id="" variant_args=() session_args=()
+[ "$weak_spec" != true ] && [ "$setup_exit" = 0 ] && prep_done
 if [ "$weak_spec" = true ]; then
   agent_exit=-3
-elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
-  : "${MODEL:?}" "${OMNIROUTE_API_KEY:?}" "${OMNIROUTE_BASE_URL:?}"
-  mkdir -p ~/.config/opencode
-  # The model list (1 MB) stays in the container: make-config reads limits from it, nothing else does.
-  # Tried a few times: a gateway restarting answers 503 for a moment (Lykos L212 fix1-2, 2026-10-20).
-  # Unreachable after that: the run stops here, without the tests (they cost 3 minutes for nothing).
-  for try in 1 2 3 4; do
-    curl -fsS -m 20 -H "Authorization: Bearer $OMNIROUTE_API_KEY" "$OMNIROUTE_BASE_URL/models" >/tmp/models.json 2>/tmp/models.err && break
-    log "OmniRoute unreachable at $OMNIROUTE_BASE_URL (try $try): $(cat /tmp/models.err)"
-    [ "$try" = 4 ] && SKIP_AGENT=unreachable || sleep $(( try * 10 ))
-  done
-  # A model missing from the key's list is named in the log; the run goes on (a combo may not be
-  # listed). A model that answers nothing is caught on the host (lib/ledger.mjs noOutput).
-  if [ "${SKIP_AGENT:-0}" != unreachable ] && ! jq -e --arg m "$MODEL" '[.data[]?.id] | index($m)' /tmp/models.json >/dev/null 2>&1; then
-    log "warning: model $MODEL is not in the OmniRoute key's model list"
-  fi
-fi
-if [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
+elif [ "${SKIP_AGENT:-0}" = "unreachable" ]; then
   agent_exit=-2
-elif [ "$agent_exit" = -1 ] && [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
-  agent_name="$(node /opt/agent-box/make-config.mjs)" || { log "config generation failed"; exit 12; }
+elif [ "${SKIP_AGENT:-0}" != "1" ] && [ "$setup_exit" = 0 ]; then
   preamble=/opt/agent-box/preamble.md; [ "${REVIEW:-0}" = 1 ] && preamble=/opt/agent-box/preamble-review.md
   [ -n "${PREAMBLE:-}" ] && preamble="/opt/agent-box/preamble-$PREAMBLE.md"
-  session_args=()
   if [ -n "${CONTINUE_SESSION:-}" ]; then
-    # Follow-up round: the previous round's session store comes back, and the worker resumes with
-    # everything it read and tried. The message is the orchestrator's answer or next request.
-    mkdir -p ~/.local/share
-    if [ "${REUSE:-0}" = 1 ] && [ -d ~/.local/share/opencode ]; then log "session store kept from the parked container"
-    else tar xzf /in/opencode-data.tgz -C ~/.local/share || { log "session restore failed"; exit 13; }; fi
     session_args=(--session "$CONTINUE_SESSION")
     prompt="$(printf '# Follow-up from the orchestrator (round %s)\n\nYour earlier work is committed on this branch. The operating conditions from your first message still apply, including the final report block and BLOCKED.\n\n' "${ROUND:-2}"; cat /in/task.md)"
   else
@@ -143,11 +198,8 @@ short and cached, and source reads faster than bytecode.'
               printf '\n# Task\n\n'; cat /in/task.md)"
   fi
   printf '%s\n' "$prompt" >"$OUT/prompt.md"
-  # A local OpenCode server, so `delegate.sh tui` (herdr) can attach the real OpenCode TUI to this
-  # worker's session. The worker's `run` talks to it; without it, `run` starts its own in-process.
-  if [ "${TUI:-0}" = 1 ]; then
-    opencode serve --hostname 127.0.0.1 --port 4096 >"$OUT/serve.log" 2>&1 &
-    serve_pid=$!
+  # The server started before setup; its deadline counts from now.
+  if [ -n "$serve_pid" ]; then
     # A deadline, not a count: 80 tries of a 1 s curl plus a pause took about 90 s when the server
     # never came up (RakunLoots P9, 2026-10-23). A server that exited is not waited for.
     serve_end=$(( $(date +%s) + ${SERVE_WAIT_S:-20} ))

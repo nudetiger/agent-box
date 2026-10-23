@@ -24,11 +24,20 @@ COPY preamble.md preamble-review.md preamble-explore.md preamble-speccheck.md ma
 COPY plugin.js /home/node/.config/opencode/plugins/agent-box.js
 COPY skills/ /home/node/.config/opencode/skills/
 RUN chmod 755 /usr/local/bin/run-task.sh /usr/local/bin/api /opt/agent-box/changed-tests.sh \
- && mkdir -p /work /in /out /home/node/.npm /home/node/.cache/agent-box-api \
+ && mkdir -p /work/repo/node_modules /in /out /home/node/.npm /home/node/.cache/agent-box-api \
  && chown -R node:node /work /in /out /home/node
 
 USER node
 ENV OPENCODE_DISABLE_AUTOUPDATE=1
+# OpenCode npm-installs its plugin package (@opencode-ai/plugin) into ~/.config/opencode on its first
+# start, before the first session answers: 18-20 s in every fresh container (measured 2026-10-23,
+# serve listening at 1.3 s, first /session at 19-22 s). One start here bakes it into the image.
+RUN mkdir -p /tmp/warm && cd /tmp/warm && git init -q \
+ && { opencode serve --hostname 127.0.0.1 --port 4096 >/tmp/warm.log 2>&1 & } \
+ && for i in $(seq 1 240); do curl -fs -m 1 http://127.0.0.1:4096/session >/dev/null && break; sleep 0.5; done \
+ && pkill -f "[o]pencode serve"; sleep 1 \
+ ; test -d /home/node/.config/opencode/node_modules/@opencode-ai/plugin || { cat /tmp/warm.log; exit 1; } \
+ && rm -rf /tmp/warm /tmp/warm.log /home/node/.local/share/opencode /home/node/.local/state/opencode
 # A UTF-8 locale: Java 17 reads sources in the locale's encoding, and the default POSIX one compiled
 # RakunLoots' UTF-8 sources as US-ASCII (RakunLoots P9, 2026-10-21).
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8

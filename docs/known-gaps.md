@@ -2,7 +2,8 @@
 
 Found while driving Lykos P2's third band (T208–T218) through `loop` with
 `AGENT_BOX_SLOTS=3 AGENT_BOX_PARK=1`, 2026-10-19 to 2026-10-20. Each entry says what was seen, why,
-and the workaround used. Lykos P3 (2026-10-22) added 5 to 8. All eight were fixed on 2026-10-23
+and the workaround used. Lykos P3 (2026-10-22) added 5 to 8, and a startup-time survey added 9.
+All nine were fixed on 2026-10-23
 (**Fixed** lines); the RakunLoots P9 gaps are in docs/rakunloots-p9/rakunloots-phase9-2026-10-21.md.
 Unit tests cover the host-side logic (test/gaps.test.mjs). The shell-side fixes are checked by
 `bash -n` and by hand, not yet in a live run.
@@ -124,3 +125,50 @@ only unanswered questions.
 **Fixed.** `wait --questions` skips parked runs, uses a file of its own per process (two waits
 shared one before), and wakes only on output with a `## question` heading. `questions` skips empty
 question files and answered ones.
+
+## 9. Every fresh container spent 45-60 s before the first model step
+
+**Seen.** 2026-10-23, from run artifacts. Since 2026-10-20 the median time from launch to the first
+model step was 92 s on Lykos (104 runs) and 46 s on RakunLoots (60 runs). Host-side work (context
+pack, bundle, node startup) was under 1 s of it. The model takes over 90% of a run, but reviews,
+checks and spec checks are short, so this overhead was a large share of them.
+
+**Why.** Three waits ran one after another inside the container:
+- OpenCode npm-installed its plugin package (`@opencode-ai/plugin`) into `~/.config/opencode` on its
+  first start: `opencode serve` listened at 1.3 s but answered `/session` at 19-22 s. With
+  `SERVE_WAIT_S=20`, that was also on the edge of "opencode serve did not start".
+- `npm ci` took 22 s of every Lykos run.
+- The model list, config and server waited for setup and the red check to finish. Once, the
+  `/models` fetch took 8 s from a container, and the same fetch took 0.04-0.1 s later.
+
+**Fixed.**
+- The image runs OpenCode once at build time, so the plugin package is already installed. The first
+  `/session` now answers at 2.3 s.
+- `node_modules` is a volume per project and slot (`NODE_MODULES_CACHE=0`: off). A stamp holds the
+  hashes of `package-lock.json` and of npm's own `node_modules/.package-lock.json`, plus the Node and
+  npm versions. The install runs only when one of them changed: a Lykos no-agent run went from 29 s
+  to 7 s.
+- The model list, config and server run in the background during setup and the red check.
+- The inputs go into the container as one tar stream (each `podman cp` cost 0.7 s).
+- A run's launch runs `gc --yes` at most once a day (`AUTO_GC=0`: off).
+
+**Measured.** Old harness (commit 3c1f5d8) against the new one, same ticket, base and model. Each
+pair ran at the same time. Every run passed its tests. One run per side, so the agent and wall
+times vary with the model and prove nothing. Time from container start to the first model step:
+
+| Ticket | Old | New |
+| --- | --- | --- |
+| Lykos t207 (gemini-3.8-flash-tiered) | 45.3 s | 20.5 s |
+| RakunLoots p9-108 (deepseek-flash-max, Gradle, red check) | 58.6 s | 31.1 s |
+
+From launch to the first model step, Lykos t207 took 52.1 s old and 16.1-24.8 s new. RakunLoots
+p9-108 took 92.7 s old, which includes a one-time 30 s cache seed, and 38.1 s new. Runs:
+`runs/lykos/e2e-{old,new,new2}-t207` and `runs/rakunloots/e2e-{old,new,new2}-p9-108`. The new runs
+are recorded as discarded in the ledger.
+
+**Not changed.**
+- The npm in the image skips the install scripts of better-sqlite3, node-pty and esbuild ("not yet
+  covered by allowScripts"). No container test or agent log shows a missing native binding.
+- The step stream loses its last step in about 305 of 477 agent runs. It is recovered from the
+  session store every time.
+- Rust: the host-side JavaScript is under 1 s per run, so a rewrite would save almost nothing.
