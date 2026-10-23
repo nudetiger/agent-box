@@ -5,7 +5,7 @@ description: Delegate coding, writing, review, research or bug-hunt work to sand
 
 # agent-box
 
-Tool: `<agent-box>/delegate.sh` (Bash). Evidence behind this procedure:
+Tool: `C:/Workspace/Tools/agent-box/delegate.sh` (Bash). Evidence behind this procedure:
 `research/workflow.md`; model and config facts: `research/opencode-customization.md`; roles: `agent-box.conf`,
 overridden per project by `ROLE_*`, `REVIEW_MODE` and other lines in `projects/<repo>.env` (`delegate.sh roles <repo>`
 shows what is in effect).
@@ -16,12 +16,15 @@ the evidence.
 
 ## Preconditions
 
-1. `projects/<repo>.env` holds `OMNIROUTE_API_KEY` (the user fills it; never print it).
-2. OmniRoute is running; the engine in `agent-box.conf` is up (`podman machine start`). The engine is
-   Podman, not Docker: use `podman` for images and containers, and rebuild with `delegate.sh build
-   <repo>`. Never start Docker Desktop for agent-box; its images are separate and stale.
-3. A recent `delegate.sh baseline <repo>` exists, so pre-existing failures are known.
-4. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
+1. `delegate.sh doctor <repo>` says `ready`. It checks bash, node, the engine and its images, the
+   project file and its key, and OmniRoute from the host and from inside a container; each failure
+   prints its fix. Run it first in a new session or after any setup change.
+2. `projects/<repo>.env` holds `OMNIROUTE_API_KEY` (the user fills it; never print it).
+3. The engine is the one `agent-box.conf` (or `agent-box.local.conf`) names, Podman by default. Use
+   that engine for images and containers and rebuild with `delegate.sh build <repo>`; never mix in
+   the other one (on a Podman machine, never start Docker Desktop: its images are separate and stale).
+4. A recent `delegate.sh baseline <repo>` exists, so pre-existing failures are known.
+5. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
 
 ## Write the task file (the harness builds the rest)
 
@@ -67,11 +70,13 @@ final message. Act on `next`:
 | `resolve_test_dispute` | the worker says a sealed test is wrong; read it; fix the test or tell the worker why it stands |
 | `triage_findings` | (review runs) check each finding; `continue <impl-run> --findings <rv-run>[:n,m] --drop <rv-run>:k` |
 | `read_final_message` | no net change (also when commits cancel out): read `final.md`; often an unflagged contradiction |
-| `fix_environment`, `split_or_continue` | setup/quota/network, or a timeout |
+| `fix_environment`, `split_or_continue` | setup/quota/network, or a timeout. A review that timed out or failed is incomplete even when it wrote findings: run it again, never act on them as a full review |
 
 After deciding, record it: `delegate.sh accept|reject|merged|discard <repo> <run> --why "..."` (add
 `--cause` on a reject). `delegate.sh refs <repo> <run>` lists flags and findings that still need a
-reason; label them with `note` (causes: `delegate.sh note` prints them). Obvious causes are labelled
+reason; label them with `note <repo> <run> --refs a,b|--all --cause C --why "..."` (`delegate.sh note`
+alone prints the usage and the causes). A run that ended with no summary can still be `discard`ed: it
+is recorded as interrupted first. Obvious causes are labelled
 automatically. Never read `ledger/events.jsonl` yourself: `delegate.sh stats json <view>` gives exact
 numbers; `stats`/`dash` are the user's dashboard.
 
@@ -128,6 +133,10 @@ parked containers when it ends; `unpark <repo> <run>|--all` or `clean` does it b
 - **BLOCKED question**: answer it in one or two sentences, with the reason.
 - **Fix round**: `continue <run> --findings <review-run>[:n,m] --drop <review-run>:k [-m "your own gate failures"]`: the findings go in verbatim and the ledger records forwarded and dropped ones. Prefer this over a cold
   rerun; it reuses what the worker learned.
+- **Wrong sealed test**: commit the corrected test on top of the run's branch, then `continue <run>
+  --reseal <commit> -m "..."` (add `--seal GLOB` for a new sealed file). Same session, original base;
+  the seal check compares against that commit. Before sealing a test that loads fixtures, run it once
+  on the host so it fails for the missing behaviour, not for a fixture path.
 - **Fork**: continuing an earlier round again gives `-r2b`, so you can try two different answers.
 - Select and merge the last round's branch; delete the earlier rounds' branches.
 
@@ -191,7 +200,9 @@ the background, about 100 s apart (the Podman VM dropped 3 starts within seconds
    - `answer_spec` (a reviewer's `spec_question` nobody answered live) → decide it: `loop resume
      <repo> <loop> --answer "..."`. The ruling goes to the worker and to every later reviewer.
    - `triage` (a serious finding with no reproduction, or a finding the worker disputes) → check it
-     yourself; `--drop ID` what is wrong, resume with nothing to keep the rest.
+     yourself; `--drop ID` what is wrong, resume with nothing to keep the rest. `--retire ID` takes an
+     item out without calling it a false positive (you replaced it). `--add FILE` (at the start too):
+     markdown for the fixer, or a JSON findings array; items with a reproduction become proven items.
    - `answer_question` (the worker is BLOCKED) → `loop resume ... -m "answer"`.
    - `decide` (5 rounds, or a second stall) → read `state.json` and choose: merge with notes, make
      the last small fix yourself, `resume --max-rounds N`, or stop.
@@ -242,4 +253,33 @@ Composer (misreported tool results, research/findings.md §6). Every worker has 
 2. Rerun the verification on the host.
 3. Cherry-pick or merge under the repo's own commit rules (author, message, trailers). Delete rejected
    branches (`git branch -D agent/<name>`) and say why.
-4. `delegate.sh clean` after an interrupted run. Never edit `delegate.sh` while a run is executing it.
+4. `delegate.sh clean` after an interrupted run. Never edit `delegate.sh` while a run is executing it:
+   bash reads the script as it goes, and a run that outlives the edit executes the new text.
+
+## What the harness already does for workers (do not repeat it in tasks)
+
+- **Context**: OpenCode compacts a session at `COMPACT_AT` tokens and prunes old tool output in
+  continued rounds; step latency grows with context. Never paste big files or logs into a task.
+- **Dependency APIs**: JVM projects get `api find|show|grep` (signatures from the build caches,
+  indexed once). Never ask a worker to decompile jars.
+- **Lessons**: the project's accepted review findings go into the implementer's context pack.
+- **Missing blocks**: a run whose last message has no report (or, for a review, no findings) block
+  is asked for it in one short turn; one that stopped mid-task is told to continue.
+- **Reviews** get the diff inline when it is under `REVIEW_DIFF_MAX` characters (30000).
+
+## Housekeeping
+
+- `delegate.sh gc` shows what disk it would free (model lists, session archives older than 14 days,
+  untagged images); `gc --yes` frees it. A run's launch already does `gc --yes` once a day in the
+  background (`runs/.gc.log`; `AUTO_GC=0` turns it off).
+  Ask the user before any other `--yes`, such as `--days 3`.
+- An npm repo set up by the default `npm ci` keeps `node_modules` in a volume per slot; a run
+  reinstalls only when `package-lock.json` or the installed tree changed (`NODE_MODULES_CACHE=0`: off).
+  After `build`, rebuild project images (`build <repo>`) too: they start FROM the base image.
+- `delegate.sh stats` prices runs from `prices.conf` (USD per 1M tokens per model). Unpriced models
+  show as unpriced; report token counts then, never $0.
+- `PROJECT_SLOTS=N` in `projects/<repo>.env` caps one project's containers (checks and base suites
+  included); `1` runs it serially (one Gradle cache, one live server) while other projects use the
+  rest. A waiting run prints who holds the slots.
+- A second checkout of agent-box (a worktree, a test install) sets `AGENT_BOX_NS` in its
+  `agent-box.local.conf`, so its images, containers and cache volumes never collide with the first.
