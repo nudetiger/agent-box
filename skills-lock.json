@@ -2,7 +2,7 @@
   "kit": "1.1.0",
   "skills": {
     "agent-box": {
-      "computedHash": "b98c58d458b252d863076ea0a13d72b79e3e24af5963de7f141373a3ce4f3c7f",
+      "computedHash": "4c9a4b2942daa91efc03ee747945e9bd890bb6faf72efd75c6797c010115d684",
       "skillPath": "",
       "source": "nudetiger/agent-box",
       "sourceType": "github"

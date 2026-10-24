@@ -5,7 +5,7 @@ description: Delegate coding, writing, review, research or bug-hunt work to sand
 
 # agent-box
 
-Tool: `C:/Workspace/Tools/agent-box/delegate.sh` (Bash). Evidence behind this procedure:
+Tool: `<agent-box>/delegate.sh` (Bash). Evidence behind this procedure:
 `research/workflow.md`; model and config facts: `research/opencode-customization.md`; roles: `agent-box.conf`,
 overridden per project by `ROLE_*`, `REVIEW_MODE` and other lines in `projects/<repo>.env` (`delegate.sh roles <repo>`
 shows what is in effect).
@@ -27,6 +27,10 @@ the evidence.
 5. `projects/<repo>.context.yaml` exists for context packs. Without one, workers get no area docs.
 
 ## Write the task file (the harness builds the rest)
+
+Task files go in `<agent-box>/tasks/<project>-<phase>/`. Your other scratch (briefs, JSON payloads,
+captured logs, issue drafts, demo repos) goes in `<agent-box>/runs/.tmp/`, which `gc` clears after a
+day. Never write any of it into the workspace root, beside the repo, or in the system temp folder.
 
 Frontmatter drives the deterministic context pack (`lib/pack.mjs`): governing docs, traps, glossary
 terms, recent history, related tests and the verification command are added automatically. Never paste
