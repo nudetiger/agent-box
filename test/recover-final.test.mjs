@@ -4,9 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tmp } from "./tmp.mjs";
 import { truncated, missingEvents, recover } from "../image/recover-final.mjs";
 import { lastStop } from "../image/last-stop.mjs";
 
@@ -45,7 +45,7 @@ test("nothing is appended to a log that finished, or for messages before the tru
 });
 
 test("recover reads OpenCode's SQLite store and appends to events.jsonl once", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "recover-final-"));
+  const dir = tmp("recover-final-");
   const db = new DatabaseSync(path.join(dir, "opencode.db"));
   db.exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);" +
     "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);");

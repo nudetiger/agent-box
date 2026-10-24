@@ -5,9 +5,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmp } from "./tmp.mjs";
 import { reviewRoles, axisOf, promptOf } from "../lib/reviewmode.mjs";
 import { useAlt, specRole } from "../lib/family.mjs";
 import { finalBlock } from "../lib/ledger.mjs";
@@ -40,7 +40,7 @@ test("family: a reviewer never reviews its own family's code when its -alt can",
 });
 
 test("delegate.sh roles: the default stack, and the review mode a project sets", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-mode-"));
+  const dir = tmp("ab-mode-");
   execFileSync("git", ["-C", dir, "init", "-q"]);
   const env = path.join(dir, "settings.env");
   fs.writeFileSync(env, "REVIEW_MODE=both\n");
@@ -56,7 +56,7 @@ test("delegate.sh roles: the default stack, and the review mode a project sets",
 });
 
 test("delegate.sh review in mode both: one review-both run, its own prompt, --prior both=", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-both-"));
+  const dir = tmp("ab-both-");
   const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
@@ -87,7 +87,7 @@ test("delegate.sh review in mode both: one review-both run, its own prompt, --pr
 });
 
 test("findings blocks: the name on the fence's line or on the next one", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-block-"));
+  const dir = tmp("ab-block-");
   const read = (text) => { fs.writeFileSync(path.join(dir, "final.md"), text); return finalBlock(dir, "agent-box-findings"); };
   assert.deepEqual(read("x\n```agent-box-findings\n[1]\n```\n"), [1]);
   assert.deepEqual(read("x\n```\nagent-box-findings\n[{\"a\": 2}]\n```\n"), [{ a: 2 }], "RakunMiniItems rv46: the name below a bare fence");
@@ -112,7 +112,7 @@ test("loop options: review mode or roles, fresh attempts off or one role, caps",
 
 // The loop against a stand-in for delegate.sh (as in loop.test.mjs), in review mode both.
 function harness(script, env = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ab-loopb-"));
+  const root = tmp("ab-loopb-");
   const runs = path.join(root, "runs");
   const P = { repo: root, name: "demo", runs, env, map: {}, testGlobs: ["**/*.test.*"] };
   const write = (run, { role, verdict = "pass", findings }) => {

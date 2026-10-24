@@ -2,12 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { tmp } from "./tmp.mjs";
 import { detect, render } from "../lib/setup.mjs";
 
 const repo = (files) => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "ab-setup-"));
+  const d = tmp("ab-setup-");
   for (const [f, t] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true }); fs.writeFileSync(path.join(d, f), t); }
   return { d, files: Object.keys(files) };
 };

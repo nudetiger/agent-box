@@ -3,10 +3,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { tmp as tempDir } from "./tmp.mjs";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-perr-"));
+const tmp = tempDir("ab-perr-");
 process.env.AGENT_BOX_LEDGER = path.join(tmp, "events.jsonl");
 const { finish, providerError, readAll } = await import("../lib/ledger.mjs");
 const { verdictOf, nextOf } = await import("../lib/checks.mjs");

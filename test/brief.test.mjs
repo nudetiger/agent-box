@@ -2,13 +2,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { tmp } from "./tmp.mjs";
 import { brief } from "../lib/brief.mjs";
 import { loopBrief } from "../lib/loop.mjs";
 
 const runDir = (files) => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "ab-brief-"));
+  const d = tmp("ab-brief-");
   for (const [f, v] of Object.entries(files)) fs.writeFileSync(path.join(d, f), typeof v === "string" ? v : JSON.stringify(v));
   return d;
 };

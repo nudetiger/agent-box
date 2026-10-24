@@ -3,15 +3,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { tmp as tempDir } from "./tmp.mjs";
 import { validRepro, neighbourTests, verifyFiles, parseVerify, suiteFiles, parseSuite, checkTimes } from "../lib/verify.mjs";
 
 const GLOBS = ["**/*.test.*"];
 
 function repo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-verify-"));
+  const dir = tempDir("ab-verify-");
   const git = (...a) => execFileSync("git", ["-C", dir, "-c", "core.autocrlf=false", ...a], { encoding: "utf8" }).trim();
   const put = (f, text) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); };
   const commit = (m) => { git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", m); return git("rev-parse", "HEAD"); };
@@ -49,8 +49,8 @@ test("the script, run for real: a failing reproduction proves, a passing one doe
   const base = r.commit("base");
   r.put("a.js", "module.exports = 2;\n");
   r.commit("break a");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-repro-")).replace(/\\/g, "/");
-  const scratch = (n) => `/tmp/ab-verify-${process.pid}-${n}.sh`;
+  const tmp = tempDir("ab-repro-").replace(/\\/g, "/");
+  const scratch = (n) => `${tmp}/scratch-${n}.sh`;
   const run = (neighboursCmd) => {
     const files = verifyFiles({ base, neighboursCmd, root: r.dir.replace(/\\/g, "/"), baseDir: `${tmp}/base-${neighboursCmd.length}`,
       repros: [{ id: "1.spec.1", file: scratch(1), content: "exit 3\n", cmd: `bash ${scratch(1)}` },
@@ -94,8 +94,8 @@ test("the script, run for real: failing test names on both sides, base reproduct
   const base = r.commit("base");
   r.put("a.js", "module.exports = 2;\n");
   r.commit("break a");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-names-")).replace(/\\/g, "/");
-  const scratch = `/tmp/ab-verify-${process.pid}-base.sh`;
+  const tmp = tempDir("ab-names-").replace(/\\/g, "/");
+  const scratch = `${tmp}/scratch-base.sh`;
   const run = (baseKnown, n) => {
     const files = verifyFiles({ base, neighboursCmd: "node --test n.test.js", baseKnown, root: r.dir.replace(/\\/g, "/"), baseDir: `${tmp}/base-${n}`,
       baseRepros: ["1.spec.1"],

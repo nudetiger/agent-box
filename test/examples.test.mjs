@@ -3,9 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmp } from "./tmp.mjs";
 import { examples } from "../lib/examples.mjs";
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "lib", "examples.mjs");
@@ -45,7 +45,7 @@ test("up to 3 accepted and 3 rejected findings of the project, newest first, one
 });
 
 test("the same ledger gives the same text, through the CLI too; nothing at all when there is nothing", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-ex-"));
+  const dir = tmp("ab-ex-");
   const file = path.join(dir, "events.jsonl");
   fs.writeFileSync(file, ledger().map((e) => JSON.stringify(e)).join("\n") + "\nnot json\n");
   const run = (project) => execFileSync(process.execPath, [CLI, project], { encoding: "utf8", env: { ...process.env, AGENT_BOX_LEDGER: file } });

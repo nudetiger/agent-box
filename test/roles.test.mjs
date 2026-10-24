@@ -4,16 +4,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmp } from "./tmp.mjs";
 import { projectSettings, conf } from "../lib/ticket.mjs";
 
 const BOX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("delegate.sh roles: the project file overrides one role and keeps the rest", () => {
   // A repo with no projects/<name>.env of its own: AGENT_BOX_PROJECT_ENV names the settings file.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-roles-"));
+  const dir = tmp("ab-roles-");
   execFileSync("git", ["-C", dir, "init", "-q"]);
   const env = path.join(dir, "settings.env");
   fs.writeFileSync(env, 'ROLE_review_spec="cursor/kimi-k3-high"   # spec review on another family\nREVIEW_ROLES="review-spec"\n');
@@ -48,7 +48,7 @@ test("ticket mode: project settings parse as bash reads them and win over agent-
 
 test("review relaunches delegate.sh by its absolute path, also when called as a relative 'delegate.sh'", () => {
   // No OmniRoute key: the relaunched run stops at need_key, so no container and no model is involved.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-self-"));
+  const dir = tmp("ab-self-");
   const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
@@ -83,7 +83,7 @@ test("spec reviewer: never the implementer's family", async () => {
 
 // The default stack: review-spec is Opus, review-both is DeepSeek. Code their family wrote gets the -alt.
 test("review: a branch Claude wrote gets review-spec-alt; in mode both, a DeepSeek branch gets review-both-alt", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-alt-"));
+  const dir = tmp("ab-alt-");
   const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n");

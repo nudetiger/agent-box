@@ -2,13 +2,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { tmp } from "./tmp.mjs";
 import { finalBlock } from "../lib/ledger.mjs";
 import { nextOf } from "../lib/checks.mjs";
 
 const withFinal = (text) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-fb-"));
+  const dir = tmp("ab-fb-");
   fs.writeFileSync(path.join(dir, "final.md"), text);
   return dir;
 };
@@ -48,7 +48,7 @@ test("bareBlock: bare object, bare array, json fence; a report needs status; pro
 });
 
 test("finalBlock: a fenced findings block holding {findings: [...]} reads as the array; a tests block stays an object", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-wrap-"));
+  const dir = tmp("ab-wrap-");
   fs.writeFileSync(path.join(dir, "final.md"), 'Done.\n```agent-box-findings\n{"findings": [{"n": 1}]}\n```\n');
   assert.deepEqual(finalBlock(dir, "agent-box-findings"), [{ n: 1 }]);
   fs.writeFileSync(path.join(dir, "final.md"), '```agent-box-tests\n{"mode": "red", "tests": ["a"]}\n```\n');

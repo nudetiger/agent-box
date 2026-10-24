@@ -4,15 +4,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmp as tempDir } from "./tmp.mjs";
 import { fixture, NOW, G } from "./fixtures/ledger.mjs";
 import { strw } from "../lib/stats/style.mjs";
 import { OWNER, scope } from "../lib/stats/data.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-box-stats-"));
+const tmp = tempDir("agent-box-stats-");
 const FX = path.join(tmp, "events.jsonl");
 fs.writeFileSync(FX, fixture());
 const EMPTY = path.join(tmp, "missing.jsonl");

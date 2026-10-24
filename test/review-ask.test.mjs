@@ -3,12 +3,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { tmp } from "./tmp.mjs";
 
 function config(env) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ab-rask-"));
+  const home = tmp("ab-rask-");
   execFileSync(process.execPath, [path.join(import.meta.dirname, "..", "image", "make-config.mjs")], {
     env: { ...process.env, HOME: home, USERPROFILE: home, MODEL: "m1", ...env }, encoding: "utf8" });
   return JSON.parse(fs.readFileSync(path.join(home, ".config", "opencode", "opencode.json"), "utf8"));

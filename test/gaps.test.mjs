@@ -3,13 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { tmp as tempDir } from "./tmp.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-gaps-"));
+const tmp = tempDir("ab-gaps-");
 process.env.AGENT_BOX_LEDGER = path.join(tmp, "events.jsonl");
 const { finalBlock, noOutput } = await import("../lib/ledger.mjs");
 const { verdictOf, nextOf, checks } = await import("../lib/checks.mjs");

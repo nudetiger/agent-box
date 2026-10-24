@@ -3,9 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { tmp } from "./tmp.mjs";
 import { render, palette, dur, hint, herdrState } from "../lib/loopwatch.mjs";
 
 const C = palette(false);
@@ -53,7 +53,7 @@ test("step times, herdr states, colours only on a terminal", () => {
 });
 
 test("the viewer, run for real on a loop that already stopped: prints its history and ends", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-loopwatch-"));
+  const dir = tmp("ab-loopwatch-");
   const file = path.join(dir, "progress.jsonl");
   fs.writeFileSync(file, [{ ev: "start", run: "impl", settings: { maxRounds: 6 } }, { ev: "round", k: 1, kind: "first", run: "impl" },
     { ev: "decide", action: "approve", reason: "the first review found nothing that blocks" },

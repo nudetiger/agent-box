@@ -28,6 +28,10 @@ the evidence.
 
 ## Write the task file (the harness builds the rest)
 
+Task files go in `<agent-box>/tasks/<project>-<phase>/`. Your other scratch (briefs, JSON payloads,
+captured logs, issue drafts, demo repos) goes in `<agent-box>/runs/.tmp/`, which `gc` clears after a
+day. Never write any of it into the workspace root, beside the repo, or in the system temp folder.
+
 Frontmatter drives the deterministic context pack (`lib/pack.mjs`): governing docs, traps, glossary
 terms, recent history, related tests and the verification command are added automatically. Never paste
 them into the task yourself.

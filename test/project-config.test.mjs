@@ -3,16 +3,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { tmp } from "./tmp.mjs";
 import { failNames, neighbourTests, verifyFiles, parseVerify } from "../lib/verify.mjs";
 import { fillTestCmd } from "../lib/testcmd.mjs";
 import { projectSettings, conf } from "../lib/ticket.mjs";
 import { checks } from "../lib/checks.mjs";
 
 function repo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-config-"));
+  const dir = tmp("ab-config-");
   const git = (...a) => execFileSync("git", ["-C", dir, "-c", "core.autocrlf=false", ...a], { encoding: "utf8" }).trim();
   const put = (f, text) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); };
   const commit = (m) => { git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", m); return git("rev-parse", "HEAD"); };

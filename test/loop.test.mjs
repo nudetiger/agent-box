@@ -4,8 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { tmp } from "./tmp.mjs";
 import { classify, decide, fixMessage, fixContext, recheckMessage, recheckAxes, freshTask, loop, resume } from "../lib/loop.mjs";
 
 const CFG = { maxRounds: 4, maxFixes: 3, stuck: 2, softRounds: 2, neighbours: 30, recheckSteps: 40, fresh: ["implement", "implement-hard"], selector: "advise-alt" };
@@ -130,7 +130,7 @@ test("a fresh attempt gets the task, the rulings and every proof, never the earl
 // with continue --at: its findings; check: {id: exit, neighbours: exit}; ask: the answer text;
 // continue/run: verdict or {verdict, report}.
 function harness(script, { sealed = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ab-loop-"));
+  const root = tmp("ab-loop-");
   const runs = path.join(root, "runs");
   const P = { repo: root, name: "demo", runs, env: {}, map: {}, testGlobs: ["**/*.test.*"] };
   const write = (run, { role, verdict = "pass", findings, report = null, blocked = null }) => {
@@ -400,7 +400,7 @@ test("loop: a stopped review that can be read on resume is used, not run again",
 test("delegate.sh review --name and --prior: runs named by the prefix, each axis gets only its own", async () => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const BOX = path.resolve(import.meta.dirname, "..");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-prior-"));
+  const dir = tmp("ab-prior-");
   const git = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q", "-b", "main");
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n");

@@ -4,9 +4,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmp } from "./tmp.mjs";
 import { lessons } from "../lib/examples.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,7 +40,7 @@ test("lessons: before keeps out what was learned later; no events, no section", 
 });
 
 function config(env) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ab-cfg-"));
+  const home = tmp("ab-cfg-");
   const list = path.join(home, "models.json");
   fs.writeFileSync(list, JSON.stringify({ data: [{ id: "m-small", context_length: 64000 }, { id: "m-big", context_length: 1000000 }] }));
   execFileSync("node", [path.join(ROOT, "image", "make-config.mjs")], { env: { ...process.env, HOME: home, USERPROFILE: home, MODELS_JSON: list, ...env } });
@@ -64,7 +64,7 @@ test("make-config: COMPACT_AT=0 keeps the real window and turns compaction and p
 });
 
 test("gc: dry run lists, --yes removes model lists and old archives, parked runs untouched", () => {
-  const runs = fs.mkdtempSync(path.join(os.tmpdir(), "ab-gc-"));
+  const runs = tmp("ab-gc-");
   const mk = (rel, body = "x", old = false) => {
     const f = path.join(runs, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body);
     if (old) { const t = new Date(Date.now() - 30 * 86400e3); fs.utimesSync(f, t, t); }
@@ -75,10 +75,37 @@ test("gc: dry run lists, --yes removes model lists and old archives, parked runs
   const newTgz = mk("p/r2/opencode-data.tgz", "z");
   const parked = mk("p/r3/opencode-data.tgz", "z", true); mk("p/r3/parked", "c img");
   const summary = mk("p/r1/summary.json", "{}");
-  const gc = (...a) => execFileSync("node", [path.join(ROOT, "lib", "gc.mjs"), runs, ...a], { encoding: "utf8" });
+  const gc = (...a) => execFileSync("node", [path.join(ROOT, "lib", "gc.mjs"), runs, ...a], { encoding: "utf8", env: { ...process.env, AGENT_BOX_GC_TMP: tmp("ab-gct-") } });
   assert.match(gc(), /dry run/);
   assert.ok(fs.existsSync(models) && fs.existsSync(oldTgz));
   gc("--yes");
   assert.ok(!fs.existsSync(models) && !fs.existsSync(oldTgz));
   assert.ok(fs.existsSync(newTgz) && fs.existsSync(parked) && fs.existsSync(summary));
+});
+
+test("gc: old agent/* branches, scratch and system temp leftovers go; recent and parked stay", () => {
+  const runs = tmp("ab-gcb-"), sysTmp = tmp("ab-gct-"), repo = tmp("ab-gcr-");
+  const old = new Date(Date.now() - 30 * 86400e3);
+  const mk = (f, body = "x", aged = false) => {
+    fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body);
+    if (aged) fs.utimesSync(f, old, old);
+    return f;
+  };
+  const g = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", env: { ...process.env, GIT_COMMITTER_DATE: old.toISOString() } });
+  g("init", "-q"); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c");
+  for (const b of ["old", "new", "gone", "kept"]) g("branch", `agent/${b}`);
+  mk(path.join(runs, "p", ".repo"), repo);
+  mk(path.join(runs, "p", "old", "ended"), "1", true);
+  mk(path.join(runs, "p", "new", "ended"), "1");
+  mk(path.join(runs, "p", "kept", "ended"), "1", true); mk(path.join(runs, "p", "kept", "parked"), "c img");
+  const oldScratch = mk(path.join(runs, ".tmp", "message.abc123"), "m", true);
+  const newScratch = mk(path.join(runs, ".tmp", "message.def456"), "m");
+  const leftover = mk(path.join(sysTmp, "ab-loop-Xy12Zq"), "t", true);
+  const notOurs = mk(path.join(sysTmp, "ab-build.sh"), "t", true);
+  const gc = (...a) => execFileSync("node", [path.join(ROOT, "lib", "gc.mjs"), runs, ...a], { encoding: "utf8", env: { ...process.env, AGENT_BOX_GC_TMP: sysTmp } });
+  assert.match(gc(), /2 .*agent\/\* branches older than 14 days/);
+  gc("--yes");
+  assert.deepEqual(g("branch", "--list", "agent/*", "--format=%(refname:short)").trim().split("\n"), ["agent/kept", "agent/new"]);
+  assert.ok(!fs.existsSync(oldScratch) && !fs.existsSync(leftover));
+  assert.ok(fs.existsSync(newScratch) && fs.existsSync(notOurs));
 });

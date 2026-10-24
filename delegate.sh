@@ -121,8 +121,11 @@ Usage: delegate.sh <command> ...
   install-skill [<dir>]          The Claude Code skill, with this clone's path, into ~/.claude/skills/agent-box
   doctor   [<repo>]              Check everything agent-box needs (bash, node, engine, images, OmniRoute
                                  from the host and from inside a container), each failure with its fix
-  gc       [--days N] [--yes]    Disk: model lists and session archives older than N days (14) in runs/,
-                                 untagged images, stopped containers. Dry run unless --yes
+  gc       [--days N] [--volumes] [--yes]
+                                 Disk: model lists and session archives older than N days (14) in runs/,
+                                 agent/* branches and worktrees of runs older than N days, scratch and
+                                 temp leftovers, untagged images, stopped containers. --volumes: also
+                                 the per-slot cache volumes (reseeded on next use). Dry run unless --yes
   bench    list|run ...          Frozen benchmark suites (bench/README.md); AGENT_BOX_REPOS points real-
                                  history tasks at another checkout
   clean                        Remove leftover agent-box containers (and parked ones)
@@ -136,7 +139,7 @@ Engine: podman (default) or docker, from AGENT_BOX_ENGINE or agent-box.conf. Bui
 Parallel: at most AGENT_BOX_SLOTS containers at once (default 4); each slot has its own CACHES volumes.
 PROJECT_SLOTS=N in a project's .env caps that project's containers (checks and base suites included).
 An npm repo set up by the default `npm ci` keeps node_modules per slot (NODE_MODULES_CACHE=0: off).
-A run's launch cleans runs/ (gc --yes) at most once a day (AUTO_GC=0: off).
+A run's launch runs `gc --yes` at most once a day (AUTO_GC=0: off). Host scratch lives in runs/.tmp.
 
 <repo> is the repo's path; a bare name works when projects/<name>.env sets REPO_PATH.
 Per-project settings: projects/<repo-folder-name-lowercase>.env (see projects/example.env)
@@ -173,6 +176,10 @@ load_project() {
   TIMEOUT_MIN="${TIMEOUT_MIN:-60}"
   export OMNIROUTE_BASE_URL TEST_CMD TIMEOUT_MIN
 }
+
+# Host scratch files live in runs/.tmp, never in the system temp folder: gc clears it (97 agent-box
+# files had piled up in the system temp folder, 2026-10-24).
+scratch() { mkdir -p "$BOX/runs/.tmp" && mktemp "$BOX/runs/.tmp/$1.XXXXXX"; }
 
 need_key() { [ -n "${OMNIROUTE_API_KEY:-}" ] || die "OMNIROUTE_API_KEY is empty in projects/$PROJECT.env"; }
 
@@ -300,8 +307,30 @@ auto_gc() {
   local stamp="$BOX/runs/.gc-last"
   [ -n "$(find "$stamp" -mmin -1440 2>/dev/null)" ] && return 0
   mkdir -p "$BOX/runs"; touch "$stamp"
-  echo "agent-box: daily cleanup of runs/ in the background (session archives older than 14 days; AUTO_GC=0 turns it off): runs/.gc.log" >&2
-  (node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" --yes >"$BOX/runs/.gc.log" 2>&1 &)
+  echo "agent-box: daily cleanup in the background (runs/, branches, scratch, images, stopped containers; AUTO_GC=0 turns it off): runs/.gc.log" >&2
+  (cmd_gc --yes >"$BOX/runs/.gc.log" 2>&1 &)
+}
+
+# runs/, branches, worktrees and scratch (lib/gc.mjs), then the engine: untagged images left by rebuilds,
+# this namespace's stopped containers (parked ones keep running) and, with --volumes, its per-slot cache
+# volumes (9.6 GB of the 16.6 GB of volumes, 2026-10-24; a slot's volume is seeded again when next used).
+cmd_gc() {
+  local a yes=0 vols=0 rest=()
+  for a in "$@"; do case "$a" in --yes) yes=1; rest+=("$a") ;; --volumes) vols=1 ;; *) rest+=("$a") ;; esac; done
+  node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" "${rest[@]}"
+  local ids slotvols=""
+  # A slot's copy is <base><slot>-cache next to <base>-cache (m21 beside m2), or a node_modules one (-nm<slot>-).
+  [ "$vols" = 1 ] && slotvols="$(all="$(dk volume ls -q 2>/dev/null)"; for v in $(grep -E "^$NS-.+[0-9]-cache\$" <<<"$all"); do
+    { [[ "$v" == *-nm[0-9]-cache ]] || grep -qx "${v%?-cache}-cache" <<<"$all"; } || continue
+    dk ps -q --filter "volume=$v" | grep -q . || echo "$v"; done)"
+  if [ "$yes" = 1 ]; then
+    dk image prune -f >/dev/null 2>&1 && echo "untagged images pruned"
+    ids="$(dk ps -aq --filter "label=$NS_LABEL" --filter status=exited)"; [ -z "$ids" ] || { dk rm -f $ids >/dev/null; echo "stopped containers removed"; }
+    [ -z "$slotvols" ] || { dk volume rm $slotvols >/dev/null && echo "slot cache volumes removed: $(echo $slotvols)"; }
+  else
+    echo "and with --yes: untagged images ($(dk images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ') now), stopped containers ($(dk ps -aq --filter "label=$NS_LABEL" --filter status=exited 2>/dev/null | wc -l | tr -d ' ') now)"
+    [ -z "$slotvols" ] || echo "and slot cache volumes: $(echo $slotvols)"
+  fi
 }
 
 launch() {
@@ -312,6 +341,8 @@ launch() {
   engine_up
   auto_gc
   mkdir -p "$run_dir"
+  # gc prunes this project's old agent/* branches in this repo.
+  winpath "$REPO" >"$BOX/runs/$PROJECT/.repo"
   # `wait` and `watch` know the run is over by <run>/ended, written however launch exits; launcher.pid
   # covers a launcher killed outright. A run stopped before its summary never woke `wait` (RakunLoots
   # baseline, 2026-10-21: run-task exited 137, the wait ran to its timeout).
@@ -642,7 +673,7 @@ cmd_run() {
   # Rulings join the task itself, so the worker and every later reviewer read them as binding.
   if [ -n "$rulings" ]; then
     [[ "$rulings" == @* ]] && { [ -f "${rulings#@}" ] || die "rulings file not found: ${rulings#@}"; rulings="$(cat "${rulings#@}")"; }
-    local ruled; ruled="$(mktemp "${TMPDIR:-/tmp}/agent-box-rulings.XXXXXX")"
+    local ruled; ruled="$(scratch rulings)"
     { cat "$task"; printf '\n\n## The orchestrator'"'"'s rulings (binding)\n\n%s\n' "$rulings"; } >"$ruled"
     task="$ruled"
   # A ticket (frontmatter `issue:`) gets a spec check first, once: questions stop here, before any code.
@@ -689,7 +720,7 @@ cmd_continue() {
   done
   [ -n "$text" ] || [ -n "$findings" ] || die "continue needs -m TEXT, -f FILE or --findings REVIEW-RUN[:n,m]"
   load_project "$repo"; need_key
-  msg_file="$(mktemp)"
+  msg_file="$(scratch message)"
   # Review findings go to the worker verbatim from findings.json, never retyped; the ledger records
   # which were forwarded and which were dropped as false positives.
   if [ -n "$findings" ]; then
@@ -978,7 +1009,7 @@ cmd_answer() {
   local repo="$1" name="$2" id="$3"; shift 3
   local msg_file=""
   case "${1:-}" in
-    -m|--message) msg_file="$(mktemp)"; printf '%s\n' "$2" >"$msg_file" ;;
+    -m|--message) msg_file="$(scratch answer)"; printf '%s\n' "$2" >"$msg_file" ;;
     -f|--file) [ -f "$2" ] || die "answer file not found: $2"; msg_file="$2" ;;
     *) die "answer needs -m TEXT or -f FILE" ;;
   esac
@@ -1349,12 +1380,7 @@ case "${1:-}" in
       AB_SLOTS="${AGENT_BOX_SLOTS:-4}" AB_MEMORY="${MEMORY:-8g}" OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-}" \
       OMNIROUTE_HOST_URL="${OMNIROUTE_HOST_URL:-http://localhost:20128/v1}" OMNIROUTE_BASE_URL="$OMNIROUTE_BASE_URL" \
       node "$(winpath "$BOX/lib/doctor.mjs")" ;;
-  gc) shift; node "$(winpath "$BOX/lib/gc.mjs")" "$(winpath "$BOX/runs")" "$@"
-    # Untagged images left by rebuilds and this namespace's stopped containers (parked ones keep running).
-    if [[ " $* " == *" --yes "* ]]; then
-      dk image prune -f >/dev/null 2>&1 && echo "untagged images pruned"
-      ids="$(dk ps -aq --filter "label=$NS_LABEL" --filter status=exited)"; [ -z "$ids" ] || dk rm -f $ids >/dev/null
-    else echo "and with --yes: untagged images ($(dk images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ') now), stopped containers"; fi ;;
+  gc) shift; cmd_gc "$@" ;;
   bench) shift; AGENT_BOX_REPOS="${AGENT_BOX_REPOS:-}" node "$(winpath "$BOX/lib/bench.mjs")" "$@" ;;
   dash) shift; node "$(winpath "$BOX/lib/stats.mjs")" tui "$@" ;;
   clean) cmd_clean ;;
